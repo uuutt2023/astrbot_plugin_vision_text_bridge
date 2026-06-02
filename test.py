@@ -248,7 +248,8 @@ def test_attach_failure_uses_template():
         field="image_urls",
     )
     assert "【图片1：理解失败：mmx 调用失败或超时】" in req.prompt
-    assert req.image_urls == ["https://x.com/bad.jpg"]  # 失败的图片保留在 image_urls
+    # 新行为：失败也清空 image_urls，避免 raw URL 走到 LLM
+    assert req.image_urls == []
     print("✓ test_attach_failure_uses_template")
 
 
@@ -263,7 +264,8 @@ def test_attach_index_continues():
     )
     assert "【图片1：desc-a】" in req.prompt
     assert "【图片2：desc-b】" in req.prompt
-    assert req.image_urls == ["c"]  # 成功的两个被移除
+    # 新行为：被处理过的图片全部清空（含 image_urls 列表中所有项）
+    assert req.image_urls == []
     print("✓ test_attach_index_continues")
 
 
@@ -363,8 +365,8 @@ def test_e2e_mmx_failure_keeps_placeholder():
     with patch.object(p, "_run_mmx", side_effect=fake_run):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
-    # 失败的图片保留在 image_urls，prompt 用失败模板
-    assert req.image_urls == ["https://x.com/a.jpg"]
+    # 新行为：失败也清空 image_urls，prompt 用失败模板
+    assert req.image_urls == []
     assert "【图片1：理解失败：mmx 调用失败或超时】" in req.prompt
     print("✓ test_e2e_mmx_failure_keeps_placeholder")
 
@@ -753,6 +755,209 @@ def test_main_hook_then_residual_strip_endtoend():
     print("✓ test_main_hook_then_residual_strip_endtoend")
 
 
+# ------------------------------------------------------------------ 单测：失败清理
+
+
+def test_attach_clears_image_urls_even_on_failure():
+    """mmx 失败时主钩子仍要清空 image_urls，避免 raw URL 走到 LLM。"""
+    p = new_plugin()
+    req = FakeReq(
+        prompt="看图",
+        image_urls=["https://x.com/a.jpg", "https://x.com/b.jpg"],
+    )
+    # 两条都描述为空（失败）
+    p._attach_descriptions_to_prompt(
+        req,
+        [(1, "https://x.com/a.jpg", ""), (2, "https://x.com/b.jpg", "")],
+        start_index=1,
+        field="image_urls",
+    )
+    # prompt 中插入两个【图片：理解失败】占位
+    assert "【图片1：理解失败" in req.prompt
+    assert "【图片2：理解失败" in req.prompt
+    # image_urls 应被全部清空，不留 raw URL
+    assert req.image_urls == []
+    print("✓ test_attach_clears_image_urls_even_on_failure")
+
+
+def test_attach_clears_extra_parts_even_on_failure():
+    p = new_plugin()
+    parts = [
+        {"type": "text", "text": "hi"},
+        {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
+    ]
+    req = FakeReq(prompt=None, image_urls=[], extra_user_content_parts=parts)
+    p._attach_descriptions_to_prompt(
+        req,
+        [(1, "https://x.com/a.jpg", "")],  # 失败
+        start_index=1,
+        field="extra_user_content_parts",
+    )
+    # image_url 组件被清除，text 保留
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["type"] == "text"
+    assert "【图片1：理解失败" in req.prompt
+    print("✓ test_attach_clears_extra_parts_even_on_failure")
+
+
+def test_attach_clears_contexts_even_on_failure():
+    p = new_plugin()
+    contexts = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
+        ],
+    }]
+    req = FakeReq(prompt=None, image_urls=[], contexts=contexts)
+    p._attach_descriptions_to_prompt(
+        req,
+        [(1, "https://x.com/a.jpg", "")],  # 失败
+        start_index=1,
+        field="contexts",
+        context_target=contexts[0],
+    )
+    assert len(contexts[0]["content"]) == 1
+    assert contexts[0]["content"][0]["type"] == "text"
+    print("✓ test_attach_clears_contexts_even_on_failure")
+
+
+# ------------------------------------------------------------------ 单测：链末全删
+
+
+def test_strip_all_image_urls_removes_everything():
+    p = new_plugin()
+    req = FakeReq(
+        prompt="hi",
+        image_urls=[
+            "https://x.com/a.jpg",
+            "data:image/png;base64,XYZ",
+            "file:///tmp/b.jpg",
+        ],
+        extra_user_content_parts=[
+            {"type": "text", "text": "x"},
+            {"type": "image_url", "image_url": {"url": "https://x.com/c.jpg"}},
+        ],
+        contexts=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "y"},
+                {"type": "image_url", "image_url": {"url": "https://x.com/d.jpg"}},
+            ],
+        }],
+    )
+    n = p._strip_all_image_urls(req)
+    assert n == 5  # 3 image_urls + 1 extra_part + 1 context
+    assert req.image_urls == []
+    assert req.extra_user_content_parts == [{"type": "text", "text": "x"}]
+    assert req.contexts[0]["content"] == [{"type": "text", "text": "y"}]
+    print("✓ test_strip_all_image_urls_removes_everything")
+
+
+def test_strip_all_image_urls_zero_when_nothing():
+    p = new_plugin()
+    req = FakeReq(prompt="hi", image_urls=[], extra_user_content_parts=[], contexts=[])
+    n = p._strip_all_image_urls(req)
+    assert n == 0
+    print("✓ test_strip_all_image_urls_zero_when_nothing")
+
+
+def test_fallback_strip_all_when_configured():
+    """配置开启 strip_all_image_urls_in_fallback 后，链末兑底应全删。"""
+    p = new_plugin(strip_all_image_urls_in_fallback=True)
+    req = FakeReq(
+        prompt="hi",
+        image_urls=["https://x.com/a.jpg"],
+        contexts=[{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": "https://x.com/b.jpg"}}],
+        }],
+    )
+    asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
+    assert req.image_urls == []
+    assert req.contexts[0]["content"] == []
+    print("✓ test_fallback_strip_all_when_configured")
+
+
+def test_fallback_strip_only_data_url_by_default():
+    """默认配置下链末兑底只删 data:base64。"""
+    p = new_plugin()  # 默认 strip_all_image_urls_in_fallback=False
+    req = FakeReq(
+        prompt="hi",
+        image_urls=["https://x.com/a.jpg"],
+        contexts=[{
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": "https://x.com/b.jpg"}}],
+        }],
+    )
+    asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
+    # https URL 保留
+    assert req.image_urls == ["https://x.com/a.jpg"]
+    assert len(req.contexts[0]["content"]) == 1
+    print("✓ test_fallback_strip_only_data_url_by_default")
+
+
+# ------------------------------------------------------------------ 单测：诊断信息
+
+
+def test_diagnose_balance_error():
+    p = new_plugin()
+    # 重置告警缓存
+    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    p._diagnose_mmx_error("API error: insufficient balance (HTTP 200)", "http://x.com/a.jpg")
+    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    print("✓ test_diagnose_balance_error")
+
+
+def test_diagnose_quota_error():
+    p = new_plugin()
+    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    p._diagnose_mmx_error("quota exceeded", "http://x.com/a.jpg")
+    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    print("✓ test_diagnose_quota_error")
+
+
+def test_diagnose_auth_error():
+    p = new_plugin()
+    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    p._diagnose_mmx_error("auth token expired", "http://x.com/a.jpg")
+    assert "auth" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    print("✓ test_diagnose_auth_error")
+
+
+def test_diagnose_argument_error():
+    p = new_plugin()
+    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    p._diagnose_mmx_error("No such file or directory", "http://x.com/a.jpg")
+    assert "argument" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    print("✓ test_diagnose_argument_error")
+
+
+def test_diagnose_unknown_error_no_warning():
+    """未识别的错误不应触发告警。"""
+    p = new_plugin()
+    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    p._diagnose_mmx_error("some unknown error xyz123", "http://x.com/a.jpg")
+    assert main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS == set()
+    print("✓ test_diagnose_unknown_error_no_warning")
+
+
+def test_diagnose_warn_once():
+    """同一个错误 key 不重复告警。"""
+    p = new_plugin()
+    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    p._diagnose_mmx_error("insufficient balance", "http://x.com/a.jpg")
+    p._diagnose_mmx_error("insufficient balance", "http://x.com/b.jpg")
+    # 实际：balance 在 set 中
+    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    # 再调一次不会重复 add（set 长度不变）
+    size_before = len(main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS)
+    p._diagnose_mmx_error("insufficient balance", "http://x.com/c.jpg")
+    size_after = len(main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS)
+    assert size_before == size_after
+    print("✓ test_diagnose_warn_once")
+
+
 # ------------------------------------------------------------------ runner
 
 def run_all():
@@ -797,6 +1002,19 @@ def run_all():
         test_strip_returns_zero_when_nothing,
         test_strip_handles_string_image_url_field,
         test_main_hook_then_residual_strip_endtoend,
+        test_attach_clears_image_urls_even_on_failure,
+        test_attach_clears_extra_parts_even_on_failure,
+        test_attach_clears_contexts_even_on_failure,
+        test_strip_all_image_urls_removes_everything,
+        test_strip_all_image_urls_zero_when_nothing,
+        test_fallback_strip_all_when_configured,
+        test_fallback_strip_only_data_url_by_default,
+        test_diagnose_balance_error,
+        test_diagnose_quota_error,
+        test_diagnose_auth_error,
+        test_diagnose_argument_error,
+        test_diagnose_unknown_error_no_warning,
+        test_diagnose_warn_once,
     ]
     failed = 0
     for t in tests:

@@ -101,5 +101,11 @@
     "type": "bool",
     "hint": "开启后，on_llm_request 钩子每次触发都会输出一行 INFO 日志，包含发现的图片数量。调试不生效时用得上。",
     "default": false
+  },
+  "strip_all_image_urls_in_fallback": {
+    "description": "链末兑底:删除所有 image_url (不仅是 data:base64)",
+    "type": "bool",
+    "hint": "默认关闭，仅删除 data:image/...;base64 残留。开启后，链末兑底钩子会删除所有 image_url 组件（不区分 URL 形式），避免 LLM 报 'unknown variant image_url' 400 错误。代价：主钩子未成功转述的图片信息会丢失。",
+    "default": false
   }
 }

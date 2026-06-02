@@ -69,6 +69,7 @@
 | `redact_sensitive` | bool | `true` | 日志中脱敏 API Key 等 |
 | `cache_descriptions` | bool | `true` | 缓存同 URL 的图像理解结果 |
 | `verbose_logging` | bool | `false` | 冗余日志：on_llm_request 触发时输出图片计数。调试不生效时开启 |
+| `strip_all_image_urls_in_fallback` | bool | `false` | 链末兑底:删除所有 image_url (不仅是 data:base64)。避免 LLM 报 `unknown variant image_url` 400 错误 |
 
 ## 效果示例
 
@@ -89,7 +90,48 @@
 - mmx 调用是同步阻塞的，**首次发图会有一段延迟**（通常 5~20 秒）。
 - 缓存仅对 `http(s)://` URL 生效，base64 / `file://` / 本地路径不缓存（避免文件已删除后缓存悬空）。
 - 历史图片默认不处理（`include_history: false`）。开启会增加上下文 token 消耗，请评估成本。
-- 失败的图片会保留在 `image_urls` 里，并插入失败占位文本，避免 LLM 不知道有图。
+- **mmx 调用失败时不再保留 raw image URL**：插件会清空 `req.image_urls` / `req.extra_user_content_parts` / `req.contexts[].content` 里的 image_url 组件，避免 LLM 同时看到 raw URL 和失败占位造成 400 错误。语义仅靠 prompt 中的【图片{n}：理解失败：...】占位保留。
+
+## 常见问题
+
+### Q1: 看到 `图像理解失败: ..., error=insufficient balance` 怎么办？
+
+插件会识别此类错误并输出一条一次性的诊断提示。**可能原因与解决办法**：
+
+| 原因 | 解决办法 |
+| --- | --- |
+| `minimax_api_key` 对应账户的 vision 额度已用完 | 到 MiniMax 平台后台查看 vision 余额，充值或换 key |
+| Token Plan 面板显示的百分比是 text/image/video 等多额度的总览，vision 走独立计费 | 检查 `mmx quota` 输出，查看 vision 专用额度 |
+| API key 无权访问 vision 能力 | 换一个专用 vision 的 API key |
+
+**验证方法**：
+```bash
+mmx vision describe --image <任意图片路径>
+```
+看是否同样报 insufficient balance。
+
+### Q2: 看到 `Failed to deserialize the JSON body... unknown variant 'image_url', expected 'text'` 怎么办？
+
+这是 LLM provider（最常见是 deepseek 之类纯文本模型）不识别 OpenAI 格式中的 `image_url` 字段报 400。
+
+**原因链**：插件主钩子转图失败 → 残留 `image_url` → LLM 报 400。
+
+**解决办法**（选一个）：
+
+1. **修复主钩子**（推荐）：先看为什么 mmx 转图失败（多半是 Q1 余额问题），修好后插件会自动把 `image_url` 替换为占位文本。
+2. **开启最强兑底**：在本插件配置中把 `strip_all_image_urls_in_fallback` 设为 `true`。这样链末兑底钩子（priority=-10000）会删除**所有** image_url 组件，不仅仅是 base64。**代价**：主钩子未成功转述的图片信息会丢失，LLM 不会看到任何图片描述。
+
+### Q3: 插件好像没起作用，日志完全看不到 `on_llm_request 触发`？
+
+在插件配置里把 `verbose_logging` 设为 `true`，重启 AstrBot。每次 LLM 请求都会多出一行：
+
+```
+[vision_text_bridge] on_llm_request 触发: image_urls=2, extra_parts_images=0,
+contexts_with_images=3, priority=100
+```
+
+如果这行**完全看不到**：插件未被加载，请检查 AstrBot 启动日志。
+如果看到但所有计数都是 0：图片在别的地方（比如 AngelHeart 的内部 SQLite），请看「与 AngelHeart 插件的兼容性」一节。
 
 ## 拦截优先级
 

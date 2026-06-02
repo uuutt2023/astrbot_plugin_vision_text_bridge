@@ -239,29 +239,39 @@ class VisionTextBridgePlugin(Star):
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        """链末兜底：清理所有残留的 data:image/...;base64,...
+        """链末兜底：清理残留的 image_url 组件。
 
         背景：某些插件（如 AngelHeart）的 on_llm_request 钩子会在中途重写
         req.contexts，把图片以 base64 data URL 形式塞回去。仅仅在主钩子
         (priority=DEFAULT_PRIORITY) 中清理会被覆盖。
 
         本钩子使用极低 priority (-10000)，保证在所有插件跑完后才执行。
-        会扫描并删除 req.contexts / req.extra_user_content_parts 中所有
-        形如 ``data:image/...;base64,...`` 的 image_url 组件，避免 LLM
-        收到原始 base64 路径。
+
+        默认行为：仅删除 ``data:image/...;base64,...`` 形式（防 LLM 报
+        "File name too long"）。
+
+        可选行为：配置 ``strip_all_image_urls_in_fallback: true`` 后，
+        **删除所有形式的 image_url 组件**（不仅是 base64）。适用于
+        LLM provider 是 deepseek/anthropic 之类不识别 image_url 的
+        纯文本 provider，以避免上报 400 错误。代价是 LLM 看不到任何
+        图片信息（如果主钩子没成功转述）。
 
         仅删除不调 mmx——主钩子已经处理过这些图片了，重复调反而浪费。
-        但仍会附加一个"【图片：上游未能生成转述】"占位提示，保持语义连续。
         """
         if not self.config.get("enabled", True):
             return
 
         try:
-            removed = self._strip_all_data_url_images(req)
+            if self.config.get("strip_all_image_urls_in_fallback", False):
+                removed = self._strip_all_image_urls(req)
+                tag = "image_url"
+            else:
+                removed = self._strip_all_data_url_images(req)
+                tag = "data:base64"
             if removed and self.config.get("verbose_logging", False):
                 logger.info(
-                    "[vision_text_bridge] 链末兜底: 删除了 %d 个 data:base64 image_url 残留",
-                    removed,
+                    "[vision_text_bridge] 链末兜底: 删除了 %d 个 %s 残留",
+                    removed, tag,
                 )
         except Exception as exc:
             logger.exception("[vision_text_bridge] 链末兜底异常: %s", exc)
@@ -387,12 +397,92 @@ class VisionTextBridgePlugin(Star):
                 )
                 return ""
             except Exception as exc:
+                err_text = str(exc) or ""
+                self._diagnose_mmx_error(err_text, url)
                 logger.warning(
                     "[vision_text_bridge] 图像理解失败: %s, error=%s",
                     self._safe_preview(url),
                     exc,
                 )
                 return ""
+
+    # 常见 mmx 错误模式 → 诊断信息。仅在“该错误首次出现”时告警一次，避免刷屏
+    _DIAGNOSED_MMX_ERRORS: set[str] = set()
+
+    def _diagnose_mmx_error(self, err_text: str, url: str) -> None:
+        """识别常见 mmx 错误并提供诊断提示，避免只看到裸错误信息。
+
+        设计上仅对“首次出现”的错误类型告警一次（类变量缓存），
+        避免多张图连续失败时刷屏。
+        """
+        if not err_text:
+            return
+        lowered = err_text.lower()
+
+        # 余额不足
+        if "insufficient balance" in lowered or "quota" in lowered or "余额" in err_text:
+            self._warn_once(
+                "balance",
+                "[vision_text_bridge] 检测到 mmx 余额/额度不足。可能的原因为："
+                "(1) minimax_api_key 对应的账户 vision 额度已用完；"
+                "(2) Token Plan 面板上看到的百分比是 text/image/video 等多个额度的总体显示，"
+                "vision describe 可能走的是独立计费线路；"
+                "(3) API key 本身无权访问 vision 能力。"
+                "请到 MiniMax 平台后台检查该 API key 的 vision 配额，"
+                "或换一个专用 vision 的 API key。",
+            )
+            return
+
+        # 未登录 / 认证失败
+        if (
+            "auth" in lowered
+            and (
+                "expired" in lowered
+                or "invalid" in lowered
+                or "未" in err_text
+                or "认证" in err_text
+            )
+        ) or "unauthenticated" in lowered:
+            self._warn_once(
+                "auth",
+                "[vision_text_bridge] mmx 认证失败。请检查 minimax_api_key 是否有效，"
+                "或手动执行 `mmx auth login --api-key <key>` 重新登录。",
+            )
+            return
+
+        # 参数错误
+        if (
+            "invalid argument" in lowered
+            or "invalid_parameter" in lowered
+            or "file not found" in lowered
+            or "no such file" in lowered
+        ):
+            self._warn_once(
+                "argument",
+                f"[vision_text_bridge] mmx 参数/路径错误。检查图片 URL 是否可访问：{self._safe_preview(url)}。"
+                "若是本地路径 /AstrBot/data/temp/... 可能已被 AstrBot 清理。",
+            )
+            return
+
+        # 网络问题
+        if (
+            "timeout" in lowered
+            or "connection" in lowered
+            or "network" in lowered
+            or "eof" in lowered
+        ):
+            self._warn_once(
+                "network",
+                "[vision_text_bridge] mmx 调用网络异常。检查 mmx 进程是否能连上 MiniMax。",
+            )
+            return
+
+    def _warn_once(self, key: str, message: str) -> None:
+        """同一个错误 key 只警告一次（跨多次插件调用）。"""
+        if key in VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS:
+            return
+        VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.add(key)
+        logger.warning(message)
 
     def _attach_descriptions_to_prompt(
         self,
@@ -402,11 +492,15 @@ class VisionTextBridgePlugin(Star):
         field: str,
         context_target: dict | None = None,
     ) -> None:
-        """把 ``(index, url, description)`` 列表拼成【图片：...】文本，注入到对应位置。"""
+        """把 ``(index, url, description)`` 列表拼成【图片：...】文本，注入到对应位置。
+
+        重要：**无论 mmx 调用成功还是失败，所有被处理过的 image_url 都会从原字段中清除**。
+        语义靠 prompt 中的占位文本保留：【图片{n}：{description}】 或 【图片{n}：理解失败：...】。
+        这样 LLM 不会同时看到原图 + 占位文本，也不会因为 image_url 字段残留报 400。
+        """
         if not descriptions:
             return
 
-        # 找到所有 description 为空的项（=调用失败），统一用 failure_message 兜底
         placeholder_template = (
             self.config.get("image_placeholder_template", "")
             or "【图片{index}：{description}】"
@@ -416,7 +510,8 @@ class VisionTextBridgePlugin(Star):
         )
 
         rendered_parts: list[str] = []
-        successful_urls: list[str] = []
+        success_count = 0
+        failure_count = 0
         for offset, (orig_index, url, description) in enumerate(descriptions):
             global_index = start_index + offset
             if description:
@@ -425,14 +520,14 @@ class VisionTextBridgePlugin(Star):
                         index=global_index, description=description
                     )
                 )
-                successful_urls.append(url)
+                success_count += 1
             else:
-                # 用失败占位保留图片位置（让 LLM 知道“用户确实发了图但我们没读出来”）
                 rendered_parts.append(
                     failure_template.format(
                         index=global_index, error="mmx 调用失败或超时"
                     )
                 )
+                failure_count += 1
 
         text_block = "\n".join(rendered_parts)
 
@@ -442,17 +537,22 @@ class VisionTextBridgePlugin(Star):
         else:
             req.prompt = text_block
 
-        # 2) 把成功描述的图片从原字段里移除，避免 LLM 仍然按多模态处理
-        # image_urls 字段：最简单，直接清空成功的 URL
-        if field == "image_urls" and req.image_urls:
-            remaining = [u for u in req.image_urls if u not in successful_urls]
-            req.image_urls = remaining
+        # 2) **全部** 清除被处理过的 image_url，不留残留
+        # 这样即使 mmx 调用失败，也不会让 raw image_url 走到 LLM 那里
+        if field == "image_urls":
+            req.image_urls = []
         elif field == "extra_user_content_parts" and req.extra_user_content_parts:
-            self._remove_image_parts(req.extra_user_content_parts, successful_urls)
+            self._remove_all_image_url_parts(req.extra_user_content_parts)
         elif field == "contexts" and context_target is not None:
             content = context_target.get("content")
             if isinstance(content, list):
-                self._remove_image_urls_in_context_list(content, successful_urls)
+                self._remove_all_image_url_components_in_context(content)
+
+        if self.config.get("verbose_logging", False):
+            logger.info(
+                "[vision_text_bridge] field=%s 处理完成: 成功=%d, 失败=%d",
+                field, success_count, failure_count,
+            )
 
     # ------------------------------------------------------------------ 字段提取
 
@@ -559,6 +659,33 @@ class VisionTextBridgePlugin(Star):
         return ""
 
     @staticmethod
+    def _is_image_url_part(part: Any) -> bool:
+        """判断 part 是否是 image_url 类型（不管 URL 形式）。"""
+        if isinstance(part, dict):
+            return part.get("type") == "image_url"
+        return getattr(part, "type", None) == "image_url"
+
+    @staticmethod
+    def _remove_all_image_url_parts(parts: list[Any]) -> None:
+        """就地删除 extra_user_content_parts 中所有 image_url 项，不分 URL。"""
+        keep: list[Any] = []
+        for part in parts:
+            if VisionTextBridgePlugin._is_image_url_part(part):
+                continue
+            keep.append(part)
+        parts[:] = keep
+
+    @staticmethod
+    def _remove_all_image_url_components_in_context(content_list: list[dict]) -> None:
+        """就地删除 contexts.content list 中所有 type=='image_url' 项。"""
+        keep: list[dict] = []
+        for item in content_list:
+            if isinstance(item, dict) and item.get("type") == "image_url":
+                continue
+            keep.append(item)
+        content_list[:] = keep
+
+    @staticmethod
     def _is_data_url(url: str) -> bool:
         """判断是否是 ``data:image/...;base64,...`` 形式的 data URL。"""
         return bool(url) and url.startswith("data:image/") and ";base64," in url[:64]
@@ -605,6 +732,47 @@ class VisionTextBridgePlugin(Star):
                             VisionTextBridgePlugin._context_image_url(item)
                         )
                     ):
+                        removed += 1
+                        continue
+                    kept_ctx.append(item)
+                content[:] = kept_ctx
+
+        return removed
+
+    def _strip_all_image_urls(self, req: ProviderRequest) -> int:
+        """从 req 的三个位置删除**所有** image_url，不区分 URL 形式。
+
+        适用于 LLM provider 不支持 image_url 字段的场景（如 deepseek）。
+        代价是 LLM 完全看不到任何图片信息（如果主钩子未成功转述）。
+        """
+        removed = 0
+
+        # 1. req.image_urls
+        if req.image_urls:
+            removed += len(req.image_urls)
+            req.image_urls = []
+
+        # 2. req.extra_user_content_parts
+        if req.extra_user_content_parts:
+            kept: list[Any] = []
+            for part in req.extra_user_content_parts:
+                if VisionTextBridgePlugin._is_image_url_part(part):
+                    removed += 1
+                    continue
+                kept.append(part)
+            req.extra_user_content_parts[:] = kept
+
+        # 3. req.contexts[].content
+        if req.contexts:
+            for ctx in req.contexts:
+                if not isinstance(ctx, dict):
+                    continue
+                content = ctx.get("content")
+                if not isinstance(content, list):
+                    continue
+                kept_ctx: list[dict] = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "image_url":
                         removed += 1
                         continue
                     kept_ctx.append(item)
