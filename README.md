@@ -10,7 +10,9 @@
 2. 扫描 `req.image_urls`、`req.extra_user_content_parts`、`req.contexts` 三处可能藏图片的地方；
 3. 对每张图片调用 `mmx vision describe --image <url> --prompt <...>`（参考 `astrbot_plugin_MiniMax_CLI`）；
 4. 把返回的描述用 `【图片{n}：<描述>】` 模板回填到 `req.prompt`；
-5. 把图片从原字段里删除，让 LLM 收到的是纯文本请求。
+5. 把图片从原字段里删除，让 LLM 收到的是纯文本请求；
+6. **持久化描述到 SQLite**（跨重启保留），命中后不重复调 mmx；
+7. **提供内置页面** 用于查看 / 搜索 / 删除 / 重新生成缓存。
 
 最终用户看到的是：LLM 能“看懂”图片内容（因为它读到了图片描述），但请求里没有真实的图片二进制，**纯文本多模态替代**。
 
@@ -47,6 +49,7 @@
 1. 把整个 `astrbot_plugin_vision_text_bridge/` 目录复制到 AstrBot 的 `data/plugins/` 下。
 2. 重启 AstrBot，插件会自动加载。
 3. 在 AstrBot 管理面板的插件配置里，按需调整参数（详见下方“配置项”）。
+4. **页面访问**：AstrBot 启动后，插件的 `pages/cache-manager/` 目录会被自动注册为内置页面。可在 AstrBot Dashboard 的插件页进入。
 
 ## 配置项
 
@@ -291,6 +294,72 @@ contexts_with_images=3, priority=100
 如果看到但 `image_urls=0` 且 `contexts_with_images=0` → 图片在别的地方（AngelHeart 内部存储），
 请按上面“完全解决步骤”处理。
 
+## 插件结构
+
+```
+astrbot_plugin_vision_text_bridge/
+├── main.py                  # 主插件（on_llm_request 钩子、web API 注册）
+├── caption_cache.py         # SQLite 描述缓存（独立模块，可复用）
+├── chat_archive_link.py     # Chat Archive 联动检测
+├── _conf_schema.json        # AstrBot 配置 schema
+├── metadata.yaml            # AstrBot 插件元数据
+├── pages/
+│   └── cache-manager/       # AstrBot 内置页面
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+├── test.py                  # 离线测试
+└── README.md
+```
+
+## 缓存管理页面
+
+插件会自动注册一个 AstrBot 内置页面 `cache-manager/`，提供可视化缓存管理：
+
+- **统计卡片**：总条目、命中总数、DB 大小、内存缓存大小、Chat Archive 联动状态
+- **搜索框**：按 URL 或描述模糊匹配
+- **排序**：最新 / 最旧 / 命中最多 / 命中最少
+- **操作**：单条删除、重新生成（重新调 mmx）、导出 JSON、清空全部
+- **Chat Archive 联动刷新**：重新检测 `astrbot_plugin_chat_archive` 是否安装
+
+页面目录结构：
+```
+astrbot_plugin_vision_text_bridge/
+├── pages/
+│   └── cache-manager/
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+```
+
+后端 API（自动注册）：
+| 路径 | 方法 | 作用 |
+| --- | --- | --- |
+| `/{PLUGIN}/cache/stats` | GET | 缓存统计 |
+| `/{PLUGIN}/cache/list` | GET | 分页列表 + 搜索 + 排序 |
+| `/{PLUGIN}/cache/delete` | POST | 删除单条 |
+| `/{PLUGIN}/cache/clear` | POST | 清空全部（含 VACUUM） |
+| `/{PLUGIN}/cache/regenerate` | POST | 重新调 mmx 生成 |
+| `/{PLUGIN}/cache/export` | GET | 导出全部为 JSON |
+| `/{PLUGIN}/chat-archive/refresh` | POST | 重新检测 Chat Archive |
+
+## Chat Archive 联动
+
+如果同时安装 [astrbot_plugin_chat_archive](https://github.com/YukiNo420/astrbot_plugin_chat_archive)，本插件会**自动检测**并在启动日志里提示：
+
+```
+[vision_text_bridge] 检测到 astrbot_plugin_chat_archive，已启用联动: /AstrBot/data/plugins/astrbot_plugin_chat_archive/data/web_cache
+```
+
+**联动机制**：
+
+- Chat Archive 缓存**图片文件**到 `data/web_cache/`
+- 本插件缓存**图片描述**到 `data/caption_cache.sqlite3`
+- 两者使用不同的 SQLite 表/文件系统，**不重复存储**同一份数据
+- 同一张图片：Chat Archive 下载一次，本插件调 mmx 一次 → 后续命中本插件的 SQLite 直接返回描述，**不再调 mmx**
+
+页面右上角的「🔗 Chat Archive 联动」卡片会实时显示状态，点「🔄 刷新」可重新检测。
+
 ## 离线测试
 
 ```bash
@@ -301,7 +370,7 @@ python3 test.py
 应看到：
 
 ```
-PASS: 53/53
+PASS: 66/66
 ```
 
 测试不依赖 AstrBot 真实运行环境，使用 stub 模拟 `astrbot.api` 模块与 `ProviderRequest`。

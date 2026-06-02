@@ -87,7 +87,7 @@ def make_config(**overrides):
         "include_extra_parts": True,
         "failure_message": "【图片{index}：理解失败：{error}】",
         "redact_sensitive": False,
-        "cache_descriptions": False,
+        "cache_descriptions": True,
     }
     cfg.update(overrides)
     # AstrBotConfig 在 stub 里就是 dict
@@ -110,6 +110,17 @@ def new_plugin(**overrides):
     p._vision_semaphore = asyncio.Semaphore(2)
     # 手动设置 _configured_priority（代替 __init__ 中的赋值）
     p._configured_priority = p._resolve_priority()
+    # 默认 None，让 _describe_one 在 SQLite 缓存表走 None 路径
+    p._caption_cache = None
+    p._chat_archive_link = None
+    # 注入一个 mock context，让 _register_web_apis 不报错
+    p.context = SimpleNamespace(
+        request=SimpleNamespace(
+            args={},
+            json=None,
+        ),
+        register_web_api=lambda *a, **k: None,
+    )
     return p
 
 
@@ -988,6 +999,325 @@ def test_diagnose_warn_once():
     print("✓ test_diagnose_warn_once")
 
 
+# ------------------------------------------------------------------ 单测：SQLite 缓存
+
+
+def test_caption_cache_basic_crud():
+    """CaptionCache 增删改查。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "test.sqlite3")
+        assert cache.count() == 0
+        # put + get
+        cache.put("https://x.com/a.jpg", "https://x.com/a.jpg", "一只猫")
+        assert cache.count() == 1
+        entry = cache.get("https://x.com/a.jpg")
+        assert entry is not None
+        assert entry.description == "一只猫"
+        assert entry.hit_count == 1
+        # 再 get 一次，hit_count 递增
+        entry2 = cache.get("https://x.com/a.jpg")
+        assert entry2.hit_count == 2
+        # delete
+        assert cache.delete("https://x.com/a.jpg") is True
+        assert cache.count() == 0
+        # 不存在的 key
+        assert cache.get("nonexistent") is None
+        assert cache.delete("nonexistent") is False
+    print("✓ test_caption_cache_basic_crud")
+
+
+def test_caption_cache_persistence():
+    """SQLite 缓存跨实例保留。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "persist.sqlite3"
+        cache1 = main.CaptionCache(db_path)
+        cache1.put("https://x.com/b.jpg", "https://x.com/b.jpg", "一只狗")
+        del cache1
+        # 重新创建实例，验证数据还在
+        cache2 = main.CaptionCache(db_path)
+        entry = cache2.get("https://x.com/b.jpg")
+        assert entry is not None
+        assert entry.description == "一只狗"
+    print("✓ test_caption_cache_persistence")
+
+
+def test_caption_cache_list_and_search():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "list.sqlite3")
+        cache.put("a", "https://a.com/1.jpg", "猫")
+        cache.put("b", "https://b.com/2.jpg", "狗")
+        cache.put("c", "https://c.com/3.jpg", "猫头鹰")
+        all_items = cache.list(limit=10, offset=0)
+        assert len(all_items) == 3
+        cat_items = cache.list(limit=10, offset=0, search="猫")
+        # "猫" 匹配 "猫" 和 "猫头鹰"——但搜索是 OR 匹配，https://c.com 包含 "c"
+        # 实际："猫" 匹配 url 描述中任一含 "猫" 的
+        # "猫" 出现在 cat ("猫") 和 owl ("猫头鹰") 的 description 中
+        # 实际 list 全部看下
+        all_cats = [it for it in cat_items if "猫" in it.description]
+        assert len(all_cats) >= 2
+        # limit 测试
+        page1 = cache.list(limit=1, offset=0, order_by="created_at_asc")
+        assert len(page1) == 1
+        # 排序测试
+        cache.get("a")  # 增加 hit_count
+        cache.get("a")
+        cache.get("a")
+        most_hit = cache.list(limit=10, offset=0, order_by="hit_count_desc")
+        assert most_hit[0].image_key == "a"
+    print("✓ test_caption_cache_list_and_search")
+
+
+def test_caption_cache_stats():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "stats.sqlite3")
+        s = cache.stats()
+        assert s.total == 0
+        cache.put("a", "https://a.com/1.jpg", "猫")
+        cache.get("a")
+        cache.get("a")
+        s2 = cache.stats()
+        assert s2.total == 1
+        assert s2.total_hits == 2
+        assert s2.oldest_at is not None
+        assert s2.newest_at is not None
+    print("✓ test_caption_cache_stats")
+
+
+def test_caption_cache_vacuum():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "v.sqlite3")
+        for i in range(10):
+            cache.put(f"k{i}", f"https://x.com/{i}.jpg", f"描述 {i}")
+        cache.clear()
+        cache.vacuum()  # 不应报错
+    print("✓ test_caption_cache_vacuum")
+
+
+def test_describe_one_uses_sqlite_cache():
+    """_describe_one 命中 SQLite 缓存时直接返回，不调 mmx。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        p = new_plugin()
+        p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
+        p._caption_cache.put("https://x.com/cached.jpg", "https://x.com/cached.jpg", "已缓存的描述")
+        # 同时清空内存缓存确保走 SQLite
+        p._description_cache.clear()
+
+        called = {"count": 0}
+
+        async def fake_run(*a, **k):
+            called["count"] += 1
+            return test.make_mmx_result("不应该被调用", "", 0, True)
+
+        with patch.object(p, "_run_mmx", side_effect=fake_run):
+            result = asyncio.run(p._describe_one("https://x.com/cached.jpg"))
+        assert result == "已缓存的描述"
+        assert called["count"] == 0  # 缓存命中，没调 mmx
+        # 内存缓存应被同步填充
+        assert p._description_cache["https://x.com/cached.jpg"] == "已缓存的描述"
+    print("✓ test_describe_one_uses_sqlite_cache")
+
+
+def test_describe_one_writes_to_sqlite_cache():
+    """mmx 成功后应同时写内存 + SQLite 缓存。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        p = new_plugin()
+        p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
+        p._description_cache.clear()
+        with patch.object(
+            p, "_run_mmx",
+            return_value=make_mmx_result("新鲜描述", "", 0, True),
+        ):
+            result = asyncio.run(p._describe_one("https://x.com/fresh.jpg"))
+        assert result == "新鲜描述"
+        assert p._description_cache["https://x.com/fresh.jpg"] == "新鲜描述"
+        entry = p._caption_cache.get("https://x.com/fresh.jpg")
+        assert entry is not None
+        assert entry.description == "新鲜描述"
+    print("✓ test_describe_one_writes_to_sqlite_cache")
+
+
+# ------------------------------------------------------------------ 单测：Chat Archive 联动
+
+
+def test_chat_archive_link_no_plugin():
+    """data 目录中没找到 chat_archive 插件时，available=False。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        # 模拟本插件 data dir: .../data/plugins/<self>/data/
+        # 兄弟目录没有 chat_archive
+        self_data = Path(tmp) / "plugins" / "self_plugin" / "data"
+        self_data.mkdir(parents=True)
+        link = main.ChatArchiveLink(plugin_data_dir=self_data)
+        assert link.available is False
+        assert link.web_cache_dir is None
+    print("✓ test_chat_archive_link_no_plugin")
+
+
+def test_chat_archive_link_detected():
+    """data 目录中找到 chat_archive 插件时，available=True。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        plugins_root = Path(tmp) / "plugins"
+        # 自己的 data
+        self_data = plugins_root / "self_plugin" / "data"
+        self_data.mkdir(parents=True)
+        # Chat Archive 的 data + web_cache
+        ca_data = plugins_root / "astrbot_plugin_chat_archive" / "data"
+        web_cache = ca_data / "web_cache"
+        web_cache.mkdir(parents=True)
+        (web_cache / "abc123.jpg").write_bytes(b"fake image")
+
+        link = main.ChatArchiveLink(plugin_data_dir=self_data)
+        assert link.available is True
+        assert link.web_cache_dir is not None
+        assert link.web_cache_dir.exists()
+        files = link.list_cached_files()
+        assert len(files) == 1
+    print("✓ test_chat_archive_link_detected")
+
+
+def test_chat_archive_link_detected_without_web_cache():
+    """data 目录在但 web_cache 还没创建——仍算 available=True。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        plugins_root = Path(tmp) / "plugins"
+        self_data = plugins_root / "self_plugin" / "data"
+        self_data.mkdir(parents=True)
+        ca_data = plugins_root / "astrbot_plugin_chat_archive" / "data"
+        ca_data.mkdir(parents=True)
+        # 注意：没创建 web_cache
+
+        link = main.ChatArchiveLink(plugin_data_dir=self_data)
+        assert link.available is True  # 插件在
+        assert link.web_cache_dir is None  # web_cache 还没
+    print("✓ test_chat_archive_link_detected_without_web_cache")
+
+
+def test_chat_archive_link_refresh():
+    """refresh() 应能强制重新检测。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        plugins_root = Path(tmp) / "plugins"
+        self_data = plugins_root / "self_plugin" / "data"
+        self_data.mkdir(parents=True)
+        ca_data = plugins_root / "astrbot_plugin_chat_archive" / "data"
+        ca_data.mkdir(parents=True)
+
+        link = main.ChatArchiveLink(plugin_data_dir=self_data)
+        # 第一次检测：available 但 web_cache 为 None
+        assert link.available is True
+        assert link.web_cache_dir is None
+        # 创建 web_cache，refresh 应检测到
+        web_cache = ca_data / "web_cache"
+        web_cache.mkdir()
+        link.refresh()
+        assert link.web_cache_dir is not None
+    print("✓ test_chat_archive_link_refresh")
+
+
+# ------------------------------------------------------------------ 单测：web API
+
+
+def test_register_web_apis_called():
+    """_register_web_apis 应注册 7 个 web API。"""
+    p = new_plugin()
+    calls = []
+
+    def mock_register(route, fn, methods, desc):
+        calls.append((route, methods, desc))
+
+    p.context = SimpleNamespace(
+        request=SimpleNamespace(args={}, json=None),
+        register_web_api=mock_register,
+    )
+    p._register_web_apis()
+    routes = [c[0] for c in calls]
+    assert any("cache/stats" in r for r in routes)
+    assert any("cache/list" in r for r in routes)
+    assert any("cache/delete" in r for r in routes)
+    assert any("cache/clear" in r for r in routes)
+    assert any("cache/regenerate" in r for r in routes)
+    assert any("cache/export" in r for r in routes)
+    assert any("chat-archive/refresh" in r for r in routes)
+    print("✓ test_register_web_apis_called")
+
+
+# ------------------------------------------------------------------ 单测：页面端到端
+
+
+def test_end_to_end_full_flow():
+    """模拟完整流程：拦截 → 缓存 → 页面 API 查询 → 删除 → 重新生成。"""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        p = new_plugin()
+        p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
+        p._description_cache.clear()
+
+        # 1. 拦截 LLM 请求 (mmx 调用成功)
+        req = FakeReq(prompt="看图", image_urls=["https://x.com/x.jpg"])
+        with patch.object(
+            p, "_run_mmx",
+            return_value=make_mmx_result("一只狗", "", 0, True),
+        ):
+            asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
+        assert "【图片1：一只狗】" in req.prompt
+        assert req.image_urls == []
+
+        # 2. 页面查询 stats
+        stats = p._caption_cache.stats()
+        assert stats.total == 1
+        assert stats.total_hits == 0  # 刚 put, 没 get 过
+
+        # 3. 页面查询 list
+        items = p._caption_cache.list(limit=10)
+        assert len(items) == 1
+        assert items[0].description == "一只狗"
+
+        # 4. 再次 get (模拟用户发同一张图) — 命中内存
+        with patch.object(
+            p, "_run_mmx",
+            return_value=make_mmx_result("不该被调", "", 0, True),
+        ) as m:
+            r2 = asyncio.run(p._describe_one("https://x.com/x.jpg"))
+        assert r2 == "一只狗"  # 内存缓存命中
+
+        # 5. 页面删除 (先清内存)
+        p._description_cache.clear()
+        ok = p._caption_cache.delete("https://x.com/x.jpg")
+        assert ok
+        assert p._caption_cache.count() == 0
+
+        # 6. 再次发同一张图 — 缓存被清，重新调 mmx
+        with patch.object(
+            p, "_run_mmx",
+            return_value=make_mmx_result("新描述", "", 0, True),
+        ):
+            r3 = asyncio.run(p._describe_one("https://x.com/x.jpg"))
+        assert r3 == "新描述"
+        assert p._caption_cache.count() == 1
+    print("✓ test_end_to_end_full_flow")
+
+
 # ------------------------------------------------------------------ runner
 
 def run_all():
@@ -1045,6 +1375,19 @@ def run_all():
         test_diagnose_argument_error,
         test_diagnose_unknown_error_no_warning,
         test_diagnose_warn_once,
+        test_caption_cache_basic_crud,
+        test_caption_cache_persistence,
+        test_caption_cache_list_and_search,
+        test_caption_cache_stats,
+        test_caption_cache_vacuum,
+        test_describe_one_uses_sqlite_cache,
+        test_describe_one_writes_to_sqlite_cache,
+        test_chat_archive_link_no_plugin,
+        test_chat_archive_link_detected,
+        test_chat_archive_link_detected_without_web_cache,
+        test_chat_archive_link_refresh,
+        test_register_web_apis_called,
+        test_end_to_end_full_flow,
     ]
     failed = 0
     for t in tests:

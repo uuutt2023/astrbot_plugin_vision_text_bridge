@@ -25,6 +25,13 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
+from caption_cache import CaptionCache, CaptionEntry, CacheStats
+from chat_archive_link import ChatArchiveLink
+
+
+# 插件名（用于 web API 路径前缀）
+PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
+
 
 # ---------------------------------------------------------------------------
 # 拦截优先级
@@ -75,8 +82,12 @@ class VisionTextBridgePlugin(Star):
             self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd")
         self.npm_path = shutil.which("npm") or shutil.which("npm.cmd")
 
-        # URL -> 描述的内存缓存。仅对 http(s) URL 生效，base64/file:// 跳过缓存。
+        # SQLite 描述缓存（持久化，跨重启保留）
+        self._caption_cache: CaptionCache | None = None
+        # 内存热缓存（仅当前进程内，避免频繁 SQLite 查询）
         self._description_cache: dict[str, str] = {}
+        # Chat Archive 联动
+        self._chat_archive_link: ChatArchiveLink | None = None
         # 并发控制信号量，初始为 0，在 initialize() 中按配置创建
         self._vision_semaphore: asyncio.Semaphore | None = None
         # 当前插件实例期望的 priority
@@ -140,10 +151,46 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ lifecycle
 
     async def initialize(self) -> None:
-        """AstrBot 启动插件后调用：处理 mmx-cli 安装、预登录、初始化信号量。"""
+        """AstrBot 启动插件后调用：处理 mmx-cli 安装、预登录、初始化缓存、注册页面 API。"""
         max_concurrent = max(1, int(self.config.get("max_concurrent_vision", 3) or 1))
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
 
+        # 1. SQLite 描述缓存
+        try:
+            data_dir = self._get_plugin_data_dir()
+            db_path = data_dir / "caption_cache.sqlite3"
+            self._caption_cache = CaptionCache(db_path)
+            logger.info(
+                "[vision_text_bridge] 描述缓存已初始化: %s (条目数=%d)",
+                db_path,
+                self._caption_cache.count(),
+            )
+        except Exception as exc:
+            logger.exception(
+                "[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc
+            )
+            self._caption_cache = None
+
+        # 2. Chat Archive 联动
+        try:
+            data_dir = self._get_plugin_data_dir()
+            self._chat_archive_link = ChatArchiveLink(plugin_data_dir=data_dir)
+            if self._chat_archive_link.available:
+                logger.info(
+                    "[vision_text_bridge] Chat Archive 联动已启用，web_cache=%s",
+                    self._chat_archive_link.web_cache_dir,
+                )
+        except Exception as exc:
+            logger.exception("[vision_text_bridge] Chat Archive 联动检测失败: %s", exc)
+            self._chat_archive_link = None
+
+        # 3. 注册 web API (缓存管理页面用)
+        try:
+            self._register_web_apis()
+        except Exception as exc:
+            logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
+
+        # 4. mmx-cli 安装与预登录
         if not self.mmx_path and self.config.get("auto_install_cli", False):
             await self._install_mmx_cli()
             self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd")
@@ -166,9 +213,196 @@ class VisionTextBridgePlugin(Star):
             else:
                 await self._login_mmx(api_key)
 
+    def _get_plugin_data_dir(self) -> "Path":
+        """拿到本插件的 data 目录。优先用 StarTools。"""
+        try:
+            from astrbot.api.star import StarTools
+            p = Path(StarTools.get_data_dir())
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            # fallback: 插件目录下的 data 子目录
+            p = Path(__file__).resolve().parent / "data"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+
+    # ------------------------------------------------------------------ 页面 API
+
+    def _register_web_apis(self) -> None:
+        """注册 AstrBot 内置页面使用的后端 API。
+
+        路由路径约定: /{PLUGIN_NAME}/<endpoint>
+        页面中的 bridge.apiGet/apiPost("endpoint") 会转发到这里。
+        """
+        # quart 在 AstrBot 运行时由依赖提供；测试环境下没有，stub 一个
+        try:
+            from quart import jsonify
+        except ImportError:
+            def jsonify(obj):
+                return obj
+
+        def ok(data: Any):
+            return jsonify({"ok": True, "data": data})
+
+        def err(message: str, status: int = 400):
+            return jsonify({"ok": False, "error": message}), status
+
+        # --- GET /cache/stats ---
+        async def api_cache_stats():
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            stats = self._caption_cache.stats()
+            chat_archive = {
+                "available": bool(
+                    self._chat_archive_link and self._chat_archive_link.available
+                ),
+                "web_cache_dir": (
+                    str(self._chat_archive_link.web_cache_dir)
+                    if self._chat_archive_link and self._chat_archive_link.web_cache_dir
+                    else None
+                ),
+            }
+            data = stats.to_dict()
+            data["chat_archive"] = chat_archive
+            data["in_memory_cache_size"] = len(self._description_cache)
+            return ok(data)
+
+        # --- GET /cache/list ---
+        async def api_cache_list():
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            try:
+                request = self.context.request
+                args = request.args if hasattr(request, "args") else {}
+            except Exception:
+                args = {}
+            limit = int(args.get("limit", 50) or 50)
+            offset = int(args.get("offset", 0) or 0)
+            search = (args.get("search", "") or "").strip()
+            order_by = (args.get("order_by", "created_at_desc") or "created_at_desc").strip()
+            entries = self._caption_cache.list(
+                limit=limit, offset=offset, search=search, order_by=order_by
+            )
+            total = self._caption_cache.count(search=search)
+            return ok({
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "items": [e.to_dict() for e in entries],
+            })
+
+        # --- POST /cache/delete ---
+        async def api_cache_delete():
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            try:
+                body = await self.context.request.json
+            except Exception:
+                body = {}
+            key = (body.get("key") or "").strip()
+            if not key:
+                return err("缺少参数 key")
+            # 同时从内存缓存和 SQLite 删
+            self._description_cache.pop(key, None)
+            ok_deleted = self._caption_cache.delete(key)
+            return ok({"deleted": ok_deleted, "key": key})
+
+        # --- POST /cache/clear ---
+        async def api_cache_clear():
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            n = self._caption_cache.clear()
+            self._description_cache.clear()
+            # VACUUM 释放空间
+            try:
+                self._caption_cache.vacuum()
+            except Exception as exc:
+                logger.warning("[vision_text_bridge] VACUUM 失败: %s", exc)
+            return ok({"cleared": n})
+
+        # --- POST /cache/regenerate ---
+        async def api_cache_regenerate():
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            try:
+                body = await self.context.request.json
+            except Exception:
+                body = {}
+            key = (body.get("key") or "").strip()
+            if not key:
+                return err("缺少参数 key")
+            # 从两个缓存删掉
+            self._description_cache.pop(key, None)
+            self._caption_cache.delete(key)
+            # 重新调 mmx 生成
+            new_desc = await self._describe_one(key)
+            return ok({
+                "key": key,
+                "description": new_desc,
+                "ok": bool(new_desc),
+            })
+
+        # --- GET /cache/export ---
+        async def api_cache_export():
+            """导出全部缓存为 JSON（页面上可触发下载）。"""
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            entries = self._caption_cache.list(limit=10000, offset=0)
+            return ok({
+                "exported_at": time.time(),
+                "count": len(entries),
+                "items": [e.to_dict() for e in entries],
+            })
+
+        # --- POST /chat-archive/refresh ---
+        async def api_chat_archive_refresh():
+            """重新检测 Chat Archive 联动状态。"""
+            if self._chat_archive_link is None:
+                return err("Chat Archive 联动未启用")
+            self._chat_archive_link.refresh()
+            return ok({
+                "available": self._chat_archive_link.available,
+                "web_cache_dir": (
+                    str(self._chat_archive_link.web_cache_dir)
+                    if self._chat_archive_link.web_cache_dir
+                    else None
+                ),
+            })
+
+        # 路由: /{PLUGIN_NAME}/<endpoint>
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/cache/stats", api_cache_stats, ["GET"], "Cache stats"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/cache/list", api_cache_list, ["GET"], "Cache list"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/cache/delete", api_cache_delete, ["POST"], "Delete cache entry"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/cache/clear", api_cache_clear, ["POST"], "Clear all cache"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/cache/regenerate", api_cache_regenerate, ["POST"], "Regenerate entry"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/cache/export", api_cache_export, ["GET"], "Export cache as JSON"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/chat-archive/refresh",
+            api_chat_archive_refresh,
+            ["POST"],
+            "Refresh chat archive link",
+        )
+        logger.info(
+            "[vision_text_bridge] 已注册 7 个 web API 用于缓存管理页面"
+        )
+
     async def terminate(self) -> None:
         """AstrBot 关闭插件时调用：清理缓存。"""
         self._description_cache.clear()
+        # SQLite 连接随 CaptionCache 析构自动关闭
+        self._caption_cache = None
         logger.info("[vision_text_bridge] 插件已卸载，缓存已清理")
 
     # ------------------------------------------------------------------ 拦截主入口
@@ -342,21 +576,33 @@ class VisionTextBridgePlugin(Star):
         return results
 
     async def _describe_one(self, url: str) -> str:
-        """对单张图片执行图像理解，含缓存与超时控制。"""
+        """对单张图片执行图像理解，含多级缓存与超时控制。"""
         url = (url or "").strip()
         if not url:
             return ""
 
-        # 1) 缓存命中
-        if self.config.get("cache_descriptions", True) and self._is_cacheable_url(url):
-            cached = self._description_cache.get(url)
-            if cached is not None:
-                logger.debug(
-                    "[vision_text_bridge] 命中缓存: %s -> %s",
+        cache_enabled = self.config.get("cache_descriptions", True)
+        cacheable = self._is_cacheable_url(url) if cache_enabled else False
+
+        # 1) 内存热缓存
+        if cacheable and url in self._description_cache:
+            logger.debug(
+                "[vision_text_bridge] 命中内存缓存: %s", self._safe_preview(url),
+            )
+            return self._description_cache[url]
+
+        # 2) SQLite 持久化缓存
+        if cacheable and self._caption_cache is not None:
+            entry = self._caption_cache.get(url)
+            if entry is not None:
+                logger.info(
+                    "[vision_text_bridge] 命中 SQLite 缓存: %s (hit_count=%d)",
                     self._safe_preview(url),
-                    self._safe_preview(cached),
+                    entry.hit_count,
                 )
-                return cached
+                # 同步到内存缓存
+                self._description_cache[url] = entry.description
+                return entry.description
 
         # 2) 启动子进程调用 mmx
         timeout = max(5, int(self.config.get("command_timeout", 60) or 60))
@@ -402,8 +648,20 @@ class VisionTextBridgePlugin(Star):
                     elapsed,
                     len(description),
                 )
-                if self.config.get("cache_descriptions", True) and self._is_cacheable_url(url):
+                if cacheable:
+                    # 同时写内存 + SQLite
                     self._description_cache[url] = description
+                    if self._caption_cache is not None:
+                        try:
+                            self._caption_cache.put(
+                                key=url,
+                                url=url,
+                                description=description,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "[vision_text_bridge] 写 SQLite 缓存失败: %s", exc
+                            )
                 return description
 
             # 失败路径：收集 stderr + stdout + returncode
