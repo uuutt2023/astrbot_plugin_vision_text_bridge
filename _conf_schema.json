@@ -95,5 +95,11 @@
     "type": "bool",
     "hint": "开启后，相同 URL 不会重复调用 mmx，可显著降低耗时与 API 成本。仅对 http(s) URL 生效；base64 和 file:// 不缓存。",
     "default": true
+  },
+  "verbose_logging": {
+    "description": "冗余日志（调试用）",
+    "type": "bool",
+    "hint": "开启后，on_llm_request 钩子每次触发都会输出一行 INFO 日志，包含发现的图片数量。调试不生效时用得上。",
+    "default": false
   }
 }

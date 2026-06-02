@@ -68,6 +68,7 @@
 | `failure_message` | string | `【图片{index}：理解失败：{error}】` | mmx 调用失败时的占位文本 |
 | `redact_sensitive` | bool | `true` | 日志中脱敏 API Key 等 |
 | `cache_descriptions` | bool | `true` | 缓存同 URL 的图像理解结果 |
+| `verbose_logging` | bool | `false` | 冗余日志：on_llm_request 触发时输出图片计数。调试不生效时开启 |
 
 ## 效果示例
 
@@ -147,6 +148,80 @@ DEFAULT_PRIORITY = 100
 | 还有插件抢在前面 | 500 ~ 1000 |
 | 调试/排错 | 10000 |
 | 故意让别的插件先处理图片 | 0 或负值 |
+
+## 与 AngelHeart 插件的兼容性
+
+AngelHeart（[astrbot_plugin_angel_heart](https://github.com/kawayiYokami/astrbot_plugin_angel_heart)）有自己的图片转述逻辑。
+日志中看到这类错误是 AngelHeart 内部调用、**与本插件无关**：
+
+```
+[ERRO] [v4.25.2] [core.conversation_ledger:651]: AngelHeart: 图片转述失败:
+[Errno 36] File name too long: 'data:image/webp;base64,UklGRkAFAAB...'
+```
+
+### AngelHeart 内部究竟在做什么？
+
+AngelHeart 在两处会处理图片：
+
+1. **秘书决策后** （`roles.front_desk`）→ `caption_provider.text_chat(image_urls=[base64_data_url])`：
+   AngelHeart 把图片压缩为 webp、编码成 `data:image/webp;base64,xxx` 形式的 data URL，
+   再作为 `image_urls` 列表传给 caption provider。caption provider 内部可能会把第一个 URL 当文件路径打开，
+   于是 `os.open` 拿到一个几百 KB 的 base64 字符串作为路径 → `File name too long`。
+
+2. **on_llm_request 钩子 (priority=50)** → `rewrite_prompt_for_llm`：
+   AngelHeart 会重写 `req.contexts`，把每条消息中的 Image 组件用 `convert_to_base64()` 转成
+   `data:image/jpeg;base64,xxx` 后重新塞进 OpenAI 格式 content 里。**这条路径不走 caption provider**，
+   所以 base64 会原封不动地出现在最终 LLM 请求中。
+
+### 为什么本插件拦不住？
+
+- **“决策后”那次 caption 调用** 是 AngelHeart **直接调** `caption_provider.text_chat()`，
+  **不走任何 AstrBot 钩子**。本插件 priority 调多高都管不到这段代码。
+- **“on_llm_request”那次重写** 确实是钩子，但本插件 priority=100 先跑、清理 `req.contexts` 后，
+  AngelHeart priority=50 会**重新往里塞 base64**，把本插件的清理覆盖。
+
+### 链末兜底机制
+
+为缓解问题，本插件除了主钩子（priority=100）外，**还注册了一个 priority=-10000 的链末兜底钩子**。
+它不做图像理解，只做一件事：**删除所有 `data:image/...;base64,...` 形式的残留**。
+这样无论中间有什么插件往 req 里塞 base64，到最后一个钩子都会被拦下丟除。
+代价是：这些 base64 图片在最终 LLM 请求中会以“图片：[已省略]”占位，
+**不会被转成可读文本**。如果需要转述，请按下面的步骤完全解决问题。
+
+### 完全解决步骤
+
+按顺序执行：
+
+1. **在 AngelHeart 配置中禁用图片转述**：
+   在 AstrBot 管理面板打开 AngelHeart 的设置，将 `image_caption_provider_id` **留空**。
+   保存后 AngelHeart 不会再调 caption，也就不会再出 `File name too long`。
+
+2. **确认本插件 priority 足够高**：
+   本插件默认 priority=100，高于 AngelHeart 的 priority=0 和 priority=50，
+   所以**本插件会先于 AngelHeart 跑**。如果看不到 `[vision_text_bridge] on_llm_request 触发` 日志，
+   请打开 `verbose_logging: true`。
+
+3. **重启 AstrBot** 让 priority 配置生效。
+
+4. **验证**：发一张图，预期看到这些日志：
+   - `[vision_text_bridge] on_llm_request 触发: image_urls=N, ...`
+   - `[vision_text_bridge] 图像理解完成: ..., 耗时=...s, 长度=...`
+   - `[vision_text_bridge] 链末兜底: 删除了 0 个 data:base64 image_url 残留`
+     （非 0 说明 AngelHeart 仍往里塞，需检查 AngelHeart 配置）
+   - LLM 回复中能读出图片描述（如 “图片中是一只… ”）
+
+### 调试技巧
+
+打开 `verbose_logging: true`，每次 LLM 请求都会多一行：
+
+```
+[vision_text_bridge] on_llm_request 触发: image_urls=2, extra_parts_images=0,
+contexts_with_images=3, priority=100
+```
+
+如果这行完全看不到 → 插件未被加载，请检查 AstrBot 启动日志。
+如果看到但 `image_urls=0` 且 `contexts_with_images=0` → 图片在别的地方（AngelHeart 内部存储），
+请按上面“完全解决步骤”处理。
 
 ## 离线测试
 

@@ -198,10 +198,73 @@ class VisionTextBridgePlugin(Star):
                 max(1, int(self.config.get("max_concurrent_vision", 3) or 1))
             )
 
+        # 可选的冗余日志：让用户/调试者能确认钩子被触发
+        if self.config.get("verbose_logging", False):
+            n_image = len(req.image_urls or [])
+            n_extra = sum(
+                1
+                for p in (req.extra_user_content_parts or [])
+                if (isinstance(p, dict) and p.get("type") == "image_url")
+                or (getattr(p, "type", None) == "image_url")
+            )
+            n_ctx = sum(
+                1
+                for c in (req.contexts or [])
+                if isinstance(c, dict)
+                and isinstance(c.get("content"), list)
+                and any(
+                    isinstance(x, dict) and x.get("type") == "image_url"
+                    for x in c.get("content", [])
+                )
+            )
+            logger.info(
+                "[vision_text_bridge] on_llm_request 触发: image_urls=%d, "
+                "extra_parts_images=%d, contexts_with_images=%d, priority=%d",
+                n_image,
+                n_extra,
+                n_ctx,
+                self._configured_priority,
+            )
+
         try:
             await self._process_request(event, req)
         except Exception as exc:  # 防御性兜底，绝不让插件崩溃整个请求
             logger.exception("[vision_text_bridge] 处理请求时发生未捕获异常: %s", exc)
+
+    @filter.on_llm_request(priority=-10000)
+    async def strip_residual_base64(
+        self,
+        event: AstrMessageEvent,
+        req: ProviderRequest,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """链末兜底：清理所有残留的 data:image/...;base64,...
+
+        背景：某些插件（如 AngelHeart）的 on_llm_request 钩子会在中途重写
+        req.contexts，把图片以 base64 data URL 形式塞回去。仅仅在主钩子
+        (priority=DEFAULT_PRIORITY) 中清理会被覆盖。
+
+        本钩子使用极低 priority (-10000)，保证在所有插件跑完后才执行。
+        会扫描并删除 req.contexts / req.extra_user_content_parts 中所有
+        形如 ``data:image/...;base64,...`` 的 image_url 组件，避免 LLM
+        收到原始 base64 路径。
+
+        仅删除不调 mmx——主钩子已经处理过这些图片了，重复调反而浪费。
+        但仍会附加一个"【图片：上游未能生成转述】"占位提示，保持语义连续。
+        """
+        if not self.config.get("enabled", True):
+            return
+
+        try:
+            removed = self._strip_all_data_url_images(req)
+            if removed and self.config.get("verbose_logging", False):
+                logger.info(
+                    "[vision_text_bridge] 链末兜底: 删除了 %d 个 data:base64 image_url 残留",
+                    removed,
+                )
+        except Exception as exc:
+            logger.exception("[vision_text_bridge] 链末兜底异常: %s", exc)
 
     async def _process_request(
         self, event: AstrMessageEvent, req: ProviderRequest
@@ -494,6 +557,60 @@ class VisionTextBridgePlugin(Star):
         if isinstance(image_url, dict):
             return image_url.get("url", "") or ""
         return ""
+
+    @staticmethod
+    def _is_data_url(url: str) -> bool:
+        """判断是否是 ``data:image/...;base64,...`` 形式的 data URL。"""
+        return bool(url) and url.startswith("data:image/") and ";base64," in url[:64]
+
+    def _strip_all_data_url_images(self, req: ProviderRequest) -> int:
+        """从 req 的三个位置扫描并删除 data:base64 image_url 组件。
+
+        Returns:
+            被删除的组件数量（image_urls 中按 URL 算，parts/contexts 中按项算）。
+        """
+        removed = 0
+
+        # 1. req.image_urls：直接过滤 data URL
+        if req.image_urls:
+            kept = [u for u in req.image_urls if not self._is_data_url(u)]
+            removed += len(req.image_urls) - len(kept)
+            req.image_urls = kept
+
+        # 2. req.extra_user_content_parts
+        if req.extra_user_content_parts:
+            kept: list[Any] = []
+            for part in req.extra_user_content_parts:
+                url = VisionTextBridgePlugin._extract_image_url_from_part(part)
+                if url and self._is_data_url(url):
+                    removed += 1
+                    continue
+                kept.append(part)
+            req.extra_user_content_parts[:] = kept
+
+        # 3. req.contexts[].content
+        if req.contexts:
+            for ctx in req.contexts:
+                if not isinstance(ctx, dict):
+                    continue
+                content = ctx.get("content")
+                if not isinstance(content, list):
+                    continue
+                kept_ctx: list[dict] = []
+                for item in content:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "image_url"
+                        and self._is_data_url(
+                            VisionTextBridgePlugin._context_image_url(item)
+                        )
+                    ):
+                        removed += 1
+                        continue
+                    kept_ctx.append(item)
+                content[:] = kept_ctx
+
+        return removed
 
     # ------------------------------------------------------------------ mmx CLI 封装
 

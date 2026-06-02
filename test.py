@@ -614,6 +614,145 @@ def test_priority_out_of_range_warns():
     print("✓ test_priority_out_of_range_warns")
 
 
+# ------------------------------------------------------------------ 单测：链末兜底
+
+
+def test_is_data_url():
+    assert main.VisionTextBridgePlugin._is_data_url("data:image/webp;base64,UklGR") is True
+    assert main.VisionTextBridgePlugin._is_data_url("data:image/png;base64,abc") is True
+    assert main.VisionTextBridgePlugin._is_data_url("data:image/jpeg;base64,/9j/4AAQ") is True
+    assert main.VisionTextBridgePlugin._is_data_url("https://x.com/a.jpg") is False
+    assert main.VisionTextBridgePlugin._is_data_url("file:///tmp/a.jpg") is False
+    assert main.VisionTextBridgePlugin._is_data_url("base64://abc") is False
+    assert main.VisionTextBridgePlugin._is_data_url("") is False
+    print("✓ test_is_data_url")
+
+
+def test_strip_all_data_url_images_image_urls():
+    p = new_plugin()
+    req = FakeReq(
+        prompt="hi",
+        image_urls=[
+            "https://x.com/a.jpg",          # 保留
+            "data:image/webp;base64,ABCD",  # 删
+            "data:image/png;base64,EFG",    # 删
+            "file:///tmp/b.jpg",            # 保留
+        ],
+    )
+    n = p._strip_all_data_url_images(req)
+    assert n == 2
+    assert req.image_urls == ["https://x.com/a.jpg", "file:///tmp/b.jpg"]
+    print("✓ test_strip_all_data_url_images_image_urls")
+
+
+def test_strip_all_data_url_images_extra_parts():
+    p = new_plugin()
+    parts = [
+        {"type": "text", "text": "hi"},
+        {"type": "image_url", "image_url": {"url": "data:image/webp;base64,ABCD"}},
+        {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
+        # pydantic-style 也覆盖
+        SimpleNamespace(type="image_url", image_url="data:image/png;base64,EF"),
+    ]
+    req = FakeReq(prompt=None, image_urls=[], extra_user_content_parts=parts)
+    n = p._strip_all_data_url_images(req)
+    assert n == 2
+    # 只剩 text 和 合法 URL 的 image_url
+    assert len(req.extra_user_content_parts) == 2
+    assert req.extra_user_content_parts[0]["type"] == "text"
+    assert req.extra_user_content_parts[1]["image_url"]["url"] == "https://x.com/a.jpg"
+    print("✓ test_strip_all_data_url_images_extra_parts")
+
+
+def test_strip_all_data_url_images_contexts():
+    p = new_plugin()
+    contexts = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看图"},
+                {"type": "image_url", "image_url": {"url": "data:image/webp;base64,ABCD"}},
+                {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "plain text",
+        },
+    ]
+    req = FakeReq(prompt=None, image_urls=[], contexts=contexts)
+    n = p._strip_all_data_url_images(req)
+    assert n == 1
+    new_content = contexts[0]["content"]
+    assert len(new_content) == 2
+    assert new_content[0]["type"] == "text"
+    assert new_content[1]["image_url"]["url"] == "https://x.com/a.jpg"
+    # assistant 文本不被动
+    assert contexts[1]["content"] == "plain text"
+    print("✓ test_strip_all_data_url_images_contexts")
+
+
+def test_strip_returns_zero_when_nothing():
+    p = new_plugin()
+    req = FakeReq(
+        prompt="hi",
+        image_urls=["https://x.com/a.jpg"],
+        extra_user_content_parts=[{"type": "text", "text": "x"}],
+        contexts=[{"role": "user", "content": "y"}],
+    )
+    n = p._strip_all_data_url_images(req)
+    assert n == 0
+    assert req.image_urls == ["https://x.com/a.jpg"]
+    print("✓ test_strip_returns_zero_when_nothing")
+
+
+def test_strip_handles_string_image_url_field():
+    """ImageURLPart 中 image_url 可能是字符串而非 dict。"""
+    p = new_plugin()
+    parts = [SimpleNamespace(type="image_url", image_url="data:image/webp;base64,XX")]
+    req = FakeReq(prompt=None, image_urls=[], extra_user_content_parts=parts)
+    n = p._strip_all_data_url_images(req)
+    assert n == 1
+    assert req.extra_user_content_parts == []
+    print("✓ test_strip_handles_string_image_url_field")
+
+
+def test_main_hook_then_residual_strip_endtoend():
+    """主钩子处理后，链末兜底会清除剩下的 data:base64 残留。"""
+    p = new_plugin()
+
+    # 模拟主钩子已处理 image_urls，但 req.contexts 里 AngelHeart 又塞了 base64
+    req = FakeReq(
+        prompt="原始",
+        image_urls=[],  # 主钩子已清空
+        contexts=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "看图"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/webp;base64,RESIDUAL"},
+                    },
+                ],
+            }
+        ],
+    )
+
+    async def fake_run(*args, **kwargs):
+        return "ok", ""
+
+    # 直接调链末兜底
+    with patch.object(p, "_run_mmx", side_effect=fake_run):
+        asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
+
+    # base64 应被删除，文本保留
+    new_content = req.contexts[0]["content"]
+    assert len(new_content) == 1
+    assert new_content[0]["type"] == "text"
+    print("✓ test_main_hook_then_residual_strip_endtoend")
+
+
 # ------------------------------------------------------------------ runner
 
 def run_all():
@@ -651,6 +790,13 @@ def run_all():
         test_priority_mismatch_warns_and_updates_global,
         test_priority_match_no_warning,
         test_priority_out_of_range_warns,
+        test_is_data_url,
+        test_strip_all_data_url_images_image_urls,
+        test_strip_all_data_url_images_extra_parts,
+        test_strip_all_data_url_images_contexts,
+        test_strip_returns_zero_when_nothing,
+        test_strip_handles_string_image_url_field,
+        test_main_hook_then_residual_strip_endtoend,
     ]
     failed = 0
     for t in tests:
