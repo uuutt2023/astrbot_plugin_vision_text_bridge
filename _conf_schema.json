@@ -1,0 +1,99 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "hint": "关闭后，插件不会拦截 LLM 请求，也不会调用 MiniMax CLI 图像理解。",
+    "default": true
+  },
+  "priority": {
+    "description": "拦截优先级",
+    "type": "int",
+    "hint": "控制 on_llm_request 钩子相对其他插件的执行顺序。值越大越靠前；默认 100，高于多数常见插件（如 uni_nickname 的 0）。修改后需重启 AstrBot / 重新加载插件生效。",
+    "default": 100
+  },
+  "mmx_path": {
+    "description": "mmx 可执行文件路径",
+    "type": "string",
+    "hint": "留空时自动从 PATH 查找 mmx。安装方式：npm install -g mmx-cli。",
+    "default": ""
+  },
+  "minimax_api_key": {
+    "description": "MiniMax API Key",
+    "type": "string",
+    "hint": "请在 MiniMax 开放平台 Token Plan 页面获取 sk- 开头的 API Key。插件初始化时会执行 mmx auth login --api-key <key> 预登录；若运行环境已提前完成 mmx 登录，可留空。",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "auto_login": {
+    "description": "插件初始化时自动登录 MiniMax CLI",
+    "type": "bool",
+    "hint": "开启后，加载时会使用 minimax_api_key 执行 mmx auth login。已登录过或 API Key 为空时会跳过。",
+    "default": true
+  },
+  "auto_install_cli": {
+    "description": "找不到 mmx 时自动安装 mmx-cli",
+    "type": "bool",
+    "hint": "默认关闭。开启后，如果 PATH 找不到 mmx，会尝试 npm install -g mmx-cli。需要系统已安装 Node.js/npm，且 AstrBot 进程具有全局安装权限。",
+    "default": false
+  },
+  "command_timeout": {
+    "description": "单次 mmx vision describe 超时（秒）",
+    "type": "int",
+    "hint": "图像理解通常需要 10~30 秒；如果图片很大或网络较慢，建议调高。",
+    "default": 60
+  },
+  "max_concurrent_vision": {
+    "description": "单条消息最多并发处理的图片数",
+    "type": "int",
+    "hint": "超过该数量的图片会按串行处理。建议 1~4，避免触发 MiniMax API 限流。",
+    "default": 3
+  },
+  "vision_prompt": {
+    "description": "传给 mmx vision describe 的提示词",
+    "type": "text",
+    "hint": "默认：“请用中文详细描述这张图片的内容，重点关注主体、场景、文字（如有）和关键细节”。模型会基于此提示词生成描述，结果会以【图片：<描述>】形式插入到对话。",
+    "default": "请用中文详细描述这张图片的内容，重点关注主体、场景、文字（如有）和关键细节。"
+  },
+  "image_placeholder_template": {
+    "description": "图片占位符模板",
+    "type": "string",
+    "hint": "支持 {index}（图片序号，从 1 开始）和 {description}（MiniMax 返回的描述）两个变量。默认：\u3010图片{index}：{description}\u3011",
+    "default": "【图片{index}：{description}】"
+  },
+  "max_description_length": {
+    "description": "单张图片描述的最大字符数",
+    "type": "int",
+    "hint": "超过会被截断，避免 LLM 输入过长导致成本飙升或超出上下文窗口。0 表示不限制。",
+    "default": 800
+  },
+  "include_history": {
+    "description": "处理历史对话中的图片",
+    "type": "bool",
+    "hint": "开启后，会扫描 req.contexts 历史记录中的图片并替换为文本。关闭时只处理当前用户消息里的图片。",
+    "default": false
+  },
+  "include_extra_parts": {
+    "description": "处理 extra_user_content_parts 中的图片",
+    "type": "bool",
+    "hint": "开启后，会扫描 req.extra_user_content_parts 中的图片并替换为文本。多数场景下 AstrBot 把图片放在 image_urls 字段，因此可以关闭以提升性能。",
+    "default": true
+  },
+  "failure_message": {
+    "description": "图像理解失败时的占位文本",
+    "type": "string",
+    "hint": "支持 {index}、{error} 变量。默认：\u3010图片{index}：理解失败\uff1a{error}\u3011",
+    "default": "【图片{index}：理解失败：{error}】"
+  },
+  "redact_sensitive": {
+    "description": "在日志中对 API Key、URL token 等敏感字段脱敏",
+    "type": "bool",
+    "hint": "默认开启。关闭后日志会输出完整的图片 URL（可能含有签名参数）。",
+    "default": true
+  },
+  "cache_descriptions": {
+    "description": "缓存同 URL 的图像理解结果",
+    "type": "bool",
+    "hint": "开启后，相同 URL 不会重复调用 mmx，可显著降低耗时与 API 成本。仅对 http(s) URL 生效；base64 和 file:// 不缓存。",
+    "default": true
+  }
+}

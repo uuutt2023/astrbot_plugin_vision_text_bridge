@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 临时 / 日志
+*.log
+*.tmp
+.env
+
+# 私密配置（如果用户复制了）
+_config_user.yaml
