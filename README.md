@@ -94,23 +94,48 @@
 
 ## 常见问题
 
-### Q1: 看到 `图像理解失败: ..., error=insufficient balance` 怎么办？
+### Q0: 看到 `图像理解失败: ..., error=insufficient balance` 怎么办？
 
-插件会识别此类错误并输出一条一次性的诊断提示。**可能原因与解决办法**：
+**先别下结论说“余额不足”**。MiniMax Token Plan 中 `vision describe` 是包含在套餐里的，理论上不该报这个错。看到这个错通常是下列之一：
 
-| 原因 | 解决办法 |
-| --- | --- |
-| `minimax_api_key` 对应账户的 vision 额度已用完 | 到 MiniMax 平台后台查看 vision 余额，充值或换 key |
-| Token Plan 面板显示的百分比是 text/image/video 等多额度的总览，vision 走独立计费 | 检查 `mmx quota` 输出，查看 vision 专用额度 |
-| API key 无权访问 vision 能力 | 换一个专用 vision 的 API key |
+1. **mmx CLI 版本过旧**，调用了一个已废弃的 endpoint → 服务器返回 generic error
+2. **API key 不属于当前 mmx 路由到的环境**（比如用错了 test/staging 的 key）
+3. **mmx 内部把别的错误包装成了 "insufficient balance"**（这在 API 不一致时常见）
+4. **HTTP 200 + error body 这种诡计型错误**（服务器返回 200，但 body 是 error JSON）
 
-**验证方法**：
+插件会识别这些错误并输出一条一次性的诊断提示。**不要只看面板余额，要先手动验证 mmx**：
+
 ```bash
-mmx vision describe --image <任意图片路径>
+# 在 AstrBot 服务器上跑以下命令
+mmx --version
+mmx auth status
+mmx quota
+mmx vision describe --image /path/to/any.png --prompt "描述"
 ```
-看是否同样报 insufficient balance。
 
-### Q2: 看到 `Failed to deserialize the JSON body... unknown variant 'image_url', expected 'text'` 怎么办？
+**对照表**：
+
+| 手动验证结果 | 问题原因 | 怎么办 |
+| --- | --- | --- |
+| 1~3 都成功，第 4 步报 `insufficient balance` | mmx 版本/endpoint 路由错误 | `npm update -g mmx-cli` 更新 mmx |
+| 1~3 成功，第 4 步报 `unauthenticated` / `unauthorized` | API key 权限问题 | 换 key 或检查 key 绑定的环境 |
+| 1~3 成功，第 4 步报 `model not found` / `unknown model` | mmx 版本过旧 | 同上，更新 mmx |
+| 4 步全部成功 | **插件代码 bug** | 把 verbose_logging 打开 + 重发图 + 把日志贴给我 |
+
+**插件 debug 加成**：在配置中打开 `verbose_logging: true`，下次失败时日志会输出 mmx 的完整 stdout/stderr：
+
+```
+[vision_text_bridge] 图像理解失败: ..., exit_code=N, error=...
+[vision_text_bridge] mmx 完整输出:
+--- stdout ---
+<mmx stdout>
+--- stderr ---
+<mmx stderr>
+```
+
+这通常能直接定位问题。
+
+### Q1: 看到 `Failed to deserialize the JSON body... unknown variant 'image_url', expected 'text'` 怎么办？
 
 这是 LLM provider（最常见是 deepseek 之类纯文本模型）不识别 OpenAI 格式中的 `image_url` 字段报 400。
 
@@ -118,10 +143,10 @@ mmx vision describe --image <任意图片路径>
 
 **解决办法**（选一个）：
 
-1. **修复主钩子**（推荐）：先看为什么 mmx 转图失败（多半是 Q1 余额问题），修好后插件会自动把 `image_url` 替换为占位文本。
+1. **修复主钩子**（推荐）：先看为什么 mmx 转图失败（多半是 Q0 余额/版本问题），修好后插件会自动把 `image_url` 替换为占位文本。
 2. **开启最强兑底**：在本插件配置中把 `strip_all_image_urls_in_fallback` 设为 `true`。这样链末兑底钩子（priority=-10000）会删除**所有** image_url 组件，不仅仅是 base64。**代价**：主钩子未成功转述的图片信息会丢失，LLM 不会看到任何图片描述。
 
-### Q3: 插件好像没起作用，日志完全看不到 `on_llm_request 触发`？
+### Q2: 插件好像没起作用，日志完全看不到 `on_llm_request 触发`？
 
 在插件配置里把 `verbose_logging` 设为 `true`，重启 AstrBot。每次 LLM 请求都会多出一行：
 
@@ -132,6 +157,7 @@ contexts_with_images=3, priority=100
 
 如果这行**完全看不到**：插件未被加载，请检查 AstrBot 启动日志。
 如果看到但所有计数都是 0：图片在别的地方（比如 AngelHeart 的内部 SQLite），请看「与 AngelHeart 插件的兼容性」一节。
+
 
 ## 拦截优先级
 
@@ -275,7 +301,7 @@ python3 test.py
 应看到：
 
 ```
-PASS: 20/20
+PASS: 53/53
 ```
 
 测试不依赖 AstrBot 真实运行环境，使用 stub 模拟 `astrbot.api` 模块与 `ProviderRequest`。
@@ -285,3 +311,4 @@ PASS: 20/20
 - [`astrbot_plugin_uni_nickname`](https://github.com/Hakuin123/astrbot_plugin_uni_nickname) — `@filter.on_llm_request()` 拦截 `ProviderRequest` 的标准用法
 - [`astrbot_plugin_MiniMax_CLI`](https://github.com/tanggetian/astrbot_plugin_MiniMax_CLI) — `mmx vision describe` 子进程调用与命令构建方式
 - [AstrBot 文档](https://docs.astrbot.app/) — `ProviderRequest` 字段说明
+

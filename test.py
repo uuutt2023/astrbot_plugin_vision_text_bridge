@@ -123,6 +123,36 @@ class FakeReq:
         self.contexts = contexts or []
 
 
+def make_mmx_result(stdout: str = "", stderr: str = "", returncode: int = 0, ok: bool = True):
+    """模拟 :class:`MmxResult`（main.py 中定义），让老测试能传 (stdout, stderr)。"""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _R:
+        stdout: str
+        stderr: str
+        returncode: int
+        ok: bool
+
+    return _R(stdout, stderr, returncode, ok)
+
+
+def wrap_run(fn):
+    """包装一个返回 (stdout, stderr) 的 async 函数为返回 MmxResult。
+
+    新版 _run_mmx 返回 dataclass，旧测试代码写的是 ``return "x", ""``。
+    这个 wrapper 让旧代码无须修改即可工作。
+    """
+
+    async def wrapper(*args, **kwargs):
+        result = await fn(*args, **kwargs)
+        if isinstance(result, tuple) and len(result) == 2:
+            return make_mmx_result(stdout=result[0], stderr=result[1])
+        return result
+
+    return wrapper
+
+
 # ------------------------------------------------------------------ 单测：工具方法
 
 def test_is_cacheable_url():
@@ -281,7 +311,7 @@ def test_cache_hit():
         called["count"] += 1
         return "fresh", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         result = asyncio.run(p._describe_one("https://x.com/a.jpg"))
     assert result == "cached desc"
     assert called["count"] == 0  # 缓存命中，没调子进程
@@ -305,7 +335,7 @@ def test_e2e_image_urls_only():
     )
     event = SimpleNamespace()
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(event, req))
 
     # prompt 拼接了两张图说
@@ -328,7 +358,7 @@ def test_e2e_extra_parts():
     async def fake_run(*args, **kwargs):
         return "x图说", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
     # 图说被注入 prompt，image_url part 被删除，text part 保留
@@ -347,7 +377,7 @@ def test_e2e_disabled_plugin():
         called["count"] += 1
         return "x", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
     # 关闭时 _process_request 不应被调用（由 bridge_vision_to_text 拦）
     # 这里直接调 _process_request 还是会处理，验证 enabled 拦截在主入口
@@ -362,7 +392,7 @@ def test_e2e_mmx_failure_keeps_placeholder():
         raise RuntimeError("boom")
 
     req = FakeReq(prompt="hi", image_urls=["https://x.com/a.jpg"])
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
     # 新行为：失败也清空 image_urls，prompt 用失败模板
@@ -387,7 +417,7 @@ def test_e2e_history_in_contexts():
     async def fake_run(*args, **kwargs):
         return "历史图说", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
     # 历史 content 里 image_url 被移除，只剩 text
@@ -406,7 +436,7 @@ def test_e2e_truncation_applied():
     async def fake_run(*args, **kwargs):
         return "这是一段很长的描述文字" * 10, ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
     # 描述被截断到 5 个字符 + …
@@ -434,7 +464,7 @@ def test_initialize_triggers_login_with_key():
         calls["args"].append((args, kwargs))
         return "Login successful", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run_mmx)):
         asyncio.run(p.initialize())
 
     # 应调用了一次 mmx auth login --api-key <key>
@@ -459,7 +489,7 @@ def test_initialize_skips_login_when_disabled():
         calls["count"] += 1
         return "", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run_mmx)):
         asyncio.run(p.initialize())
 
     assert calls["count"] == 0
@@ -479,7 +509,7 @@ def test_initialize_skips_login_when_key_empty():
         calls["count"] += 1
         return "", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run_mmx)):
         asyncio.run(p.initialize())
 
     assert calls["count"] == 0
@@ -497,7 +527,7 @@ def test_login_failure_does_not_crash():
     async def fake_run_mmx(*args, **kwargs):
         raise RuntimeError("invalid api key")
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run_mmx)):
         # 应不抛
         asyncio.run(p.initialize())
     print("✓ test_login_failure_does_not_crash")
@@ -516,7 +546,7 @@ def test_initialize_skips_login_when_no_mmx():
         calls["count"] += 1
         return "", ""
 
-    with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run_mmx)):
         asyncio.run(p.initialize())
 
     assert calls["count"] == 0
@@ -745,7 +775,7 @@ def test_main_hook_then_residual_strip_endtoend():
         return "ok", ""
 
     # 直接调链末兜底
-    with patch.object(p, "_run_mmx", side_effect=fake_run):
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
 
     # base64 应被删除，文本保留

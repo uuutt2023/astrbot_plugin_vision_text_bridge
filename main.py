@@ -370,25 +370,7 @@ class VisionTextBridgePlugin(Star):
         async with self._vision_semaphore:
             t0 = time.monotonic()
             try:
-                stdout, stderr = await self._run_mmx(*command, timeout=timeout)
-                elapsed = time.monotonic() - t0
-                description = (stdout or "").strip()
-                if not description:
-                    description = (
-                        (stderr or "").strip()
-                        or "MiniMax CLI 未返回描述文本"
-                    )
-                description = self._truncate(description)
-                logger.info(
-                    "[vision_text_bridge] 图像理解完成: %s, 耗时=%.2fs, 长度=%d",
-                    self._safe_preview(url),
-                    elapsed,
-                    len(description),
-                )
-                # 写缓存
-                if self.config.get("cache_descriptions", True) and self._is_cacheable_url(url):
-                    self._description_cache[url] = description
-                return description
+                result = await self._run_mmx(*command, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning(
                     "[vision_text_bridge] 图像理解超时(%ss): %s",
@@ -400,11 +382,51 @@ class VisionTextBridgePlugin(Star):
                 err_text = str(exc) or ""
                 self._diagnose_mmx_error(err_text, url)
                 logger.warning(
-                    "[vision_text_bridge] 图像理解失败: %s, error=%s",
+                    "[vision_text_bridge] 图像理解异常: %s, error=%s",
                     self._safe_preview(url),
                     exc,
                 )
                 return ""
+
+            elapsed = time.monotonic() - t0
+            stdout = result.stdout
+            stderr = result.stderr
+            returncode = result.returncode
+
+            # 成功路径
+            if result.ok and stdout.strip():
+                description = self._truncate(stdout.strip())
+                logger.info(
+                    "[vision_text_bridge] 图像理解完成: %s, 耗时=%.2fs, 长度=%d",
+                    self._safe_preview(url),
+                    elapsed,
+                    len(description),
+                )
+                if self.config.get("cache_descriptions", True) and self._is_cacheable_url(url):
+                    self._description_cache[url] = description
+                return description
+
+            # 失败路径：收集 stderr + stdout + returncode
+            err_text = (
+                stderr.strip()
+                or stdout.strip()
+                or f"mmx 退出码 {returncode}"
+            )
+            self._diagnose_mmx_error(err_text, url)
+            logger.warning(
+                "[vision_text_bridge] 图像理解失败: %s, exit_code=%d, error=%s",
+                self._safe_preview(url),
+                returncode,
+                self._redact_text(err_text[:300]),
+            )
+            # verbose 模式：打印完整 stdout/stderr（但脱敏），便于诊断
+            if self.config.get("verbose_logging", False):
+                logger.info(
+                    "[vision_text_bridge] mmx 完整输出:\n--- stdout ---\n%s\n--- stderr ---\n%s",
+                    self._redact_text(stdout[:2000]),
+                    self._redact_text(stderr[:2000]),
+                )
+            return ""
 
     # 常见 mmx 错误模式 → 诊断信息。仅在“该错误首次出现”时告警一次，避免刷屏
     _DIAGNOSED_MMX_ERRORS: set[str] = set()
@@ -419,52 +441,84 @@ class VisionTextBridgePlugin(Star):
             return
         lowered = err_text.lower()
 
-        # 余额不足
-        if "insufficient balance" in lowered or "quota" in lowered or "余额" in err_text:
+        # === 1. 余额不足 (优先于 HTTP 200 检查) ===
+        if "insufficient balance" in lowered or "余额" in err_text or ("quota" in lowered and ("exceed" in lowered or "limit" in lowered or "不足" in err_text)):
             self._warn_once(
                 "balance",
-                "[vision_text_bridge] 检测到 mmx 余额/额度不足。可能的原因为："
-                "(1) minimax_api_key 对应的账户 vision 额度已用完；"
-                "(2) Token Plan 面板上看到的百分比是 text/image/video 等多个额度的总体显示，"
-                "vision describe 可能走的是独立计费线路；"
-                "(3) API key 本身无权访问 vision 能力。"
-                "请到 MiniMax 平台后台检查该 API key 的 vision 配额，"
-                "或换一个专用 vision 的 API key。",
+                "[vision_text_bridge] mmx 报 'insufficient balance'。\n"
+                "注意：MiniMax Token Plan 通常应包含 mmx vision describe，\n"
+                "如果你确认是 Token Plan 主账户、但仍报余额不足，可能是：\n"
+                "  (1) mmx 路由到了一个不识别该 API key 的 endpoint；\n"
+                "  (2) 该 key 实际属于另一个环境（staging/test），未在生产 Token Plan 中；\n"
+                "  (3) mmx CLI 版本过旧、调用了已废弃的 endpoint；\n"
+                "  (4) 这个 key 本身是专用的（比如只开 text，vision 未开通）。\n"
+                "排查步骤：\n"
+                "  1. `mmx --version`\n"
+                "  2. `mmx auth status` 看当前绑定的环境\n"
+                "  3. `mmx quota` 看面板是否正常\n"
+                "  4. 手动跑 `mmx vision describe --image <本地图片>` 验证\n"
+                "如果 1~3 都正常但 4 报错，几乎可以确认是 mmx 版本/endpoint 问题，\n"
+                "请加 `verbose_logging: true` 后重试，本插件会输出 mmx 完整 stdout/stderr。",
             )
             return
 
-        # 未登录 / 认证失败
-        if (
-            "auth" in lowered
-            and (
-                "expired" in lowered
-                or "invalid" in lowered
-                or "未" in err_text
-                or "认证" in err_text
+        # === 2. 诡计: HTTP 200 + error body ===
+        if "http 200" in lowered or ("http" in lowered and "error" in lowered and "code" in lowered):
+            self._warn_once(
+                "http200_error_body",
+                "[vision_text_bridge] mmx 返回 HTTP 200 但 body 是 error JSON。\n"
+                "这是一个 **诡计型错误模式**，说明 mmx 进程与 MiniMax API 后端可能协议不匹配，\n"
+                "通常原因有三种：\n"
+                "  (1) mmx CLI 版本过旧，调用的是已废弃的 endpoint；\n"
+                "  (2) API key 在 mmx 路由到的 endpoint 上没有访问权限；\n"
+                "  (3) API key 是另一个环境的（如 test/staging），与生产 Token Plan 不匹配。\n"
+                "调试方法：\n"
+                "  1. `mmx --version` 查看 mmx 版本；\n"
+                "  2. `mmx auth status` 查看当前 key 绑定的环境；\n"
+                "  3. `mmx quota` 查看面板是否能正常查询；\n"
+                "  4. 手动 `mmx vision describe --image <本地图片路径>` 看是报同样错误。\n"
+                "如果 1~3 都能跑、只有第 4 步报错，【几乎肯定】是 mmx 版本/endpoint 问题。",
             )
-        ) or "unauthenticated" in lowered:
+            return
+
+        # === 3. 认证 / 登录问题 ===
+        if (
+            "unauthenticated" in lowered
+            or "unauthorized" in lowered
+            or ("auth" in lowered and ("expired" in lowered or "invalid" in lowered))
+            or "认证失败" in err_text
+            or "未登录" in err_text
+        ):
             self._warn_once(
                 "auth",
-                "[vision_text_bridge] mmx 认证失败。请检查 minimax_api_key 是否有效，"
-                "或手动执行 `mmx auth login --api-key <key>` 重新登录。",
+                "[vision_text_bridge] mmx 认证失败。请检查：\n"
+                "  (1) minimax_api_key 是否有效；\n"
+                "  (2) 环境内是否还残留之前 `mmx auth login` 登录的其他 key\n"
+                "      (检查 `mmx auth status` 看是否覆盖成功)；\n"
+                "  (3) 手动 `mmx auth login --api-key <key>` 重新登录试试。",
             )
             return
 
-        # 参数错误
+        # === 4. 参数 / 路径错误 ===
         if (
             "invalid argument" in lowered
             or "invalid_parameter" in lowered
-            or "file not found" in lowered
             or "no such file" in lowered
+            or "file not found" in lowered
+            or "model not found" in lowered
+            or "unknown model" in lowered
         ):
             self._warn_once(
                 "argument",
-                f"[vision_text_bridge] mmx 参数/路径错误。检查图片 URL 是否可访问：{self._safe_preview(url)}。"
-                "若是本地路径 /AstrBot/data/temp/... 可能已被 AstrBot 清理。",
+                f"[vision_text_bridge] mmx 报参数/模型错误。可能原因：\n"
+                f"  (1) 图片路径不可访问：{self._safe_preview(url)}\n"
+                f"      本地路径 /AstrBot/data/temp/... 可能在 AstrBot 清理后失效；\n"
+                f"  (2) mmx 不识别该模型名（需更新 mmx-cli）。\n"
+                f"调试：手动 `mmx vision describe --image <任意本地图>` 验证。",
             )
             return
 
-        # 网络问题
+        # === 5. 网络问题 ===
         if (
             "timeout" in lowered
             or "connection" in lowered
@@ -473,7 +527,8 @@ class VisionTextBridgePlugin(Star):
         ):
             self._warn_once(
                 "network",
-                "[vision_text_bridge] mmx 调用网络异常。检查 mmx 进程是否能连上 MiniMax。",
+                "[vision_text_bridge] mmx 调用网络异常。检查 mmx 进程能否连上 MiniMax 后端。"
+                "可手动 `mmx quota` 验证网络。",
             )
             return
 
@@ -800,12 +855,27 @@ class VisionTextBridgePlugin(Star):
 
     async def _run_mmx(
         self, *args: str, timeout: int
-    ) -> tuple[str, str]:
-        """异步执行 mmx CLI，返回 ``(stdout, stderr)``。失败抛 RuntimeError。"""
-        if not self.mmx_path:
-            raise RuntimeError("mmx CLI 未配置或未安装")
+    ) -> "MmxResult":
+        """异步执行 mmx CLI，返回 :class:`MmxResult`。
 
-        # 隐藏敏感凭据
+        永不抛异常（除非超时或 mmx 不可执行）；调用者根据 ``returncode`` / ``ok``
+        决定后续处理。这样能把 mmx 的完整 stdout/stderr 交给诊断逻辑。
+
+        Returns:
+            MmxResult 包含 ``stdout`` / ``stderr`` / ``returncode`` / ``ok``。
+        """
+        from dataclasses import dataclass
+
+        @dataclass
+        class _Result:
+            stdout: str
+            stderr: str
+            returncode: int
+            ok: bool
+
+        if not self.mmx_path:
+            return _Result("", "mmx CLI 未配置或未安装", -1, False)
+
         redacted = self._redact(args)
 
         process = await asyncio.create_subprocess_exec(
@@ -829,20 +899,14 @@ class VisionTextBridgePlugin(Star):
                 timeout,
                 " ".join(redacted),
             )
-            raise
+            return _Result("", f"mmx timeout after {timeout}s", -1, False)
 
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
 
-        if process.returncode != 0:
-            message = (
-                stderr_text.strip()
-                or stdout_text.strip()
-                or f"退出码 {process.returncode}"
-            )
-            raise RuntimeError(self._redact_text(message))
-
-        return stdout_text, stderr_text
+        # 诊断：HTTP 200 + error body 的诡异情况
+        ok = process.returncode == 0
+        return _Result(stdout_text, stderr_text, process.returncode, ok)
 
     async def _login_mmx(self, api_key: str) -> None:
         """调用 ``mmx auth login --api-key`` 做预登录。
