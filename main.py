@@ -13,10 +13,13 @@ astrbot_plugin_vision_text_bridge
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import re
 import shutil
+import sys
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -25,8 +28,41 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
-from caption_cache import CaptionCache, CaptionEntry, CacheStats
-from chat_archive_link import ChatArchiveLink
+
+# ---------------------------------------------------------------------------
+# 动态加载同级模块
+# ---------------------------------------------------------------------------
+# AstrBot 加载插件时不会自动把插件目录加到 sys.path，因此不能直接用
+# ``from caption_cache import CaptionCache``。采用 importlib 动态加载
+# 保证 main.py 与同级 .py 文件能在任何加载环境下被一起 import。
+# ---------------------------------------------------------------------------
+def _load_sibling_module(name: str):
+    """加载插件目录下与 main.py 同级的指定 .py 文件。"""
+    here = Path(__file__).resolve().parent
+    target = here / f"{name}.py"
+    if not target.exists():
+        raise ImportError(
+            f"插件目录中找不到依赖文件: {target}。"
+            f"请确认 {name}.py 与 main.py 在同一目录下。"
+        )
+    spec = importlib.util.spec_from_file_location(
+        f"astrbot_plugin_vision_text_bridge.{name}", target
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法创建 spec: {target}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_sibling_cache = _load_sibling_module("caption_cache")
+_sibling_link = _load_sibling_module("chat_archive_link")
+
+CaptionCache = _sibling_cache.CaptionCache
+CaptionEntry = _sibling_cache.CaptionEntry
+CacheStats = _sibling_cache.CacheStats
+ChatArchiveLink = _sibling_link.ChatArchiveLink
 
 
 # 插件名（用于 web API 路径前缀）

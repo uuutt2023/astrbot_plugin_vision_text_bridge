@@ -1413,6 +1413,54 @@ def test_default_image_placeholder_marks_as_vision_model():
     print("✓ test_default_image_placeholder_marks_as_vision_model")
 
 
+# ------------------------------------------------------------------ 单测：插件加载
+
+
+def test_sibling_modules_loaded():
+    """main.py 启动时应能动态加载同级 caption_cache.py / chat_archive_link.py。"""
+    # 验证 import main 后这些类已绑定
+    assert hasattr(main, "CaptionCache")
+    assert hasattr(main, "CaptionEntry")
+    assert hasattr(main, "CacheStats")
+    assert hasattr(main, "ChatArchiveLink")
+    # 验证它们指向实际类（不是 None）
+    assert main.CaptionCache.__name__ == "CaptionCache"
+    assert main.ChatArchiveLink.__name__ == "ChatArchiveLink"
+    print("✓ test_sibling_modules_loaded")
+
+
+def test_main_imports_without_sys_path_modification():
+    """模拟 AstrBot 加载插件的场景：sys.path 中没有插件目录。
+
+    AstrBot 加载插件时不会自动把插件目录加到 sys.path。如果 main.py 用普通
+    ``from caption_cache import ...`` 会报 No module named 'caption_cache'。
+
+    我们的修复：main.py 使用 importlib.util.spec_from_file_location 显式加载
+    同级文件，不依赖 sys.path。
+    """
+    import sys as _sys
+    import importlib.util as _ilu
+    saved_path = list(_sys.path)
+    plugin_dir = "/workspace/astrbot_plugin_vision_text_bridge"
+    # 把插件目录从 sys.path 移除
+    _sys.path = [p for p in _sys.path if p != plugin_dir and p != "."]
+    try:
+        # 模拟 AstrBot 加载：直接用 importlib 加载 main.py
+        spec = _ilu.spec_from_file_location(
+            "main_under_test", f"{plugin_dir}/main.py"
+        )
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # 验证 _load_sibling_module 工作：main.py 模块中应有这些绑定
+        assert hasattr(mod, "CaptionCache"), "CaptionCache 未绑定"
+        assert hasattr(mod, "ChatArchiveLink"), "ChatArchiveLink 未绑定"
+        assert mod.CaptionCache.__name__ == "CaptionCache"
+        assert mod.ChatArchiveLink.__name__ == "ChatArchiveLink"
+    finally:
+        _sys.path = saved_path
+    print("✓ test_main_imports_without_sys_path_modification")
+
+
 # ------------------------------------------------------------------ runner
 
 def run_all():
@@ -1490,6 +1538,8 @@ def run_all():
         test_inject_counts_images_correctly,
         test_default_vision_prompt_is_conservative,
         test_default_image_placeholder_marks_as_vision_model,
+        test_sibling_modules_loaded,
+        test_main_imports_without_sys_path_modification,
     ]
     failed = 0
     for t in tests:
