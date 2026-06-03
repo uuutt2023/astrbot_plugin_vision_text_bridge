@@ -173,9 +173,13 @@ def test_is_cacheable_url():
     assert p._is_cacheable_url("http://x.com/a.jpg") is True
     assert p._is_cacheable_url("https://x.com/a.jpg") is True
     assert p._is_cacheable_url("base64://abc") is False
-    assert p._is_cacheable_url("file:///tmp/a.jpg") is False
+    # v0.8.2: file:// 默认缓存
+    assert p._is_cacheable_url("file:///tmp/a.jpg") is True
     assert p._is_cacheable_url("/tmp/a.jpg") is False
     assert p._is_cacheable_url("") is False
+    # 关闭 cache_file_paths 后
+    p2 = new_plugin(cache_file_paths=False)
+    assert p2._is_cacheable_url("file:///tmp/a.jpg") is False
     print("✓ test_is_cacheable_url")
 
 
@@ -337,19 +341,25 @@ def test_attach_index_continues():
 # ------------------------------------------------------------------ 单测：缓存
 
 def test_cache_hit():
+    """v0.8.2: 缓存用 md5 作 key。同 url 重复调用应命中内存缓存。"""
     p = new_plugin(cache_descriptions=True)
-    p._description_cache["https://x.com/a.jpg"] = "cached desc"
-    # 通过 _describe_one 走缓存路径（mock 子进程，验证不调用 mmx）
+    # 直接调一次写入内存缓存（mock mmx）
     called = {"count": 0}
 
     async def fake_run(*a, **k):
         called["count"] += 1
-        return "fresh", ""
+        return "desc1", ""
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        result = asyncio.run(p._describe_one("https://x.com/a.jpg"))
-    assert result == "cached desc"
-    assert called["count"] == 0  # 缓存命中，没调子进程
+        result1 = asyncio.run(p._describe_one("https://x.com/a.jpg"))
+    assert result1 == "desc1"
+    assert called["count"] == 1
+
+    # 第二次调同一 url——应命中内存缓存，**不**调 mmx
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
+        result2 = asyncio.run(p._describe_one("https://x.com/a.jpg"))
+    assert result2 == "desc1"
+    assert called["count"] == 1  # 不变，命中了
     print("✓ test_cache_hit")
 
 
@@ -1152,11 +1162,17 @@ def test_caption_cache_vacuum():
 def test_describe_one_uses_sqlite_cache():
     """_describe_one 命中 SQLite 缓存时直接返回，不调 mmx。"""
     import tempfile
+    import hashlib
     from pathlib import Path
+    url = "https://x.com/cached.jpg"
+    # v0.8.2: 缓存 key 是 md5(图片内容)。但测试环境下载不到 http URL，
+    # 调 _compute_image_cache_key 会走 fallback url 路径。这里手动算 md5
+    # 作为预填 key（逼以发生进生“下载失败”退到 url 路径）。
+    expected_key = f"url:{url}"
     with tempfile.TemporaryDirectory() as tmp:
         p = new_plugin()
         p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
-        p._caption_cache.put("https://x.com/cached.jpg", "https://x.com/cached.jpg", "已缓存的描述")
+        p._caption_cache.put(expected_key, url, "已缓存的描述")
         # 同时清空内存缓存确保走 SQLite
         p._description_cache.clear()
 
@@ -1167,11 +1183,11 @@ def test_describe_one_uses_sqlite_cache():
             return test.make_mmx_result("不应该被调用", "", 0, True)
 
         with patch.object(p, "_run_mmx", side_effect=fake_run):
-            result = asyncio.run(p._describe_one("https://x.com/cached.jpg"))
+            result = asyncio.run(p._describe_one(url))
         assert result == "已缓存的描述"
         assert called["count"] == 0  # 缓存命中，没调 mmx
         # 内存缓存应被同步填充
-        assert p._description_cache["https://x.com/cached.jpg"] == "已缓存的描述"
+        assert p._description_cache[expected_key] == "已缓存的描述"
     print("✓ test_describe_one_uses_sqlite_cache")
 
 
@@ -1179,6 +1195,8 @@ def test_describe_one_writes_to_sqlite_cache():
     """mmx 成功后应同时写内存 + SQLite 缓存。"""
     import tempfile
     from pathlib import Path
+    url = "https://x.com/fresh.jpg"
+    expected_key = f"url:{url}"  # 退到 url 路径
     with tempfile.TemporaryDirectory() as tmp:
         p = new_plugin()
         p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
@@ -1187,10 +1205,10 @@ def test_describe_one_writes_to_sqlite_cache():
             p, "_run_mmx",
             return_value=make_mmx_result("新鲜描述", "", 0, True),
         ):
-            result = asyncio.run(p._describe_one("https://x.com/fresh.jpg"))
+            result = asyncio.run(p._describe_one(url))
         assert result == "新鲜描述"
-        assert p._description_cache["https://x.com/fresh.jpg"] == "新鲜描述"
-        entry = p._caption_cache.get("https://x.com/fresh.jpg")
+        assert p._description_cache[expected_key] == "新鲜描述"
+        entry = p._caption_cache.get(expected_key)
         assert entry is not None
         assert entry.description == "新鲜描述"
     print("✓ test_describe_one_writes_to_sqlite_cache")
@@ -1351,7 +1369,10 @@ def test_end_to_end_full_flow():
 
         # 5. 页面删除 (先清内存)
         p._description_cache.clear()
-        ok = p._caption_cache.delete("https://x.com/x.jpg")
+        # v0.8.2: 缓存 key 是 md5 或 url
+        # 测试环境 _compute_image_cache_key 走 url fallback
+        key = f"url:https://x.com/x.jpg"
+        ok = p._caption_cache.delete(key)
         assert ok
         assert p._caption_cache.count() == 0
 
@@ -1586,6 +1607,68 @@ def test_mark_providers_skipped_when_config_off():
     # modalities 不变
     assert FakeProvider.provider_config["modalities"] == ["text"]
     print("✓ test_mark_providers_skipped_when_config_off")
+
+
+def test_cache_key_uses_md5_for_file_url():
+    """v0.8.2: file:// 路径的缓存 key 应为图片内容 md5。"""
+    import tempfile
+    from pathlib import Path
+    import hashlib
+    p = new_plugin()
+    # 创建一个临时图片文件
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+        f.write(b"fake image bytes for test")
+        tmp_path = f.name
+    try:
+        file_url = f"file://{tmp_path}"
+        # 读取文件应该能读到这些字节
+        bytes_read = Path(tmp_path).read_bytes()
+        expected_md5 = hashlib.md5(bytes_read).hexdigest()
+        expected_key = f"md5:{expected_md5}"
+        # 调 _compute_image_cache_key
+        key = asyncio.run(p._compute_image_cache_key(file_url))
+        assert key == expected_key, f"expected {expected_key}, got {key}"
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    print("✓ test_cache_key_uses_md5_for_file_url")
+
+
+def test_cache_key_falls_back_to_url_on_read_failure():
+    """读图片字节失败时，key 退到 url。"""
+    p = new_plugin()
+    # 调一个不存在的文件
+    key = asyncio.run(p._compute_image_cache_key("file:///nonexistent/file.jpg"))
+    assert key.startswith("url:")
+    assert "nonexistent" in key
+    print("✓ test_cache_key_falls_back_to_url_on_read_failure")
+
+
+def test_same_image_different_path_hits_cache():
+    """**v0.8.2 关键场景**：同一张图不同路径能命中缓存（QQ 群聊的痛点）。"""
+    import tempfile
+    import hashlib
+    from pathlib import Path
+    p = new_plugin()
+    # 同一张图的两个不同压缩路径（模拟 AstrBot 两次压缩生成不同文件名）
+    img_bytes = b"hello world image"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f1:
+        f1.write(img_bytes)
+        path1 = f1.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f2:
+        f2.write(img_bytes)
+        path2 = f2.name
+    try:
+        url1 = f"file://{path1}"
+        url2 = f"file://{path2}"
+        # 两次调 _compute_image_cache_key，md5 应一样
+        key1 = asyncio.run(p._compute_image_cache_key(url1))
+        key2 = asyncio.run(p._compute_image_cache_key(url2))
+        assert key1 == key2, f"expected same md5 key, got {key1} vs {key2}"
+        assert key1.startswith("md5:")
+    finally:
+        Path(path1).unlink(missing_ok=True)
+        Path(path2).unlink(missing_ok=True)
+    print("✓ test_same_image_different_path_hits_cache")
 
 
 def test_survives_prompt_overwrite_by_other_plugin():
@@ -1842,6 +1925,9 @@ def run_all():
         test_to_text_part_creates_pydantic_object,
         test_mark_providers_adds_image_modality,
         test_mark_providers_skipped_when_config_off,
+        test_cache_key_uses_md5_for_file_url,
+        test_cache_key_falls_back_to_url_on_read_failure,
+        test_same_image_different_path_hits_cache,
     ]
     failed = 0
     for t in tests:

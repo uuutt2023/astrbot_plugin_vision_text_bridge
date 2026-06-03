@@ -93,7 +93,13 @@
   "cache_descriptions": {
     "description": "缓存同 URL 的图像理解结果",
     "type": "bool",
-    "hint": "开启后，相同 URL 不会重复调用 mmx，可显著降低耗时与 API 成本。仅对 http(s) URL 生效；base64 和 file:// 不缓存。",
+    "hint": "开启后，相同 URL 不会重复调用 mmx，可显著降低耗时与 API 成本。**v0.8.2 起**使用图片内容 md5 作为缓存 key，file:// 路径也能命中（看 cache_file_paths）。",
+    "default": true
+  },
+  "cache_file_paths": {
+    "description": "缓存 file:// 本地临时文件",
+    "type": "bool",
+    "hint": "v0.8.2 新增。默认开启：QQ 群聊场景下 AstrBot 会将收到的图存为本地临时文件（file:///AstrBot/data/temp/...），这些路径默认会进入缓存。关闭后 file:// 路径不缓存，只缓存 http(s) URL。",
     "default": true
   },
   "verbose_logging": {

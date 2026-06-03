@@ -92,6 +92,12 @@ PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
 DEFAULT_PRIORITY = 100
 
 
+def _read_file_bytes_sync(path: str) -> bytes:
+    """同步读本地文件。供 asyncio.to_thread 包装。"""
+    with open(path, "rb") as f:
+        return f.read()
+
+
 @register(
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
@@ -821,7 +827,15 @@ class VisionTextBridgePlugin(Star):
         return results
 
     async def _describe_one(self, url: str) -> str:
-        """对单张图片执行图像理解，含多级缓存与超时控制。"""
+        """对单张图片执行图像理解，含多级缓存与超时控制。
+
+        **v0.8.2 缓存键策略**：优先用**图片内容 md5** 作为缓存 key。
+        这能处理以下场景：
+          - **QQ 群聊**：AstrBot 每次压缩图都生成新文件名（带 hash），
+            path 变了但图片内容不变 → 用 path 作 key 永远不命中
+          - **同一张图多次发**：即使 url 完全不同，md5 一样 → 命中
+        对 http(s) URL，如果下载失败，退到用 URL 字符串作 key。
+        """
         url = (url or "").strip()
         if not url:
             return ""
@@ -829,24 +843,29 @@ class VisionTextBridgePlugin(Star):
         cache_enabled = self.config.get("cache_descriptions", True)
         cacheable = self._is_cacheable_url(url) if cache_enabled else False
 
-        # 1) 内存热缓存
-        if cacheable and url in self._description_cache:
-            logger.debug(
-                "[vision_text_bridge] 命中内存缓存: %s", self._safe_preview(url),
-            )
-            return self._description_cache[url]
+        # 计算缓存 key：优先 md5(图片内容)，退到 url 字符串
+        cache_key = None
+        if cacheable:
+            cache_key = await self._compute_image_cache_key(url)
 
-        # 2) SQLite 持久化缓存
-        if cacheable and self._caption_cache is not None:
-            entry = self._caption_cache.get(url)
+        # 1) 内存热缓存（**用 cache_key**，不是 url）
+        if cacheable and cache_key and cache_key in self._description_cache:
+            logger.debug(
+                "[vision_text_bridge] 命中内存缓存: key=%s, url=%s",
+                cache_key[:16], self._safe_preview(url),
+            )
+            return self._description_cache[cache_key]
+
+        # 2) SQLite 持久化缓存（**用 cache_key**）
+        if cacheable and cache_key and self._caption_cache is not None:
+            entry = self._caption_cache.get(cache_key)
             if entry is not None:
                 logger.info(
-                    "[vision_text_bridge] 命中 SQLite 缓存: %s (hit_count=%d)",
-                    self._safe_preview(url),
-                    entry.hit_count,
+                    "[vision_text_bridge] 命中 SQLite 缓存: key=%s, hit_count=%d",
+                    cache_key[:16], entry.hit_count,
                 )
                 # 同步到内存缓存
-                self._description_cache[url] = entry.description
+                self._description_cache[cache_key] = entry.description
                 return entry.description
 
         # 2) 启动子进程调用 mmx
@@ -901,14 +920,14 @@ class VisionTextBridgePlugin(Star):
                     "[vision_text_bridge] 描述预览: %s",
                     self._safe_preview(description, limit=120),
                 )
-                if cacheable:
-                    # 同时写内存 + SQLite
-                    self._description_cache[url] = description
+                if cacheable and cache_key:
+                    # 同时写内存 + SQLite（**用 cache_key**）
+                    self._description_cache[cache_key] = description
                     if self._caption_cache is not None:
                         try:
                             self._caption_cache.put(
-                                key=url,
-                                url=url,
+                                key=cache_key,
+                                url=url,  # 记录原始 url 以供页面查看
                                 description=description,
                             )
                         except Exception as exc:
@@ -1611,13 +1630,71 @@ class VisionTextBridgePlugin(Star):
         # 截断到 max_len 字符再加省略号，避免单字符被吞
         return text[:max_len] + "…"
 
-    @staticmethod
-    def _is_cacheable_url(url: str) -> bool:
-        """只对 ``http(s)://`` URL 做缓存。base64 / file:// / 本地路径都跳过。"""
+    def _is_cacheable_url(self, url: str) -> bool:
+        """判断该 URL 是否应进入缓存。
+
+        默认对以下协议都启用缓存：
+          - ``http://`` / ``https://`` — 远程 URL
+          - ``file://`` — 本地临时文件（QQ 群聊场景下 AstrBot 会将收到的图存为本地临时文件）
+
+        base64 / data URL 不缓存（同一个图会生成不同 base64，缓存会失准）。
+
+        可选配置 ``cache_file_paths: false`` 可以禁用 ``file://`` 路径缓存
+        （例如你认为本地临时文件会被 AstrBot 周期性清理、缓存描述不重要）。
+        """
         if not url:
             return False
         lowered = url.lower()
-        return lowered.startswith("http://") or lowered.startswith("https://")
+        if lowered.startswith("http://") or lowered.startswith("https://"):
+            return True
+        if lowered.startswith("file://"):
+            return bool(self.config.get("cache_file_paths", True))
+        return False
+
+    async def _compute_image_cache_key(self, url: str) -> str:
+        """计算图片缓存 key。
+
+        **策略**：
+          1. 读取图片字节（file://读本地，http(s)://下载）
+          2. 计算 md5(图片内容)
+          3. 返回 ``"md5:<hash>"`` 作为缓存 key
+
+        **如果读取失败**（http 下载超时、文件被删、权限不足），退到用 url 字符串。
+        这样仍然能缓存“url 完全一样”的场景。
+        """
+        try:
+            data = await self._read_image_bytes(url)
+        except Exception as exc:
+            logger.debug(
+                "[vision_text_bridge] 读图片字节失败，缓存 key 退到 url: %s, err=%s",
+                self._safe_preview(url), exc,
+            )
+            return f"url:{url}"
+        if not data:
+            return f"url:{url}"
+        import hashlib
+        h = hashlib.md5(data).hexdigest()
+        return f"md5:{h}"
+
+    async def _read_image_bytes(self, url: str) -> bytes:
+        """读取图片字节。优先本地 file://，退到 http(s):// 下载。"""
+        lowered = url.lower()
+        if lowered.startswith("file://"):
+            # file:///AstrBot/data/temp/foo.jpg → /AstrBot/data/temp/foo.jpg
+            from urllib.parse import unquote
+            path = unquote(url[len("file://"):])
+            # Windows: file:///C:/path → C:/path
+            if path.startswith("/") and len(path) > 2 and path[2] == ":":
+                path = path[1:]
+            return await asyncio.to_thread(_read_file_bytes_sync, path)
+        if lowered.startswith("http://") or lowered.startswith("https://"):
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    resp.raise_for_status()
+                    return await resp.read()
+        # 其他协议：不是应该缓存的（base64 etc.），调用方应提前过滤
+        raise ValueError(f"unsupported scheme for cache key: {url[:50]}")
 
     def _safe_preview(self, text: str, limit: int = 80) -> str:
         """日志预览：超过长度的字符串截断 + 敏感脱敏。"""
