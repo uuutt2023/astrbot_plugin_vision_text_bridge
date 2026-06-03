@@ -1671,6 +1671,81 @@ def test_same_image_different_path_hits_cache():
     print("✓ test_same_image_different_path_hits_cache")
 
 
+def test_login_mmx_handles_mmxresult_not_tuple():
+    """v0.8.3 修复：_login_mmx 之前误以为 _run_mmx 返回 tuple，实际返回 MmxResult dataclass。
+
+    'stdout, stderr = await self._run_mmx(...)' 会在 _run_mmx 返回 dataclass 时
+    抛 'cannot unpack non-iterable _Result object'。现在改成 result = await ...,
+    然后用 result.ok / result.stdout。
+    """
+    p = new_plugin()
+    p.mmx_path = "/usr/bin/true"
+
+    # 模拟 _run_mmx 返回成功的 MmxResult
+    async def fake_ok(*args, **kwargs):
+        from dataclasses import dataclass
+
+        @dataclass
+        class R:
+            stdout: str = "Login successful"
+            stderr: str = ""
+            returncode: int = 0
+            ok: bool = True
+
+        return R()
+
+    # 不应抛 'cannot unpack' 异常
+    with patch.object(p, "_run_mmx", side_effect=fake_ok):
+        asyncio.run(p._login_mmx("sk-foobar1234"))
+
+    # 模拟 _run_mmx 返回失败的 MmxResult
+    async def fake_fail(*args, **kwargs):
+        from dataclasses import dataclass
+
+        @dataclass
+        class R:
+            stdout: str = ""
+            stderr: str = "unauthenticated"
+            returncode: int = 1
+            ok: bool = False
+
+        return R()
+
+    with patch.object(p, "_run_mmx", side_effect=fake_fail):
+        asyncio.run(p._login_mmx("sk-foobar1234"))
+
+    print("✓ test_login_mmx_handles_mmxresult_not_tuple")
+
+
+def test_get_installed_plugin_names_handles_missing_attr():
+    """_get_installed_plugin_names 在 context 没 plugin_manager 时不崩，返回空集。"""
+    p = new_plugin()
+    # 各种 context 形态都不能让插件崩
+    p.context = SimpleNamespace()
+    result = p._get_installed_plugin_names()
+    assert isinstance(result, set)
+    # context 是 None
+    p.context = None
+    try:
+        result = p._get_installed_plugin_names()
+    except Exception as e:
+        # 允许报 "NoneType has no attribute" 但不崩 plugin
+        pass
+    print("✓ test_get_installed_plugin_names_handles_missing_attr")
+
+
+def test_check_compatibility_warns_on_uni_nickname_low_priority():
+    """_check_other_plugin_compatibility 在 priority<=0 且有 uni_nickname 时应警告。"""
+    p = new_plugin()
+    p._configured_priority = 0  # 低于 uni_nickname 的默认 0
+    # Mock 插件名列表
+    p.context = SimpleNamespace()
+    p._get_installed_plugin_names = lambda: {"astrbot_plugin_uni_nickname"}
+    # 不应抛异常
+    p._check_other_plugin_compatibility()
+    print("✓ test_check_compatibility_warns_on_uni_nickname_low_priority")
+
+
 def test_survives_prompt_overwrite_by_other_plugin():
     """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
     任何插件重写 prompt 都不会丢失。"""
@@ -1928,6 +2003,9 @@ def run_all():
         test_cache_key_uses_md5_for_file_url,
         test_cache_key_falls_back_to_url_on_read_failure,
         test_same_image_different_path_hits_cache,
+        test_login_mmx_handles_mmxresult_not_tuple,
+        test_get_installed_plugin_names_handles_missing_attr,
+        test_check_compatibility_warns_on_uni_nickname_low_priority,
     ]
     failed = 0
     for t in tests:

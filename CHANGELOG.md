@@ -7,6 +7,19 @@
 
 无新变更。
 
+## [0.8.3] - 2026-06-03
+
+### 修复
+- **预登录失败**（`cannot unpack non-iterable _Result object`）：`_login_mmx` 之前写的是 `stdout, stderr = await self._run_mmx(...)`——但 `_run_mmx` 返回 `MmxResult` dataclass 对象（不是 tuple），导致 unpack 报错。改为 `result = await self._run_mmx(...)` + `result.ok` 判断。
+
+### 新增
+- **插件联动自动检测**（`_check_other_plugin_compatibility`）：在 `initialize()` 末尾扫描已加载的插件，输出兼容性日志：
+  - 检测到 `astrbot_plugin_chat_archive` → 提示 web_cache 是否可访问
+  - 检测到 `astrbot_plugin_angel_heart` → 提示 priority 是否高于 50
+  - 检测到 `astrbot_plugin_uni_nickname` → 如果 priority <= 0 警告
+  - 检测到 `astrbot_plugin_sylanne` / `_conversation_ledger` / `_minimax_image_caption` → 提示 priority 调高
+  - 用 **try 多套 API 名**（`plugin_manager.plugins` / `get_registered_plugin_names` / `list_plugins`）兼容 AstrBot 4.x 不同子版本。
+
 ## [0.8.2] - 2026-06-03
 
 ### 修复

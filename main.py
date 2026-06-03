@@ -270,6 +270,11 @@ class VisionTextBridgePlugin(Star):
         # 它加上 "image" modality，**骗** AstrBot 不切 fallback。
         self._mark_all_providers_support_image()
 
+        # 6. **检测其他已装插件**并输出兼容性提示
+        # 自动检查常见联动插件（AngelHeart / uni_nickname / Chat Archive / 等）
+        # 并在启动日志中给出 priority/配置建议。
+        self._check_other_plugin_compatibility()
+
     def _get_plugin_data_dir(self) -> "Path":
         """拿到本插件的 data 目录。优先用 StarTools。"""
         try:
@@ -402,6 +407,114 @@ class VisionTextBridgePlugin(Star):
             except Exception:
                 pass
         return out
+
+    def _get_installed_plugin_names(self) -> set[str]:
+        """尽可能拿到 AstrBot 运行时已装/已加载的插件名集合。
+
+        AstrBot 不同版本中 plugin_manager API 名称略有不同，这里采用 **黑魔法
+        兼容**。失败返回空集。
+        """
+        names: set[str] = set()
+        # 1. context.plugin_manager.plugins (dict[name, plugin])
+        try:
+            manager = getattr(self.context, "plugin_manager", None)
+        except Exception:
+            manager = None
+        if manager is not None:
+            provs = getattr(manager, "plugins", None) or getattr(manager, "_plugins", None)
+            if isinstance(provs, dict):
+                names.update(provs.keys())
+            elif isinstance(provs, list):
+                for p in provs:
+                    n = getattr(p, "name", None) or getattr(p, "__name__", None)
+                    if isinstance(n, str):
+                        names.add(n)
+        # 2. context.get_registered_plugin_names() / list_plugins()
+        for meth in ("get_registered_plugin_names", "list_plugin_names", "list_plugins"):
+            fn = getattr(self.context, meth, None)
+            if not callable(fn):
+                continue
+            try:
+                result = fn()
+            except Exception:
+                continue
+            if isinstance(result, (list, tuple, set)):
+                names.update(str(x) for x in result if x)
+        return names
+
+    def _check_other_plugin_compatibility(self) -> None:
+        """检测已装的其他插件并输出联动建议。
+
+        检查项（插件装了就给提示，没装就静默）：
+          - ``astrbot_plugin_angel_heart``：会重写 req.prompt & 重塞 base64，
+            建议在 AstrBot 配置中设 priority >= 100（默认满足）
+          - ``astrbot_plugin_uni_nickname``：会改 req.prompt，需 priority > 0
+          - ``astrbot_plugin_chat_archive``：联动已由 ``_chat_archive_link`` 检测
+          - ``astrbot_plugin_sylanne`` / ``astrbot_plugin_conversation_ledger``：
+            这些插件会处理图片，但与本插件**只要 priority 高于它们**就不冲突
+        """
+        names = self._get_installed_plugin_names()
+        if not names:
+            logger.debug(
+                "[vision_text_bridge] 未检测到插件名列表（AstrBot API 不兼容）"
+                "，跳过联动检查"
+            )
+            return
+        # Chat Archive 已在 _chat_archive_link 中详细检测，这里只补充一条提示
+        if "astrbot_plugin_chat_archive" in names:
+            if self._chat_archive_link and self._chat_archive_link.available:
+                logger.info(
+                    "[vision_text_bridge] ✓ 联动正常: astrbot_plugin_chat_archive 已装且 web_cache 可访问"
+                )
+            else:
+                logger.info(
+                    "[vision_text_bridge] ℹ️ 检测到 astrbot_plugin_chat_archive，"
+                    "但本插件未访问到 web_cache 目录（可能是安装路径不同）。"
+                    "如果需要跨插件共享图片文件，请检查 AstrBot 插件安装路径。"
+                )
+        # AngelHeart 联动提示
+        if "astrbot_plugin_angel_heart" in names:
+            configured = self._configured_priority
+            logger.info(
+                "[vision_text_bridge] ✓ 检测到 astrbot_plugin_angel_heart。"
+                "本插件 priority=%d, AngelHeart 内部重写 contexts (priority=50)；"
+                "本插件 priority %s 50，**会先于** AngelHeart 跑。"
+                "如果遇到 '[Image Attachment: data:image/...]' 错误，"
+                "请检查 AngelHeart 是否启用了 image_caption_provider_id，"
+                "如启用请留空或禁用（详见 README 「与 AngelHeart 兼容性」）。",
+                configured,
+                ">" if configured > 50 else "<=",
+            )
+        # uni_nickname 提示
+        if "astrbot_plugin_uni_nickname" in names:
+            configured = self._configured_priority
+            if configured > 0:
+                logger.info(
+                    "[vision_text_bridge] ✓ 检测到 astrbot_plugin_uni_nickname。"
+                    "本插件 priority=%d, 会先于 uni_nickname (priority=0) 跑。",
+                    configured,
+                )
+            else:
+                logger.warning(
+                    "[vision_text_bridge] 检测到 astrbot_plugin_uni_nickname，"
+                    "但本插件 priority=%d <= 0，uni_nickname 可能会先跑并改动 prompt。"
+                    "建议在配置中把 priority 调到 >= 50。",
+                    configured,
+                )
+        # 其他可能冲突的插件
+        for name in (
+            "astrbot_plugin_sylanne",
+            "astrbot_plugin_conversation_ledger",
+            "astrbot_plugin_minimax_image_caption",
+        ):
+            if name in names:
+                logger.info(
+                    "[vision_text_bridge] ℹ️ 检测到 %s。"
+                    "本插件 priority=%d 高于多数常见插件，"
+                    "应会先于它们跑。但如果你看到图片处理冲突，"
+                    "可以把本插件 priority 调高（500~1000）。",
+                    name, self._configured_priority,
+                )
 
     # ------------------------------------------------------------------ 页面 API
 
@@ -1568,16 +1681,25 @@ class VisionTextBridgePlugin(Star):
         )
         logger.info("[vision_text_bridge] 正在预登录 MiniMax CLI: %s", masked)
         try:
-            stdout, stderr = await self._run_mmx(
+            result = await self._run_mmx(
                 "auth", "login", "--api-key", api_key, timeout=30
             )
-            logger.info(
-                "[vision_text_bridge] MiniMax CLI 预登录成功: %s",
-                (stdout or "").strip() or "(无输出)",
-            )
+            if result.ok:
+                logger.info(
+                    "[vision_text_bridge] MiniMax CLI 预登录成功: %s",
+                    (result.stdout or "").strip() or "(无输出)",
+                )
+            else:
+                logger.warning(
+                    "[vision_text_bridge] MiniMax CLI 预登录失败: returncode=%d, "
+                    "stderr=%s。请检查 minimax_api_key 是否正确，"
+                    "或在环境中手动执行 mmx auth login。",
+                    result.returncode,
+                    (result.stderr or "").strip()[:200],
+                )
         except Exception as exc:
             logger.warning(
-                "[vision_text_bridge] MiniMax CLI 预登录失败: %s。"
+                "[vision_text_bridge] MiniMax CLI 预登录异常: %s。"
                 "请检查 minimax_api_key 是否正确，或在环境中手动执行 mmx auth login。",
                 exc,
             )
