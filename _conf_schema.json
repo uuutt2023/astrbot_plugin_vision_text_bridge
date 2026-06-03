@@ -57,8 +57,8 @@
   "image_placeholder_template": {
     "description": "图片占位符模板",
     "type": "string",
-    "hint": "支持 {index}（图片序号，从 1 开始）和 {description}（mmx 返回的描述）两个变量。默认：【图片{index}（视觉模型描述）：{description}】。“视觉模型描述”提示 LLM 严格引用，不要自己扩充。",
-    "default": "【图片{index}（视觉模型描述）：{description}】"
+    "hint": "支持 {index}（图片序号，从 1 开始）和 {description}（mmx 返回的描述）两个变量。默认：[Image {index} 描述] {description}。从 v0.7 开始，本占位符会作为 user message 的 content block 注入到 req.extra_user_content_parts（不是 prompt 字符串），防止其他插件重写 prompt 时丢失。",
+    "default": "[Image {index} 描述] {description}"
   },
   "max_description_length": {
     "description": "单张图片描述的最大字符数",
@@ -81,8 +81,8 @@
   "failure_message": {
     "description": "图像理解失败时的占位文本",
     "type": "string",
-    "hint": "支持 {index}、{error} 变量。默认：【图片{index}：理解失败：{error}】",
-    "default": "【图片{index}：理解失败：{error}】"
+    "hint": "支持 {index}、{error} 变量。默认：[Image {index} 描述] 理解失败：{error}",
+    "default": "[Image {index} 描述] 理解失败：{error}"
   },
   "redact_sensitive": {
     "description": "在日志中对 API Key、URL token 等敏感字段脱敏",
@@ -105,8 +105,14 @@
   "inject_system_prompt_guidance": {
     "description": "向 system_prompt 注入“严格引用图片描述”提示",
     "type": "bool",
-    "hint": "开启后，插件会向 req.system_prompt 追加一段指示，告诉 LLM 严格基于 prompt 中的【图片1】、【图片2】描述回答，不要凭印象猜测游戏名/补充背景知识。避免 LLM 改写/扩充 mmx 描述。默认开启。",
+    "hint": "开启后，插件会向 req.system_prompt 追加一段指示，告诉 LLM 严格基于 user message 中的 [Image 1 描述] 等标记的描述回答，不要凭印象猜测游戏名/补充背景知识。避免 LLM 改写/扩充 mmx 描述。默认开启。",
     "default": true
+  },
+  "inject_caption_text_to_system_prompt": {
+    "description": "同时把图说本身也注入到 system_prompt（冗余防覆盖）",
+    "type": "bool",
+    "hint": "从 v0.7 开始图说已经在 user message 的 extra_user_content_parts 中，默认 False 节省 token。如果你的部署环境里某个插件连 user message 都重写（极端情况），可开启此选项把图说复制一份到 system_prompt。",
+    "default": false
   },
   "strip_all_image_urls_in_fallback": {
     "description": "链末兑底:删除所有 image_url (不仅是 data:base64)",

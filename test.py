@@ -81,11 +81,11 @@ def make_config(**overrides):
         "command_timeout": 5,
         "max_concurrent_vision": 2,
         "vision_prompt": "请描述这张图片",
-        "image_placeholder_template": "【图片{index}（视觉模型描述）：{description}】",
+        "image_placeholder_template": "[Image {index} 描述] {description}",
         "max_description_length": 0,
         "include_history": False,
         "include_extra_parts": True,
-        "failure_message": "【图片{index}：理解失败：{error}】",
+        "failure_message": "[Image {index} 描述] 理解失败：{error}",
         "redact_sensitive": False,
         "cache_descriptions": True,
         "inject_system_prompt_guidance": True,
@@ -253,6 +253,7 @@ def test_build_vision_command_no_prompt():
 # ------------------------------------------------------------------ 单测：_attach_descriptions_to_prompt
 
 def test_attach_with_prompt():
+    """v0.7 新行为：图说作为 content block 注入到 extra_user_content_parts，不修改 prompt。"""
     p = new_plugin()
     req = FakeReq(prompt="用户问：这是什么", image_urls=["https://x.com/a.jpg"])
     p._attach_descriptions_to_prompt(
@@ -261,13 +262,18 @@ def test_attach_with_prompt():
         start_index=1,
         field="image_urls",
     )
-    assert req.prompt.startswith("用户问：这是什么")
-    assert "【图片1（视觉模型描述）：一只橘猫趴在沙发上】" in req.prompt
-    assert req.image_urls == []  # 成功描述的图片从 image_urls 里移除了
+    # **关键**：prompt 字符串不变
+    assert req.prompt == "用户问：这是什么"
+    # 图说作为 content block 加入
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["type"] == "text"
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 一只橘猫趴在沙发上"
+    assert req.image_urls == []
     print("✓ test_attach_with_prompt")
 
 
 def test_attach_no_prompt():
+    """prompt 为 None 时，只注入 content block。"""
     p = new_plugin()
     req = FakeReq(prompt=None, image_urls=["https://x.com/a.jpg"])
     p._attach_descriptions_to_prompt(
@@ -276,12 +282,17 @@ def test_attach_no_prompt():
         start_index=1,
         field="image_urls",
     )
-    assert req.prompt == "【图片1（视觉模型描述）：一只狗】"
+    # prompt 仍为 None
+    assert req.prompt is None
+    # 图说作为 content block 加入
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 一只狗"
     assert req.image_urls == []
     print("✓ test_attach_no_prompt")
 
 
 def test_attach_failure_uses_template():
+    """mmx 失败时：占位仍注入 content block + 清空 image_urls。"""
     p = new_plugin()
     req = FakeReq(prompt="看图", image_urls=["https://x.com/bad.jpg"])
     p._attach_descriptions_to_prompt(
@@ -290,13 +301,20 @@ def test_attach_failure_uses_template():
         start_index=1,
         field="image_urls",
     )
-    assert "【图片1：理解失败：mmx 调用失败或超时】" in req.prompt
-    # 新行为：失败也清空 image_urls，避免 raw URL 走到 LLM
+    # prompt 不变
+    assert req.prompt == "看图"
+    # 失败占位进入 extra_user_content_parts
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["type"] == "text"
+    assert "理解失败" in req.extra_user_content_parts[0]["text"]
+    assert "mmx 调用失败或超时" in req.extra_user_content_parts[0]["text"]
+    # image_urls 清空
     assert req.image_urls == []
     print("✓ test_attach_failure_uses_template")
 
 
 def test_attach_index_continues():
+    """多张图：每张生成一个独立 content block。"""
     p = new_plugin()
     req = FakeReq(prompt=None, image_urls=["a", "b", "c"])
     p._attach_descriptions_to_prompt(
@@ -305,9 +323,13 @@ def test_attach_index_continues():
         start_index=1,
         field="image_urls",
     )
-    assert "【图片1（视觉模型描述）：desc-a】" in req.prompt
-    assert "【图片2（视觉模型描述）：desc-b】" in req.prompt
-    # 新行为：被处理过的图片全部清空（含 image_urls 列表中所有项）
+    # 两张图说都是 content block
+    assert len(req.extra_user_content_parts) == 2
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] desc-a"
+    assert req.extra_user_content_parts[1]["text"] == "[Image 2 描述] desc-b"
+    # prompt 不变
+    assert req.prompt is None
+    # image_urls 全清
     assert req.image_urls == []
     print("✓ test_attach_index_continues")
 
@@ -351,10 +373,12 @@ def test_e2e_image_urls_only():
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(event, req))
 
-    # prompt 拼接了两张图说
-    assert "帮我看看" in req.prompt
-    assert "【图片1（视觉模型描述）：描述: https://x.com/a.jpg】" in req.prompt
-    assert "【图片2（视觉模型描述）：描述: https://x.com/b.jpg】" in req.prompt
+    # **v0.7 新行为**：prompt 保持原样
+    assert req.prompt == "帮我看看"
+    # 图说作为 content blocks 加入
+    assert len(req.extra_user_content_parts) == 2
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 描述: https://x.com/a.jpg"
+    assert req.extra_user_content_parts[1]["text"] == "[Image 2 描述] 描述: https://x.com/b.jpg"
     # image_urls 都被移除
     assert req.image_urls == []
     print("✓ test_e2e_image_urls_only")
@@ -374,10 +398,12 @@ def test_e2e_extra_parts():
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
-    # 图说被注入 prompt，image_url part 被删除，text part 保留
-    assert "【图片1（视觉模型描述）：x图说】" in req.prompt
-    assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0]["type"] == "text"
+    # 原 text part 保留 + image_url 被删除 + 图说 content block 加上
+    # 总共应该有 2 个 parts：原 "附加说明" + 新图说
+    assert len(req.extra_user_content_parts) == 2
+    assert req.extra_user_content_parts[0] == {"type": "text", "text": "附加说明"}
+    assert req.extra_user_content_parts[1]["type"] == "text"
+    assert req.extra_user_content_parts[1]["text"] == "[Image 1 描述] x图说"
     print("✓ test_e2e_extra_parts")
 
 
@@ -408,9 +434,13 @@ def test_e2e_mmx_failure_keeps_placeholder():
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
-    # 新行为：失败也清空 image_urls，prompt 用失败模板
+    # 失败也清空 image_urls
     assert req.image_urls == []
-    assert "【图片1：理解失败：mmx 调用失败或超时】" in req.prompt
+    # prompt 不变
+    assert req.prompt == "hi"
+    # 失败占位作为 content block 加入
+    assert len(req.extra_user_content_parts) == 1
+    assert "理解失败" in req.extra_user_content_parts[0]["text"]
     print("✓ test_e2e_mmx_failure_keeps_placeholder")
 
 
@@ -437,8 +467,11 @@ def test_e2e_history_in_contexts():
     new_content = contexts[0]["content"]
     assert len(new_content) == 1
     assert new_content[0]["type"] == "text"
-    # 描述注入到了 req.prompt
-    assert "【图片1（视觉模型描述）：历史图说】" in req.prompt
+    # **v0.7**：prompt 字符串不变
+    assert req.prompt == "现在的问题"
+    # 描述作为 content block 注入
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 历史图说"
     print("✓ test_e2e_history_in_contexts")
 
 
@@ -452,11 +485,14 @@ def test_e2e_truncation_applied():
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
-    # 描述被截断到 5 个字符 + …
-    assert "【图片1（视觉模型描述）：" in req.prompt
-    # 截断后是 5 字符 + "…" = 6 字符
-    desc_part = req.prompt.replace("【图片1（视觉模型描述）：", "").rstrip("】")
-    assert len(desc_part) == 6  # 5 字符 + 省略号
+    # prompt 不变
+    assert req.prompt is None
+    # 描述被截断后作为 content block
+    assert len(req.extra_user_content_parts) == 1
+    text = req.extra_user_content_parts[0]["text"]
+    # 5 字符 + "…" = 6 字符内容
+    desc_part = text.replace("[Image 1 描述] ", "")
+    assert len(desc_part) == 6
     assert desc_part.endswith("…")
     print("✓ test_e2e_truncation_applied")
 
@@ -815,10 +851,15 @@ def test_attach_clears_image_urls_even_on_failure():
         start_index=1,
         field="image_urls",
     )
-    # prompt 中插入两个【图片：理解失败】占位
-    assert "【图片1：理解失败" in req.prompt
-    assert "【图片2：理解失败" in req.prompt
-    # image_urls 应被全部清空，不留 raw URL
+    # prompt 不变
+    assert req.prompt == "看图"
+    # 失败占位作为 content block 加上
+    assert len(req.extra_user_content_parts) == 2
+    assert "[Image 1 描述]" in req.extra_user_content_parts[0]["text"]
+    assert "理解失败" in req.extra_user_content_parts[0]["text"]
+    assert "[Image 2 描述]" in req.extra_user_content_parts[1]["text"]
+    assert "理解失败" in req.extra_user_content_parts[1]["text"]
+    # image_urls 应被全部清空
     assert req.image_urls == []
     print("✓ test_attach_clears_image_urls_even_on_failure")
 
@@ -836,10 +877,12 @@ def test_attach_clears_extra_parts_even_on_failure():
         start_index=1,
         field="extra_user_content_parts",
     )
-    # image_url 组件被清除，text 保留
-    assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0]["type"] == "text"
-    assert "【图片1：理解失败" in req.prompt
+    # image_url 组件被清除，原 text 保留 + 失败占位加上
+    assert len(req.extra_user_content_parts) == 2
+    assert req.extra_user_content_parts[0] == {"type": "text", "text": "hi"}
+    assert "理解失败" in req.extra_user_content_parts[1]["text"]
+    # prompt 不变
+    assert req.prompt is None
     print("✓ test_attach_clears_extra_parts_even_on_failure")
 
 
@@ -1282,7 +1325,10 @@ def test_end_to_end_full_flow():
             return_value=make_mmx_result("一只狗", "", 0, True),
         ):
             asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
-        assert "【图片1（视觉模型描述）：一只狗】" in req.prompt
+        # v0.7: prompt 不变，图说在 extra_user_content_parts
+        assert req.prompt == "看图"
+        assert len(req.extra_user_content_parts) == 1
+        assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 一只狗"
         assert req.image_urls == []
 
         # 2. 页面查询 stats
@@ -1324,26 +1370,37 @@ def test_end_to_end_full_flow():
 
 
 def test_inject_system_prompt_guidance_default_on():
-    """默认 inject_system_prompt_guidance=True 时，注入严格引用提示 + 图说本身。"""
+    """v0.7 新行为：图说本身在 user message 的 extra_user_content_parts 里，
+    system_prompt 只追加"严格引用"提示。"""
     p = new_plugin()
-    req = FakeReq(prompt="看图\n\n【图片1（视觉模型描述）：一只狗】\n\n【图片2（视觉模型描述）：一只猫】")
+    req = FakeReq(
+        prompt="看图",
+        extra_user_content_parts=[
+            {"type": "text", "text": "[Image 1 描述] 一只狗"},
+            {"type": "text", "text": "[Image 2 描述] 一只猫"},
+        ],
+    )
     req.system_prompt = "你是一个助手。"
     p._maybe_inject_system_prompt_guidance(req)
-    # 应追加 system_prompt
+    # system_prompt 追加了指导
     assert "[视觉模型描述]" in req.system_prompt
     assert "2 张图片" in req.system_prompt
     assert "严格基于" in req.system_prompt
-    # **关键**：图说本身也注入到 system_prompt （防止 AngelHeart 覆盖 req.prompt 后 LLM 看不到）
-    assert "一只狗" in req.system_prompt
-    assert "一只猫" in req.system_prompt
     # 原始 system_prompt 保留
     assert "你是一个助手。" in req.system_prompt
+    # prompt 不变
+    assert req.prompt == "看图"
     print("✓ test_inject_system_prompt_guidance_default_on")
 
 
 def test_inject_disabled_when_config_off():
     p = new_plugin(inject_system_prompt_guidance=False)
-    req = FakeReq(prompt="看图\n\n【图片1（视觉模型描述）：一只狗】")
+    req = FakeReq(
+        prompt="看图",
+        extra_user_content_parts=[
+            {"type": "text", "text": "[Image 1 描述] 一只狗"},
+        ],
+    )
     req.system_prompt = "你是一个助手。"
     p._maybe_inject_system_prompt_guidance(req)
     # 不应修改
@@ -1352,8 +1409,9 @@ def test_inject_disabled_when_config_off():
 
 
 def test_inject_no_images_in_prompt_no_op():
+    """v0.7: extra_user_content_parts 中没有 [Image N 描述] 标记就不注入。"""
     p = new_plugin()
-    req = FakeReq(prompt="没有图")  # 无【图片x】
+    req = FakeReq(prompt="没有图")
     req.system_prompt = "你是一个助手。"
     p._maybe_inject_system_prompt_guidance(req)
     assert req.system_prompt == "你是一个助手。"
@@ -1361,9 +1419,10 @@ def test_inject_no_images_in_prompt_no_op():
 
 
 def test_survives_prompt_overwrite_by_other_plugin():
-    """模拟 AngelHeart 等插件覆盖 req.prompt 后，system_prompt 仍含图说。"""
+    """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
+    任何插件重写 prompt 都不会丢失。"""
     p = new_plugin()
-    # 1. 主钩子注入 prompt (含【图片1：xxx】) + system_prompt 注入
+    # 1. 主钩子处理 image_urls → 把图说作为 content block 加入
     req = FakeReq(prompt="看图", image_urls=["https://x.com/x.jpg"])
     with patch.object(
         p, "_run_mmx",
@@ -1371,24 +1430,41 @@ def test_survives_prompt_overwrite_by_other_plugin():
     ):
         asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
 
-    # 验证：主钩子处理后 prompt 含【图片1：xxx】, system_prompt 包含图说
-    assert "【图片1（视觉模型描述）：猫】" in req.prompt
-    assert "猫" in req.system_prompt  # system_prompt 里有图说
-    print("  before overwrite: prompt 含占位, system_prompt 含图说")
+    # 验证：主钩子处理后 prompt 字符串不变
+    assert req.prompt == "看图"
+    # 图说在 extra_user_content_parts 里（**不被**任何插件重写）
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 猫"
+    # image_urls 已清空
+    assert req.image_urls == []
+    print("  before overwrite: prompt 字符串不变, 图说在 content block 里")
 
-    # 2. 模拟 AngelHeart 重写 req.prompt（完全覆盖）
+    # 2. 模拟 AngelHeart 重写 req.prompt
     req.prompt = "AngelHeart 重新生成的用户消息：UT 问图片"
+    # 3. 模拟 AngelHeart 重建 contexts
+    req.contexts = [{"role": "user", "content": [{"type": "text", "text": "上轮消息"}]}]
+    # 4. 模拟 AngelHeart 重写 system_prompt
+    req.system_prompt = "scene prompt..."
 
-    # 3. 此时 LLM 看到的 prompt = "AngelHeart 重新生成的..."
-    #    但 system_prompt 仍含完整图说
-    assert "【图片1" not in req.prompt
-    assert "猫" in req.system_prompt  # system_prompt 未被覆盖
+    # 5. LLM 实际看到的 user message content 仍包含图说
+    user_message_content = [
+        {"type": "text", "text": req.prompt},
+    ]
+    user_message_content.extend(req.extra_user_content_parts)
+    # **关键**：图说在 user message 的 content blocks 里，LLM 一定能看到
+    has_caption = any("猫" in (b.get("text", "") or "") for b in user_message_content)
+    assert has_caption, "图说丢失了！"
     print("✓ test_survives_prompt_overwrite_by_other_plugin")
 
 
 def test_inject_creates_system_prompt_if_empty():
     p = new_plugin()
-    req = FakeReq(prompt="看图\n\n【图片1（视觉模型描述）：一只狗】")
+    req = FakeReq(
+        prompt="看图",
+        extra_user_content_parts=[
+            {"type": "text", "text": "[Image 1 描述] 一只狗"},
+        ],
+    )
     req.system_prompt = ""
     p._maybe_inject_system_prompt_guidance(req)
     assert req.system_prompt  # 非空
@@ -1398,22 +1474,37 @@ def test_inject_creates_system_prompt_if_empty():
 
 def test_inject_counts_images_correctly():
     p = new_plugin()
-    req = FakeReq(prompt="""用户消息
-
-【图片1（视觉模型描述）：猫】
-【图片2（视觉模型描述）：狗】
-【图片3（视觉模型描述）：鸟】""")
+    req = FakeReq(
+        prompt="用户消息",
+        extra_user_content_parts=[
+            {"type": "text", "text": "[Image 1 描述] 猫"},
+            {"type": "text", "text": "[Image 2 描述] 狗"},
+            {"type": "text", "text": "[Image 3 描述] 鸟"},
+        ],
+    )
     req.system_prompt = "X"
     p._maybe_inject_system_prompt_guidance(req)
     assert "3 张图片" in req.system_prompt
-    assert "【图片1】" in req.system_prompt
-    assert "【图片2】" in req.system_prompt
-    assert "【图片3】" in req.system_prompt
-    # 所有图说都进入 system_prompt
-    assert "猫" in req.system_prompt
-    assert "狗" in req.system_prompt
-    assert "鸟" in req.system_prompt
+    assert "[Image 1 描述]" in req.system_prompt
+    assert "[Image 2 描述]" in req.system_prompt
+    assert "[Image 3 描述]" in req.system_prompt
     print("✓ test_inject_counts_images_correctly")
+
+
+def test_inject_caption_text_to_system_prompt_optional():
+    """可选配置：注入图说本身到 system_prompt（冗余防覆盖）。"""
+    p = new_plugin(inject_caption_text_to_system_prompt=True)
+    req = FakeReq(
+        prompt="看图",
+        extra_user_content_parts=[
+            {"type": "text", "text": "[Image 1 描述] 猫"},
+        ],
+    )
+    req.system_prompt = "你是一个助手。"
+    p._maybe_inject_system_prompt_guidance(req)
+    # 开启 inject_caption_text_to_system_prompt 时，图说也进入 system_prompt
+    assert "猫" in req.system_prompt
+    print("✓ test_inject_caption_text_to_system_prompt_optional")
 
 
 # ------------------------------------------------------------------ 单测：mmx 提示词默认保守
@@ -1436,11 +1527,12 @@ def test_default_vision_prompt_is_conservative():
 
 
 def test_default_image_placeholder_marks_as_vision_model():
-    """默认 placeholder 应表明是“视觉模型描述”，提示 LLM 严格引用。"""
+    """v0.7 默认 placeholder 是 [Image N 描述] xxx 格式，提示 LLM 这是“描述”不是“原图”。"""
     import json
     schema = json.load(open("/workspace/astrbot_plugin_vision_text_bridge/_conf_schema.json"))
     default = schema["image_placeholder_template"]["default"]
-    assert "视觉模型描述" in default
+    assert "描述" in default  # 中文“描述”提示 LLM
+    assert "[Image" in default  # [Image N 描述] 格式
     assert "{index}" in default
     assert "{description}" in default
     print("✓ test_default_image_placeholder_marks_as_vision_model")

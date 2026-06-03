@@ -851,50 +851,65 @@ class VisionTextBridgePlugin(Star):
         field: str,
         context_target: dict | None = None,
     ) -> None:
-        """把 ``(index, url, description)`` 列表拼成【图片：...】文本，注入到对应位置。
+        """把每张图的描述作为 ``extra_user_content_parts`` 的 text block 注入到 user message。
 
-        重要：**无论 mmx 调用成功还是失败，所有被处理过的 image_url 都会从原字段中清除**。
-        语义靠 prompt 中的占位文本保留：【图片{n}：{description}】 或 【图片{n}：理解失败：...】。
-        这样 LLM 不会同时看到原图 + 占位文本，也不会因为 image_url 字段残留报 400。
+        **设计原因**：
+        其他 on_llm_request 插件（例如 ``astrbot_plugin_angel_heart``）会在自己
+        的优先级中 **完全重写** ``req.prompt`` / ``req.contexts``，这会丢掉我们
+        之前作为 prompt 字符串追加的【图片N：xxx】占位文本。
+
+        AstrBot 的 ``req.extra_user_content_parts`` 是 **user message 的 content
+        block 列表**（多模态 OpenAI 格式），是 **唯一** 不被那些重写插件修改
+        的字段。LLM 看到的会是::
+
+            {"role": "user", "content": [
+                {"type": "text", "text": "@ai酱这是什么图片 妹妹"},
+                {"type": "text", "text": "[Image 1 描述] 这是一张抖音评论区截图..."},
+            ]}
+
+        这样图说作为 user message 的自然组成部分传入，LLM 会把它当作“用户描述
+        给他听”的信息，而不是“prompt 中的人工占位符”。
+
+        **重要**：所有被处理过的 image_url 都会从原字段中清除，避免 LLM 同时
+        看到原图 + 图说（会浪费 token 且可能让 LLM 直接看图，不读图说）。
         """
         if not descriptions:
             return
 
         placeholder_template = (
             self.config.get("image_placeholder_template", "")
-            or "【图片{index}：{description}】"
+            or "[Image {index} 描述] {description}"
         )
         failure_template = (
-            self.config.get("failure_message", "") or "【图片{index}：理解失败：{error}】"
+            self.config.get("failure_message", "")
+            or "[Image {index} 描述] 理解失败：{error}"
         )
 
-        rendered_parts: list[str] = []
+        parts_to_attach: list[dict] = []
         success_count = 0
         failure_count = 0
         for offset, (orig_index, url, description) in enumerate(descriptions):
             global_index = start_index + offset
             if description:
-                rendered_parts.append(
-                    placeholder_template.format(
-                        index=global_index, description=description
-                    )
+                text = placeholder_template.format(
+                    index=global_index, description=description
                 )
                 success_count += 1
             else:
-                rendered_parts.append(
-                    failure_template.format(
-                        index=global_index, error="mmx 调用失败或超时"
-                    )
+                text = failure_template.format(
+                    index=global_index, error="mmx 调用失败或超时"
                 )
                 failure_count += 1
+            parts_to_attach.append({"type": "text", "text": text})
 
-        text_block = "\n".join(rendered_parts)
-
-        # 1) 始终把图说塞进主 prompt：这是用户最关心的输入
-        if req.prompt:
-            req.prompt = f"{req.prompt}\n\n{text_block}"
-        else:
-            req.prompt = text_block
+        # 1) **以 content block 形式** 附加到 req.extra_user_content_parts
+        #    这是 AstrBot 在 _encode_message 中**直接作为 user content block**
+        #    发给 LLM 的字段，且**不被 AngelHeart 等重写插件修改**。
+        if req.extra_user_content_parts is None:
+            req.extra_user_content_parts = []
+        for part in parts_to_attach:
+            # 兼容 AstrBot 的 ContentPart Pydantic 模型：允许 dict 或对象
+            req.extra_user_content_parts.append(part)
 
         # 2) **全部** 清除被处理过的 image_url，不留残留
         # 这样即使 mmx 调用失败，也不会让 raw image_url 走到 LLM 那里
@@ -909,66 +924,85 @@ class VisionTextBridgePlugin(Star):
 
         if self.config.get("verbose_logging", False):
             logger.info(
-                "[vision_text_bridge] field=%s 处理完成: 成功=%d, 失败=%d",
+                "[vision_text_bridge] field=%s 处理完成: 成功=%d, 失败=%d, "
+                "注入位置=extra_user_content_parts",
                 field, success_count, failure_count,
             )
 
     def _maybe_inject_system_prompt_guidance(
         self, req: ProviderRequest
     ) -> None:
-        """向 system_prompt 注入“图说本身 + 严格引用提示”。
+        """向 system_prompt 注入“严格引用图说”提示。
 
-        **为什么必须把图说也注入到 system_prompt**：
-        某些插件（例如 ``astrbot_plugin_angel_heart``）的
-        ``on_llm_request`` 钩子会在它们自己的优先级中 **完全重写**
-        ``req.prompt`` 为它们从 SQLite 重新生成的 final_prompt_str。
-        这会导致我们注入到 ``req.prompt`` 的【图片1：xxx】占位文本
-        被覆盖、丢失。LLM 看到的会是重写后的 prompt（不含图说）。
+        **设计变化**：从 v0.7 开始，图说本身不再注入到 system_prompt，**而是
+        作为 user message 的 content block 注入到 ``req.extra_user_content_parts``**
+        （看 :func:`_attach_descriptions_to_prompt`）。这是因为：
+          1. ``req.extra_user_content_parts`` 是 AstrBot 在 LLM 请求中
+             **直接当 user content block 使用** 的字段，不被任何重写插件修改。
+          2. LLM 看到图说是在 user message 里（更自然），更容易遵守。
+          3. system_prompt 里只留“严格引用”指导，文本量小、token 节省。
 
-        唯一在所有插件链中都被保留的位置是 ``req.system_prompt``。
-        为了让 LLM 仍能看到图说，**我们直接把图说也注入到 system_prompt**，
-        并附上“请严格引用”的指令。
+        本函数：
+          - 检查 ``req.extra_user_content_parts`` 中是否有图说标记（[Image N 描述]）。
+          - 如果有，向 ``req.system_prompt`` 追加“严格引用”指导。
+          - 如果用户额外开启 ``inject_caption_text_to_system_prompt``，同时把
+            图说复制一份到 system_prompt（冗余防覆盖，老用户兼容）。
 
         仅在配置 ``inject_system_prompt_guidance: true``（默认）时生效。
         """
         if not self.config.get("inject_system_prompt_guidance", True):
             return
-        if not req.prompt:
-            return
+
+        # 从 extra_user_content_parts 中检查图说标记
         import re
-        n = len(re.findall(r"【图片\d+", req.prompt))
+        captions: list[str] = []
+        if req.extra_user_content_parts:
+            for part in req.extra_user_content_parts:
+                if isinstance(part, dict):
+                    text = part.get("text", "")
+                else:
+                    text = getattr(part, "text", "") or ""
+                if text and re.search(r"\[Image\s+\d+\s+描述\]", text):
+                    captions.append(text)
+
+        n = len(captions)
         if n <= 0:
             return
 
-        # 提取 prompt 中所有【图片N：...】占位块（含描述）
-        # 使用非贪婪匹配，遇到下一个【图片或字符串结尾
-        caption_pattern = re.compile(r"【图片\d+（视觉模型描述）：.*?】", re.DOTALL)
-        captions = caption_pattern.findall(req.prompt)
-        if not captions:
-            # fallback: 试试旧版格式 【图片N：...】
-            captions = re.findall(r"【图片\d+：.*?】", req.prompt, re.DOTALL)
-        if not captions:
-            return
-
         if n == 1:
-            tags_hint = "【图片1】"
+            tags_hint = "[Image 1 描述]"
         else:
-            tags_hint = f"【图片1】、 【图片2】 … 【图片{n}】"
+            tags_hint = (
+                ", ".join(f"[Image {i+1} 描述]" for i in range(n))
+            )
 
-        # 拼接图说正文 + 严格引用指导
-        # 注意：放在 system_prompt 后面，因为 LLM 通常更重视靠近用户消息的指令。
-        captions_text = "\n\n".join(captions)
-        guidance = (
-            f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述如下：\n\n"
-            f"{captions_text}\n\n"
-            f"以上描述标记为 {tags_hint}。\n"
+        guidance_lines = [
+            f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述标记为 {tags_hint}。\n"
             f"请在回复时严格基于这些描述来回答用户，不要：\n"
             f"  - 猜测未在描述中明确出现的游戏/番剧/品牌/角色名；\n"
             f"  - 凭印象补充描述之外的背景知识；\n"
             f"  - 改写/扩充已描述的内容；\n"
             f"  - 装作“看到”描述中未出现的信息。\n"
             f"如果描述不足以回答用户问题，请明确说“无法从图中看出”。"
-        )
+        ]
+        guidance = "".join(guidance_lines)
+
+        # 可选：把图说也复制一份到 system_prompt（冗余防覆盖）
+        # 默认 False——因为已经在 user message 里了
+        if self.config.get("inject_caption_text_to_system_prompt", False):
+            captions_text = "\n\n".join(captions)
+            guidance = (
+                f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述如下：\n\n"
+                f"{captions_text}\n\n"
+                f"以上描述标记为 {tags_hint}。\n"
+                f"请在回复时严格基于这些描述来回答用户，不要：\n"
+                f"  - 猜测未在描述中明确出现的游戏/番剧/品牌/角色名；\n"
+                f"  - 凭印象补充描述之外的背景知识；\n"
+                f"  - 改写/扩充已描述的内容；\n"
+                f"  - 装作“看到”描述中未出现的信息。\n"
+                f"如果描述不足以回答用户问题，请明确说“无法从图中看出”。"
+            )
+
         if req.system_prompt:
             req.system_prompt = req.system_prompt + guidance
         else:
