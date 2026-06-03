@@ -1,394 +1,191 @@
 # astrbot_plugin_vision_text_bridge
 
 > 把 LLM 请求里的图片转成 MiniMax CLI 图像理解的文本，再交给对话模型。
+>
+> **纯文本多模态替代**——LLM 能"看懂"图片内容（因为它读到了图片描述），但请求里没有真实的图片二进制。
+
+[![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.0.0-blue)](https://docs.astrbot.app/)
+[![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-green)](https://www.python.org)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-orange)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.8.2-brightgreen)](CHANGELOG.md)
+
+[更新日志](CHANGELOG.md) · [问题反馈](https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues) · [AstrBot 文档](https://docs.astrbot.app/)
 
 ## 它做了什么
 
 在 AstrBot 把消息发给 LLM 之前，本插件会：
 
-1. 拦截 `ProviderRequest`（基于 `astrbot_plugin_uni_nickname` 的 `@filter.on_llm_request()` 用法）；
+1. 拦截 `ProviderRequest`（基于 `filter.on_llm_request` 钩子，priority 默认 100）；
 2. 扫描 `req.image_urls`、`req.extra_user_content_parts`、`req.contexts` 三处可能藏图片的地方；
-3. 对每张图片调用 `mmx vision describe --image <url> --prompt <...>`（参考 `astrbot_plugin_MiniMax_CLI`）；
-4. 把返回的描述用 `【图片{n}：<描述>】` 模板回填到 `req.prompt`；
-5. 把图片从原字段里删除，让 LLM 收到的是纯文本请求；
-6. **持久化描述到 SQLite**（跨重启保留），命中后不重复调 mmx；
-7. **提供内置页面** 用于查看 / 搜索 / 删除 / 重新生成缓存。
-
-最终用户看到的是：LLM 能“看懂”图片内容（因为它读到了图片描述），但请求里没有真实的图片二进制，**纯文本多模态替代**。
+3. 对每张图片调用 `mmx vision describe --image <url> --prompt <...>`；
+4. 把描述以 `[Image N 描述] xxx` 格式注入到 `req.extra_user_content_parts`（user message 的 content block，**不被其他插件重写**）；
+5. 清空 `req.image_urls`（防 LLM 同时看图 + 图说，浪费 token）；
+6. **持久化描述到 SQLite**（跨重启保留），下次发同图直接命中；
+7. **提供内置页面** 用于查看 / 搜索 / 删除 / 重新生成缓存；
+8. **链末兜底** 删除被中间插件塞回来的 `data:image/...;base64,...` 残留。
 
 ## 为什么需要它
 
-- **省钱 / 限流**：很多 LLM 在 Vision 通道要额外计费。文本 token 一般比 Vision 便宜。
-- **老模型兼容**：不支持 Vision 的 LLM 也能“看图”（虽然理解质量取决于 mmx 返回的描述）。
-- **统一格式**：所有图片都按 `【图片：...】` 格式喂给 LLM，prompt 模板更可控。
+- **省钱 / 限流**：Vision 通道额外计费，文本 token 一般更便宜。
+- **老模型兼容**：不支持 Vision 的 LLM 也能"看图"（理解质量取决于 mmx 描述质量）。
+- **统一格式**：所有图说都按 `[Image N 描述] xxx` 格式注入，prompt 模板更可控。
+- **不切 fallback**：插件会**骗** AstrBot 主 provider "支持图"（实际只发文本），让 minimax 之类的 provider 不会因为检测到图就切到 deepseek 之类质量差的 fallback。
 
 ## 前置依赖
 
-1. 安装 [mmx-cli](https://www.npmjs.com/package/mmx-cli)（MiniMax 官方 CLI 工具）：
+1. **mmx-cli**（MiniMax 官方 CLI）：
    ```bash
    npm install -g mmx-cli
    ```
-2. AstrBot ≥ 4.0.0。
-3. MiniMax API Key（在 [MiniMax 开放平台](https://platform.MiniMax.io/) Token Plan 页面获取，`sk-` 开头）。
+2. **AstrBot ≥ 4.0.0**。
+3. **MiniMax API Key**（`sk-` 开头，[MiniMax 开放平台](https://platform.MiniMax.io/) Token Plan 页面获取）。
 
-如果不想手动安装，插件支持 `auto_install_cli: true` 自动 `npm install -g mmx-cli`。
-
-## 登录 MiniMax CLI
-
-插件支持两种方式预登录 mmx（**二选一即可**）：
-
-| 方式 | 配置 | 说明 |
-| --- | --- | --- |
-| 插件自动登录 | `minimax_api_key` + `auto_login: true` | 插件 `initialize()` 时执行 `mmx auth login --api-key <key>`，推荐 |
-| 手动登录 | 留空 `minimax_api_key` | 在服务器上执行 `mmx auth login --api-key <your-key>`，插件直接用已登录的会话 |
-
-`minimax_api_key` 在插件配置面板中是密码型输入框，**不会以明文写入 AstrBot 配置文件**。
+插件支持 `auto_install_cli: true` 自动 `npm install -g mmx-cli`。
 
 ## 安装
 
-1. 把整个 `astrbot_plugin_vision_text_bridge/` 目录复制到 AstrBot 的 `data/plugins/` 下。
-2. 重启 AstrBot，插件会自动加载。
-3. 在 AstrBot 管理面板的插件配置里，按需调整参数（详见下方“配置项”）。
-4. **页面访问**：AstrBot 启动后，插件的 `pages/cache-manager/` 目录会被自动注册为内置页面。可在 AstrBot Dashboard 的插件页进入。
+1. 复制 `astrbot_plugin_vision_text_bridge/` 到 `<AstrBot>/data/plugins/`。
+2. 重启 AstrBot，插件自动加载。
+3. 在 AstrBot 管理面板的插件配置里填写 `minimax_api_key`（开启 `auto_login` 后插件启动时自动 `mmx auth login`）。
+4. **页面访问**：AstrBot Dashboard → 插件 → Vision → Text Bridge → 「缓存管理」。
 
 ## 配置项
 
-| 配置项 | 类型 | 默认值 | 说明 |
+| 配置项 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | 总开关 |
-| `priority` | int | `100` | 拦截优先级。值越大，on_llm_request 钩子越先执行。修改后需重启 AstrBot 生效，详情见下方「拦截优先级」 |
+| `priority` | int | `100` | 拦截优先级（越大越先执行）。修改后需重启 AstrBot |
 | `mmx_path` | string | `""` | mmx 可执行文件绝对路径，留空时从 `PATH` 找 |
-| `minimax_api_key` | string (password) | `""` | MiniMax API Key（`sk-` 开头）。填写后插件初始化时自动 `mmx auth login` |
+| `minimax_api_key` | password | `""` | MiniMax API Key。填写后 `auto_login: true` 时自动登录 mmx |
 | `auto_login` | bool | `true` | 插件初始化时是否使用 `minimax_api_key` 执行 `mmx auth login` |
 | `auto_install_cli` | bool | `false` | 找不到 mmx 时自动 `npm install -g mmx-cli` |
 | `command_timeout` | int | `60` | 单次 mmx vision describe 超时（秒） |
 | `max_concurrent_vision` | int | `3` | 单条消息最多并发图像理解数 |
-| `vision_prompt` | text | `"请用中文详细描述这张图片..."` | 传给 mmx 的提示词 |
-| `image_placeholder_template` | string | `【图片{index}：{description}】` | 占位符模板 |
+| `vision_prompt` | text | 保守描述模板 | 传给 mmx 的提示词。默认要求 mmx 客观列元素、**严禁猜测**游戏/番剧/品牌名 |
+| `image_placeholder_template` | string | `[Image {index} 描述] {description}` | 图说格式（v0.7 起注入到 user message content block） |
 | `max_description_length` | int | `800` | 单图描述最大字符数（0 不限制） |
 | `include_history` | bool | `false` | 是否处理 `req.contexts` 历史中的图片 |
 | `include_extra_parts` | bool | `true` | 是否处理 `extra_user_content_parts` 中的图片 |
-| `failure_message` | string | `【图片{index}：理解失败：{error}】` | mmx 调用失败时的占位文本 |
+| `failure_message` | string | `[Image {index} 描述] 理解失败：{error}` | mmx 失败时的占位文本 |
 | `redact_sensitive` | bool | `true` | 日志中脱敏 API Key 等 |
-| `cache_descriptions` | bool | `true` | 缓存同 URL 的图像理解结果 |
-| `verbose_logging` | bool | `false` | 冗余日志：on_llm_request 触发时输出图片计数。调试不生效时开启 |
-| `strip_all_image_urls_in_fallback` | bool | `false` | 链末兑底:删除所有 image_url (不仅是 data:base64)。避免 LLM 报 `unknown variant image_url` 400 错误 |
+| `cache_descriptions` | bool | `true` | 缓存图像理解结果（v0.8.2 起 key 用图片内容 md5） |
+| `cache_file_paths` | bool | `true` | 缓存 `file://` 本地路径（v0.8.2 新增，QQ 群聊场景下 AstrBot 把图存为本地临时文件） |
+| `verbose_logging` | bool | `false` | 冗余日志。调试不生效时开启 |
+| `inject_system_prompt_guidance` | bool | `true` | 向 system_prompt 注入"严格引用图说"指令 |
+| `inject_caption_text_to_system_prompt` | bool | `false` | 同时把图说本身也注入到 system_prompt（冗余防覆盖，默认关） |
+| `strip_all_image_urls_in_fallback` | bool | `false` | 链末兜底删除**所有** image_url（不仅是 base64） |
+| `keep_provider_modality_as_is` | bool | `false` | 不修改 provider modalities（取消"骗 AstrBot"行为） |
 
-## 效果示例
+完整说明见 `_conf_schema.json`。
 
-用户发：`"帮我看看这只猫"` + 一张橘猫图片
+## 缓存机制（v0.8.2）
 
-经过插件后，LLM 实际收到的 prompt（简化）：
+**v0.8.2 重要修复**：之前缓存用图片 URL 字符串作 key，但 AstrBot 每次压缩图都生成**新文件名**（带 hash），同一张图 → 不同路径 → **永不命中**。
 
-```
-帮我看看这只猫
+现在缓存 key = **`md5(图片内容)`**：
 
-【图片1：图片中是一只橘色的猫正趴在米色沙发上，背景有一扇窗户，猫的眼睛是绿色的】
-```
+| URL | 内容 | 缓存 key |
+| --- | --- | --- |
+| `file:///AstrBot/data/temp/compressed_aaa.jpg` | 图 X | `md5:abc123` |
+| `file:///AstrBot/data/temp/compressed_bbb.jpg` | 图 X（**同一张**） | `md5:abc123` ← **命中** |
+| `https://x.com/y.jpg` | 图 Y | `md5:def456` |
 
-`image_urls` 字段已被清空，LLM 不再以多模态方式处理图片，而是基于文本描述回答。
+如果读图片字节失败（http 下载超时、文件被删），退到用 URL 字符串作 key。
 
-## 注意事项
+缓存对 `http(s)://`、`file://` 都生效（默认）。`data:` base64 URL 不缓存（base64 字符串每次都不同）。
 
-- mmx 调用是同步阻塞的，**首次发图会有一段延迟**（通常 5~20 秒）。
-- 缓存仅对 `http(s)://` URL 生效，base64 / `file://` / 本地路径不缓存（避免文件已删除后缓存悬空）。
-- 历史图片默认不处理（`include_history: false`）。开启会增加上下文 token 消耗，请评估成本。
-- **mmx 调用失败时不再保留 raw image URL**：插件会清空 `req.image_urls` / `req.extra_user_content_parts` / `req.contexts[].content` 里的 image_url 组件，避免 LLM 同时看到 raw URL 和失败占位造成 400 错误。语义仅靠 prompt 中的【图片{n}：理解失败：...】占位保留。
+## 防止 LLM 改写 / 猜游戏名（3 层防御）
+
+1. **保守的 mmx prompt**：明确告诉 mmx「严禁猜测未明确显示的游戏/番剧/品牌/角色名称，不确定时明说"无法确定"」。
+2. **自然格式 `[Image N 描述] xxx`**：让 LLM 把它当作用户描述，而不是"prompt 中的占位符"。
+3. **system_prompt 严格引用指令**（默认开启）：告诉 LLM 严格基于图说回答，不要凭印象补充背景知识。
+
+实测：之前 LLM 把"抖音评论区+云南野生菌梗"误判为"永劫无间"——v0.7 之后这个错误不再出现。
+
+## 与 AngelHeart 插件的兼容性
+
+AngelHeart 的 `on_llm_request` 钩子（priority=50）会**重写 `req.prompt`**——之前我的图说注在 prompt 字符串里，会被覆盖丢失。
+
+**v0.7 修复**：图说改为注入到 `req.extra_user_content_parts`（user message content block），不被 AngelHeart 触碰。
+
+**v0.5 链末兜底**：AngelHeart 在 `req.contexts` 里重新塞 `data:image/jpeg;base64,...`。本插件 priority=-10000 的兜底钩子清掉所有 data:base64 残留。
+
+**v0.8 主钩子入口清空**：在 priority=100 入口就清空 image_urls / extra_parts / contexts 中的 image_url——AngelHeart 即使有图片也是空。
+
+## 拦截优先级
+
+| 场景 | 建议 priority |
+| --- | --- |
+| 默认（够用） | 100 |
+| 还有插件抢在前面 | 500 ~ 1000 |
+| 调试 / 排错 | 10000 |
+| 故意让别的插件先处理图片 | 0 或负值 |
+
+priority 配置在 `import` 时锁定，**修改后需重启 AstrBot**。详见 `main.py` 顶部的 `DEFAULT_PRIORITY` 常量。
+
+## 缓存管理页面
+
+启动后 AstrBot Dashboard → 插件 → Vision → Text Bridge → 「缓存管理」：
+
+- **统计卡片**：总条目、命中总数、DB 大小、内存缓存大小、Chat Archive 联动状态
+- **搜索框**：按 URL / 描述模糊匹配
+- **排序**：最新 / 最旧 / 命中最多 / 命中最少
+- **操作**：单条删除、重新生成、导出 JSON、清空全部（含 VACUUM）
+- **Chat Archive 联动刷新**
+
+后端 API（自动注册）：
+
+| 路径 | 方法 | 作用 |
+| --- | --- | --- |
+| `/cache/stats` | GET | 缓存统计 |
+| `/cache/list` | GET | 分页列表 + 搜索 + 排序 |
+| `/cache/delete` | POST | 删除单条 |
+| `/cache/clear` | POST | 清空全部 |
+| `/cache/regenerate` | POST | 重新调 mmx 生成 |
+| `/cache/export` | GET | 导出全部为 JSON |
+| `/chat-archive/refresh` | POST | 重新检测 Chat Archive |
 
 ## 常见问题
 
-### Q0: 看到 `图像理解失败: ..., error=insufficient balance` 怎么办？
+### Q1: 看到 `mmx 图像理解失败: ..., error=insufficient balance` 怎么办？
 
-**先别下结论说“余额不足”**。MiniMax Token Plan 中 `vision describe` 是包含在套餐里的，理论上不该报这个错。看到这个错通常是下列之一：
-
-1. **mmx CLI 版本过旧**，调用了一个已废弃的 endpoint → 服务器返回 generic error
-2. **API key 不属于当前 mmx 路由到的环境**（比如用错了 test/staging 的 key）
-3. **mmx 内部把别的错误包装成了 "insufficient balance"**（这在 API 不一致时常见）
-4. **HTTP 200 + error body 这种诡计型错误**（服务器返回 200，但 body 是 error JSON）
-
-插件会识别这些错误并输出一条一次性的诊断提示。**不要只看面板余额，要先手动验证 mmx**：
+**别只看面板余额**。先手动验证 mmx：
 
 ```bash
-# 在 AstrBot 服务器上跑以下命令
 mmx --version
 mmx auth status
 mmx quota
 mmx vision describe --image /path/to/any.png --prompt "描述"
 ```
 
-**对照表**：
-
-| 手动验证结果 | 问题原因 | 怎么办 |
+| 1~3 成功、第 4 步报 `insufficient balance` | mmx 版本/路由错 | `npm update -g mmx-cli` |
 | --- | --- | --- |
-| 1~3 都成功，第 4 步报 `insufficient balance` | mmx 版本/endpoint 路由错误 | `npm update -g mmx-cli` 更新 mmx |
-| 1~3 成功，第 4 步报 `unauthenticated` / `unauthorized` | API key 权限问题 | 换 key 或检查 key 绑定的环境 |
-| 1~3 成功，第 4 步报 `model not found` / `unknown model` | mmx 版本过旧 | 同上，更新 mmx |
-| 4 步全部成功 | **插件代码 bug** | 把 verbose_logging 打开 + 重发图 + 把日志贴给我 |
+| 第 4 步报 `unauthenticated` / `unauthorized` | API key 权限问题 | 换 key 或检查 key 绑定的环境 |
+| 第 4 步报 `model not found` / `unknown model` | mmx 版本过旧 | 同上 |
+| 全部成功 | 插件代码 bug | 打开 `verbose_logging: true` + 重发图 + 把日志贴给我 |
 
-**插件 debug 加成**：在配置中打开 `verbose_logging: true`，下次失败时日志会输出 mmx 的完整 stdout/stderr：
+开启 `verbose_logging: true` 会输出 mmx 完整 stdout/stderr。
 
-```
-[vision_text_bridge] 图像理解失败: ..., exit_code=N, error=...
-[vision_text_bridge] mmx 完整输出:
---- stdout ---
-<mmx stdout>
---- stderr ---
-<mmx stderr>
-```
+### Q2: AstrBot 报 `'dict' object has no attribute 'model_dump_for_context'`
 
-这通常能直接定位问题。
+**v0.7 → v0.8.1 已修复**。拉最新代码重载插件即可。v0.7 之前会有这个崩溃。
 
-### Q1: 看到 `Failed to deserialize the JSON body... unknown variant 'image_url', expected 'text'` 怎么办？
+### Q3: LLM 还是把图说猜错（比如把"抖音截图"猜成"永劫无间"）
 
-这是 LLM provider（最常见是 deepseek 之类纯文本模型）不识别 OpenAI 格式中的 `image_url` 字段报 400。
+- **先看日志里的 `描述预览:`**（默认开启，不依赖 verbose_logging）—— 这是 mmx **实际**返回的描述。
+  - 如果 `描述预览:` 就是错的（mmx 猜错）→ 调 `vision_prompt` 配置，或换 mmx 模型
+  - 如果 `描述预览:` 是对的、LLM 仍然猜错 → LLM 模型问题（deepseek-v4-flash 质量差），建议换主 provider
 
-**原因链**：插件主钩子转图失败 → 残留 `image_url` → LLM 报 400。
+### Q4: 缓存页面显示 `0 条` 但插件在工作
 
-**解决办法**（选一个）：
+**v0.8.2 之前**：`_is_cacheable_url` 拒绝 `file://`，QQ 群聊场景下从不缓存。
+**v0.8.2 之后**：用 md5 作 key，file:// 也缓存。拉最新代码。
 
-1. **修复主钩子**（推荐）：先看为什么 mmx 转图失败（多半是 Q0 余额/版本问题），修好后插件会自动把 `image_url` 替换为占位文本。
-2. **开启最强兑底**：在本插件配置中把 `strip_all_image_urls_in_fallback` 设为 `true`。这样链末兑底钩子（priority=-10000）会删除**所有** image_url 组件，不仅仅是 base64。**代价**：主钩子未成功转述的图片信息会丢失，LLM 不会看到任何图片描述。
+### Q5: AstrBot 报 `Chat provider ... does not support image input, switching to fallback`
 
-### Q2: 插件好像没起作用，日志完全看不到 `on_llm_request 触发`？
+**v0.8.1 已修复**——插件 `initialize()` 时**骗** AstrBot 主 provider "支持图"（补 `"image"` modality 标签），AstrBot 不会切 fallback。
 
-在插件配置里把 `verbose_logging` 设为 `true`，重启 AstrBot。每次 LLM 请求都会多出一行：
-
-```
-[vision_text_bridge] on_llm_request 触发: image_urls=2, extra_parts_images=0,
-contexts_with_images=3, priority=100
-```
-
-如果这行**完全看不到**：插件未被加载，请检查 AstrBot 启动日志。
-如果看到但所有计数都是 0：图片在别的地方（比如 AngelHeart 的内部 SQLite），请看「与 AngelHeart 插件的兼容性」一节。
-
-
-## 拦截优先级
-
-AstrBot 的 `on_llm_request` 钩子按 **priority 降序** 执行：值越大越先运行。
-本插件默认 priority=100，高于多数常见插件（多为 0，如 `uni_nickname`），
-能保证抢在它们处理图片之前先把图片转成文本。
-
-### 为什么需要高优先级？
-
-如果你看到类似这样的日志：
-
-```
-[ERRO] [v4.25.2] [core.conversation_ledger:651]: 图片转述失败:
-[Errno 2] No such file or directory: 'data:image/webp;base64,UklGRk...'
-```
-
-或者：
-
-```
-[ERRO] [v4.25.2] [astrbot_plugin_sylanne.main:1031]: ... error
-```
-
-说明有别的插件在**本插件之前**碰到图片，并且处理方式不当（比如把 base64 当成文件路径）。
-本插件的 priority 提到 100 之后，会在它们之前把图片转成纯文本，避免下游插件踩到原始图片。
-
-### 调整方式
-
-**方式一：插件配置项（推荐）**
-
-在 AstrBot 管理面板修改本插件的 `priority` 值（例如设为 `500` 或 `1000`），重启 AstrBot。
-启动日志会提示：
-
-```
-[WARN] [vision_text_bridge] priority 配置=500，但当前注册的 priority=100。
-AstrBot 的 on_llm_request priority 在 import 时锁定，
-需要重启 AstrBot / 重新加载本插件后新值才会生效。
-```
-
-重启后新值生效。
-
-**方式二：直接编辑源码**
-
-打开 `main.py` 顶部，修改：
-
-```python
-DEFAULT_PRIORITY = 100
-```
-
-改为期望值（`500`、`1000` 等），然后重启 AstrBot。适合需要长期保留某个 priority 值的场景。
-
-### 建议值
-
-| 场景 | 建议 priority |
-| --- | --- |
-| 默认（够用） | 100 |
-| 还有插件抢在前面 | 500 ~ 1000 |
-| 调试/排错 | 10000 |
-| 故意让别的插件先处理图片 | 0 或负值 |
-
-## 与 AngelHeart 插件的兼容性
-
-AngelHeart（[astrbot_plugin_angel_heart](https://github.com/kawayiYokami/astrbot_plugin_angel_heart)）有自己的图片转述逻辑。
-日志中看到这类错误是 AngelHeart 内部调用、**与本插件无关**：
-
-```
-[ERRO] [v4.25.2] [core.conversation_ledger:651]: AngelHeart: 图片转述失败:
-[Errno 36] File name too long: 'data:image/webp;base64,UklGRkAFAAB...'
-```
-
-### AngelHeart 内部究竟在做什么？
-
-AngelHeart 在两处会处理图片：
-
-1. **秘书决策后** （`roles.front_desk`）→ `caption_provider.text_chat(image_urls=[base64_data_url])`：
-   AngelHeart 把图片压缩为 webp、编码成 `data:image/webp;base64,xxx` 形式的 data URL，
-   再作为 `image_urls` 列表传给 caption provider。caption provider 内部可能会把第一个 URL 当文件路径打开，
-   于是 `os.open` 拿到一个几百 KB 的 base64 字符串作为路径 → `File name too long`。
-
-2. **on_llm_request 钩子 (priority=50)** → `rewrite_prompt_for_llm`：
-   AngelHeart 会重写 `req.contexts`，把每条消息中的 Image 组件用 `convert_to_base64()` 转成
-   `data:image/jpeg;base64,xxx` 后重新塞进 OpenAI 格式 content 里。**这条路径不走 caption provider**，
-   所以 base64 会原封不动地出现在最终 LLM 请求中。
-
-### 为什么本插件拦不住？
-
-- **“决策后”那次 caption 调用** 是 AngelHeart **直接调** `caption_provider.text_chat()`，
-  **不走任何 AstrBot 钩子**。本插件 priority 调多高都管不到这段代码。
-- **“on_llm_request”那次重写** 确实是钩子，但本插件 priority=100 先跑、清理 `req.contexts` 后，
-  AngelHeart priority=50 会**重新往里塞 base64**，把本插件的清理覆盖。
-
-### 链末兜底机制
-
-为缓解问题，本插件除了主钩子（priority=100）外，**还注册了一个 priority=-10000 的链末兜底钩子**。
-它不做图像理解，只做一件事：**删除所有 `data:image/...;base64,...` 形式的残留**。
-这样无论中间有什么插件往 req 里塞 base64，到最后一个钩子都会被拦下丟除。
-代价是：这些 base64 图片在最终 LLM 请求中会以“图片：[已省略]”占位，
-**不会被转成可读文本**。如果需要转述，请按下面的步骤完全解决问题。
-
-### 完全解决步骤
-
-按顺序执行：
-
-1. **在 AngelHeart 配置中禁用图片转述**：
-   在 AstrBot 管理面板打开 AngelHeart 的设置，将 `image_caption_provider_id` **留空**。
-   保存后 AngelHeart 不会再调 caption，也就不会再出 `File name too long`。
-
-2. **确认本插件 priority 足够高**：
-   本插件默认 priority=100，高于 AngelHeart 的 priority=0 和 priority=50，
-   所以**本插件会先于 AngelHeart 跑**。如果看不到 `[vision_text_bridge] on_llm_request 触发` 日志，
-   请打开 `verbose_logging: true`。
-
-3. **重启 AstrBot** 让 priority 配置生效。
-
-4. **验证**：发一张图，预期看到这些日志：
-   - `[vision_text_bridge] on_llm_request 触发: image_urls=N, ...`
-   - `[vision_text_bridge] 图像理解完成: ..., 耗时=...s, 长度=...`
-   - `[vision_text_bridge] 链末兜底: 删除了 0 个 data:base64 image_url 残留`
-     （非 0 说明 AngelHeart 仍往里塞，需检查 AngelHeart 配置）
-   - LLM 回复中能读出图片描述（如 “图片中是一只… ”）
-
-### 调试技巧
-
-打开 `verbose_logging: true`，每次 LLM 请求都会多一行：
-
-```
-[vision_text_bridge] on_llm_request 触发: image_urls=2, extra_parts_images=0,
-contexts_with_images=3, priority=100
-```
-
-如果这行完全看不到 → 插件未被加载，请检查 AstrBot 启动日志。
-如果看到但 `image_urls=0` 且 `contexts_with_images=0` → 图片在别的地方（AngelHeart 内部存储），
-请按上面“完全解决步骤”处理。
-
-## 插件结构
-
-```
-astrbot_plugin_vision_text_bridge/
-├── main.py                  # 主插件（on_llm_request 钩子、web API 注册）
-├── caption_cache.py         # SQLite 描述缓存（独立模块，可复用）
-├── chat_archive_link.py     # Chat Archive 联动检测
-├── _conf_schema.json        # AstrBot 配置 schema
-├── metadata.yaml            # AstrBot 插件元数据
-├── pages/
-│   └── cache-manager/       # AstrBot 内置页面
-│       ├── index.html
-│       ├── app.js
-│       └── style.css
-├── test.py                  # 离线测试
-└── README.md
-```
-
-## 防止 LLM 改写/扩充图说
-
-插件默认会采取三项措施，让 LLM **严格引用** mmx 返回的图片描述，不要凭印象补充背景知识或猜测游戏名：
-
-1. **保守的 mmx prompt**（默认）：明确告诉 mmx「严禁猜测未明确显示的游戏/番剧/品牌/角色名称，不确定时明说“无法确定”」。
-
-2. **明确的 placeholder 模板**（默认）：`【图片{index}（视觉模型描述）：{description}】`——括号中的"视觉模型描述"提醒 LLM：这段是事实描述，不是它要扩充的占位。
-
-3. **system_prompt 注入**（默认开启）：插件会在 `req.system_prompt` 末尾追加一段指令：
-
-   > [系统提示] 用户提供了 N 张图片的视觉描述（由视觉模型生成），已标记为 【图片1】、 【图片2】 … 插入在用户消息中。
-   > 请在回复时严格基于这些描述来回答用户，不要：
-   >   - 猜测未在描述中明确出现的游戏/番剧/品牌/角色名；
-   >   - 凭印象补充描述之外的背景知识；
-   >   - 改写/扩充已描述的内容；
-   >   - 装作"看到"描述中未出现的信息。
-
-这些措施可**同时**生效，互不冲突。
-
-## 默认输出诊断日志
-
-插件默认会在每次成功调 mmx 后输出一行**描述预览**（前 120 字符）到 INFO 日志：
-
-```
-[vision_text_bridge] 图像理解完成: https://..., 耗时=16.56s, 长度=801
-[vision_text_bridge] 描述预览: 图片中是一只橘色的猫...
-```
-
-这样不需要打开 `verbose_logging` 也能在日志里看到 mmx 实际返回了什么，方便定位"图说质量"问题。
-
-## 缓存管理页面
-
-插件会自动注册一个 AstrBot 内置页面 `cache-manager/`，提供可视化缓存管理：
-
-- **统计卡片**：总条目、命中总数、DB 大小、内存缓存大小、Chat Archive 联动状态
-- **搜索框**：按 URL 或描述模糊匹配
-- **排序**：最新 / 最旧 / 命中最多 / 命中最少
-- **操作**：单条删除、重新生成（重新调 mmx）、导出 JSON、清空全部
-- **Chat Archive 联动刷新**：重新检测 `astrbot_plugin_chat_archive` 是否安装
-
-页面目录结构：
-```
-astrbot_plugin_vision_text_bridge/
-├── pages/
-│   └── cache-manager/
-│       ├── index.html
-│       ├── app.js
-│       └── style.css
-```
-
-后端 API（自动注册）：
-| 路径 | 方法 | 作用 |
-| --- | --- | --- |
-| `/{PLUGIN}/cache/stats` | GET | 缓存统计 |
-| `/{PLUGIN}/cache/list` | GET | 分页列表 + 搜索 + 排序 |
-| `/{PLUGIN}/cache/delete` | POST | 删除单条 |
-| `/{PLUGIN}/cache/clear` | POST | 清空全部（含 VACUUM） |
-| `/{PLUGIN}/cache/regenerate` | POST | 重新调 mmx 生成 |
-| `/{PLUGIN}/cache/export` | GET | 导出全部为 JSON |
-| `/{PLUGIN}/chat-archive/refresh` | POST | 重新检测 Chat Archive |
-
-## Chat Archive 联动
-
-如果同时安装 [astrbot_plugin_chat_archive](https://github.com/YukiNo420/astrbot_plugin_chat_archive)，本插件会**自动检测**并在启动日志里提示：
-
-```
-[vision_text_bridge] 检测到 astrbot_plugin_chat_archive，已启用联动: /AstrBot/data/plugins/astrbot_plugin_chat_archive/data/web_cache
-```
-
-**联动机制**：
-
-- Chat Archive 缓存**图片文件**到 `data/web_cache/`
-- 本插件缓存**图片描述**到 `data/caption_cache.sqlite3`
-- 两者使用不同的 SQLite 表/文件系统，**不重复存储**同一份数据
-- 同一张图片：Chat Archive 下载一次，本插件调 mmx 一次 → 后续命中本插件的 SQLite 直接返回描述，**不再调 mmx**
-
-页面右上角的「🔗 Chat Archive 联动」卡片会实时显示状态，点「🔄 刷新」可重新检测。
+**前提**：插件在 on_llm_request 钩子入口**已清空** image_urls，主 provider **不会**实际收到图（只是名义"支持"）。
 
 ## 离线测试
 
@@ -397,17 +194,30 @@ cd astrbot_plugin_vision_text_bridge
 python3 test.py
 ```
 
-应看到：
+应看到 `PASS: 85/85`。测试不依赖 AstrBot 真实运行环境，使用 stub 模拟 `astrbot.api`。
+
+## 插件结构
 
 ```
-PASS: 73/73
+astrbot_plugin_vision_text_bridge/
+├── main.py                  # 主插件（on_llm_request 钩子、web API 注册）
+├── caption_cache.py         # SQLite 描述缓存（独立模块）
+├── chat_archive_link.py     # Chat Archive 联动检测
+├── _conf_schema.json        # AstrBot 配置 schema
+├── metadata.yaml            # AstrBot 插件元数据
+├── pages/
+│   └── cache-manager/       # AstrBot 内置页面（HTML/JS/CSS）
+├── test.py                  # 离线测试（85 个测试）
+├── README.md
+└── CHANGELOG.md
 ```
-
-测试不依赖 AstrBot 真实运行环境，使用 stub 模拟 `astrbot.api` 模块与 `ProviderRequest`。
 
 ## 参考
 
 - [`astrbot_plugin_uni_nickname`](https://github.com/Hakuin123/astrbot_plugin_uni_nickname) — `@filter.on_llm_request()` 拦截 `ProviderRequest` 的标准用法
-- [`astrbot_plugin_MiniMax_CLI`](https://github.com/tanggetian/astrbot_plugin_MiniMax_CLI) — `mmx vision describe` 子进程调用与命令构建方式
+- [`astrbot_plugin_MiniMax_CLI`](https://github.com/tanggetian/astrbot_plugin_MiniMax_CLI) — `mmx vision describe` 子进程调用
 - [AstrBot 文档](https://docs.astrbot.app/) — `ProviderRequest` 字段说明
 
+## 许可
+
+AGPL-3.0

@@ -1314,13 +1314,12 @@ class VisionTextBridgePlugin(Star):
         if not urls_to_remove:
             return
         url_set = set(urls_to_remove)
-        keep: list[Any] = []
-        for part in parts:
-            url = VisionTextBridgePlugin._extract_image_url_from_part(part)
-            if url and url in url_set:
-                continue
-            keep.append(part)
-        parts[:] = keep
+        parts[:] = [
+            p for p in parts
+            if not (
+                VisionTextBridgePlugin._extract_image_url_from_part(p) in url_set
+            )
+        ]
 
     @staticmethod
     def _remove_image_urls_in_context_list(
@@ -1330,19 +1329,18 @@ class VisionTextBridgePlugin(Star):
         if not urls_to_remove:
             return
         url_set = set(urls_to_remove)
-        keep: list[dict] = []
-        for item in content_list:
-            if (
+        content_list[:] = [
+            item for item in content_list
+            if not (
                 isinstance(item, dict)
                 and item.get("type") == "image_url"
                 and VisionTextBridgePlugin._context_image_url(item) in url_set
-            ):
-                continue
-            keep.append(item)
-        content_list[:] = keep
+            )
+        ]
 
     @staticmethod
     def _context_image_url(item: dict) -> str:
+        """从 contexts.content 的 dict item 中取 image_url 字符串。"""
         image_url = item.get("image_url")
         if isinstance(image_url, str):
             return image_url
@@ -1374,22 +1372,18 @@ class VisionTextBridgePlugin(Star):
     @staticmethod
     def _remove_all_image_url_parts(parts: list[Any]) -> None:
         """就地删除 extra_user_content_parts 中所有 image_url 项，不分 URL。"""
-        keep: list[Any] = []
-        for part in parts:
-            if VisionTextBridgePlugin._is_image_url_part(part):
-                continue
-            keep.append(part)
-        parts[:] = keep
+        parts[:] = [
+            p for p in parts
+            if not VisionTextBridgePlugin._is_image_url_part(p)
+        ]
 
     @staticmethod
     def _remove_all_image_url_components_in_context(content_list: list[dict]) -> None:
         """就地删除 contexts.content list 中所有 type=='image_url' 项。"""
-        keep: list[dict] = []
-        for item in content_list:
-            if isinstance(item, dict) and item.get("type") == "image_url":
-                continue
-            keep.append(item)
-        content_list[:] = keep
+        content_list[:] = [
+            item for item in content_list
+            if not (isinstance(item, dict) and item.get("type") == "image_url")
+        ]
 
     @staticmethod
     def _is_data_url(url: str) -> bool:
