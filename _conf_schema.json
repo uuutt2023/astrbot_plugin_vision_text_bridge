@@ -51,14 +51,14 @@
   "vision_prompt": {
     "description": "传给 mmx vision describe 的提示词",
     "type": "text",
-    "hint": "默认：“请用中文详细描述这张图片的内容，重点关注主体、场景、文字（如有）和关键细节”。模型会基于此提示词生成描述，结果会以【图片：<描述>】形式插入到对话。",
-    "default": "请用中文详细描述这张图片的内容，重点关注主体、场景、文字（如有）和关键细节。"
+    "hint": "默认是“保守描述”提示词：要求 mmx 客观列出图中可见元素，严禁猜测未明确显示的游戏/番剧/品牌/角色名，不确定时明说“无法确定”。这能避免 mmx 凭背景知识编造游戏名。",
+    "default": "请客观描述图中可见的元素，列出主体人物/物品、场景背景、出现的文字（原文）、色调、风格。\n严禁猜测未明确显示的游戏/番剧/品牌/角色名称——如果不能从图中明确看出，请说'无法确定'。\n描述中只能包含你看到的事实，不要补充背景知识或推断。"
   },
   "image_placeholder_template": {
     "description": "图片占位符模板",
     "type": "string",
-    "hint": "支持 {index}（图片序号，从 1 开始）和 {description}（MiniMax 返回的描述）两个变量。默认：\u3010图片{index}：{description}\u3011",
-    "default": "【图片{index}：{description}】"
+    "hint": "支持 {index}（图片序号，从 1 开始）和 {description}（mmx 返回的描述）两个变量。默认：【图片{index}（视觉模型描述）：{description}】。“视觉模型描述”提示 LLM 严格引用，不要自己扩充。",
+    "default": "【图片{index}（视觉模型描述）：{description}】"
   },
   "max_description_length": {
     "description": "单张图片描述的最大字符数",
@@ -81,7 +81,7 @@
   "failure_message": {
     "description": "图像理解失败时的占位文本",
     "type": "string",
-    "hint": "支持 {index}、{error} 变量。默认：\u3010图片{index}：理解失败\uff1a{error}\u3011",
+    "hint": "支持 {index}、{error} 变量。默认：【图片{index}：理解失败：{error}】",
     "default": "【图片{index}：理解失败：{error}】"
   },
   "redact_sensitive": {
@@ -101,6 +101,12 @@
     "type": "bool",
     "hint": "开启后，on_llm_request 钩子每次触发都会输出一行 INFO 日志，包含发现的图片数量。调试不生效时用得上。",
     "default": false
+  },
+  "inject_system_prompt_guidance": {
+    "description": "向 system_prompt 注入“严格引用图片描述”提示",
+    "type": "bool",
+    "hint": "开启后，插件会向 req.system_prompt 追加一段指示，告诉 LLM 严格基于 prompt 中的【图片1】、【图片2】描述回答，不要凭印象猜测游戏名/补充背景知识。避免 LLM 改写/扩充 mmx 描述。默认开启。",
+    "default": true
   },
   "strip_all_image_urls_in_fallback": {
     "description": "链末兑底:删除所有 image_url (不仅是 data:base64)",

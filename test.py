@@ -88,6 +88,7 @@ def make_config(**overrides):
         "failure_message": "【图片{index}：理解失败：{error}】",
         "redact_sensitive": False,
         "cache_descriptions": True,
+        "inject_system_prompt_guidance": True,
     }
     cfg.update(overrides)
     # AstrBotConfig 在 stub 里就是 dict
@@ -127,11 +128,12 @@ def new_plugin(**overrides):
 class FakeReq:
     """模拟 ProviderRequest，包含插件关心的字段。"""
 
-    def __init__(self, prompt=None, image_urls=None, extra_user_content_parts=None, contexts=None):
+    def __init__(self, prompt=None, image_urls=None, extra_user_content_parts=None, contexts=None, system_prompt=""):
         self.prompt = prompt
         self.image_urls = image_urls or []
         self.extra_user_content_parts = extra_user_content_parts or []
         self.contexts = contexts or []
+        self.system_prompt = system_prompt
 
 
 def make_mmx_result(stdout: str = "", stderr: str = "", returncode: int = 0, ok: bool = True):
@@ -1318,6 +1320,99 @@ def test_end_to_end_full_flow():
     print("✓ test_end_to_end_full_flow")
 
 
+# ------------------------------------------------------------------ 单测：system_prompt 注入
+
+
+def test_inject_system_prompt_guidance_default_on():
+    """默认 inject_system_prompt_guidance=True 时，注入严格引用提示。"""
+    p = new_plugin()
+    req = FakeReq(prompt="看图\n\n【图片1：一只狗】\n\n【图片2：一只猫】")
+    req.system_prompt = "你是一个助手。"
+    p._maybe_inject_system_prompt_guidance(req)
+    # 应追加 system_prompt
+    assert "[系统提示]" in req.system_prompt
+    assert "2 张图片" in req.system_prompt
+    assert "严格基于" in req.system_prompt
+    # 原始 system_prompt 保留
+    assert "你是一个助手。" in req.system_prompt
+    print("✓ test_inject_system_prompt_guidance_default_on")
+
+
+def test_inject_disabled_when_config_off():
+    p = new_plugin(inject_system_prompt_guidance=False)
+    req = FakeReq(prompt="看图\n\n【图片1：一只狗】")
+    req.system_prompt = "你是一个助手。"
+    p._maybe_inject_system_prompt_guidance(req)
+    # 不应修改
+    assert req.system_prompt == "你是一个助手。"
+    print("✓ test_inject_disabled_when_config_off")
+
+
+def test_inject_no_images_in_prompt_no_op():
+    p = new_plugin()
+    req = FakeReq(prompt="没有图")  # 无【图片x】
+    req.system_prompt = "你是一个助手。"
+    p._maybe_inject_system_prompt_guidance(req)
+    assert req.system_prompt == "你是一个助手。"
+    print("✓ test_inject_no_images_in_prompt_no_op")
+
+
+def test_inject_creates_system_prompt_if_empty():
+    p = new_plugin()
+    req = FakeReq(prompt="看图\n\n【图片1：一只狗】")
+    req.system_prompt = ""
+    p._maybe_inject_system_prompt_guidance(req)
+    assert req.system_prompt  # 非空
+    assert "[系统提示]" in req.system_prompt
+    print("✓ test_inject_creates_system_prompt_if_empty")
+
+
+def test_inject_counts_images_correctly():
+    p = new_plugin()
+    req = FakeReq(prompt="""用户消息
+
+【图片1：猫】
+【图片2：狗】
+【图片3：鸟】""")
+    req.system_prompt = "X"
+    p._maybe_inject_system_prompt_guidance(req)
+    assert "3 张图片" in req.system_prompt
+    assert "【图片1】" in req.system_prompt
+    assert "【图片2】" in req.system_prompt
+    assert "【图片3】" in req.system_prompt
+    print("✓ test_inject_counts_images_correctly")
+
+
+# ------------------------------------------------------------------ 单测：mmx 提示词默认保守
+
+
+def test_default_vision_prompt_is_conservative():
+    """默认 mmx prompt 应是保守描述模板。"""
+    from main import VisionTextBridgePlugin  # type: ignore
+
+    # 实际从 _describe_one 内部获取（避免硬编码）
+    # 这里的检测方式是：构造一个 plugin 实例，调 _describe_one 看 prompt
+    # 简化：直接读 _conf_schema.json 的 default
+    import json
+    schema = json.load(open("/workspace/astrbot_plugin_vision_text_bridge/_conf_schema.json"))
+    default = schema["vision_prompt"]["default"]
+    assert "严禁猜测" in default
+    assert "无法确定" in default
+    assert "不要补充背景知识" in default
+    print("✓ test_default_vision_prompt_is_conservative")
+
+
+def test_default_image_placeholder_marks_as_vision_model():
+    """默认 placeholder 应表明是“视觉模型描述”，提示 LLM 严格引用。"""
+    import json
+    schema = json.load(open("/workspace/astrbot_plugin_vision_text_bridge/_conf_schema.json"))
+    default = schema["image_placeholder_template"]["default"]
+    assert "视觉模型描述" in default
+    assert "{index}" in default
+    assert "{description}" in default
+    print("✓ test_default_image_placeholder_marks_as_vision_model")
+
+
 # ------------------------------------------------------------------ runner
 
 def run_all():
@@ -1388,6 +1483,13 @@ def run_all():
         test_chat_archive_link_refresh,
         test_register_web_apis_called,
         test_end_to_end_full_flow,
+        test_inject_system_prompt_guidance_default_on,
+        test_inject_disabled_when_config_off,
+        test_inject_no_images_in_prompt_no_op,
+        test_inject_creates_system_prompt_if_empty,
+        test_inject_counts_images_correctly,
+        test_default_vision_prompt_is_conservative,
+        test_default_image_placeholder_marks_as_vision_model,
     ]
     failed = 0
     for t in tests:

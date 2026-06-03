@@ -462,6 +462,8 @@ class VisionTextBridgePlugin(Star):
 
         try:
             await self._process_request(event, req)
+            # 可选：向 system_prompt 注入“严格引用”提示，避免 LLM 改写/扩充图说
+            self._maybe_inject_system_prompt_guidance(req)
         except Exception as exc:  # 防御性兜底，绝不让插件崩溃整个请求
             logger.exception("[vision_text_bridge] 处理请求时发生未捕获异常: %s", exc)
 
@@ -608,7 +610,9 @@ class VisionTextBridgePlugin(Star):
         timeout = max(5, int(self.config.get("command_timeout", 60) or 60))
         vision_prompt = (
             self.config.get("vision_prompt", "")
-            or "请用中文详细描述这张图片的内容，重点关注主体、场景、文字（如有）和关键细节。"
+            or "请客观描述图中可见的元素，列出主体人物/物品、场景背景、出现的文字（原文）、色调、风格。\n"
+            "严禁猜测未明确显示的游戏/番剧/品牌/角色名称——如果不能从图中明确看出，请说'无法确定'。\n"
+            "描述中只能包含你看到的事实，不要补充背景知识或推断。"
         )
         command = self._build_vision_command(url, vision_prompt)
 
@@ -647,6 +651,12 @@ class VisionTextBridgePlugin(Star):
                     self._safe_preview(url),
                     elapsed,
                     len(description),
+                )
+                # 默认输出描述前 100 字符到日志，方便诊断 mmx 质量
+                # （不依赖 verbose_logging，让用户随时能看 mmx 实际返回了什么）
+                logger.info(
+                    "[vision_text_bridge] 描述预览: %s",
+                    self._safe_preview(description, limit=120),
                 )
                 if cacheable:
                     # 同时写内存 + SQLite
@@ -865,6 +875,55 @@ class VisionTextBridgePlugin(Star):
             logger.info(
                 "[vision_text_bridge] field=%s 处理完成: 成功=%d, 失败=%d",
                 field, success_count, failure_count,
+            )
+
+    def _maybe_inject_system_prompt_guidance(
+        self, req: ProviderRequest
+    ) -> None:
+        """可选：向 system_prompt 注入“请严格引用图片描述”的提示。
+
+        背景：LLM 在拿到 prompt 中注入了图片描述后，**可能会**：
+          1. 改写描述（加味道、补充背景）
+          2. 凭印象/上下文猜测未明确的信息（例如看到周边就猜游戏名）
+          3. 重复描述、选择不引用
+
+        本方法在 system_prompt 末尾追加一段明确的指示，让 LLM 严格基于
+        prompt 中已有的图片描述来回答，不要凭“印象”扩充。
+        仅在配置 ``inject_system_prompt_guidance: true``（默认）时生效。
+        """
+        if not self.config.get("inject_system_prompt_guidance", True):
+            return
+        # 计算被注入到 prompt 中的图片数量。从 image_urls 是否被清空判断不够准，
+        # 这里按 “prompt 中是否含【图片x：】” 文本作为信号。
+        if not req.prompt:
+            return
+        import re
+        n = len(re.findall(r"【图片\d+", req.prompt))
+        if n <= 0:
+            return
+        if n == 1:
+            tags_hint = "【图片1】"
+        else:
+            tags_hint = f"【图片1】、 【图片2】 … 【图片{n}】"
+        guidance = (
+            f"\n\n[系统提示] 用户提供了 {n} 张图片的视觉描述（由视觉模型生成）"
+            f"，已标记为 {tags_hint}插入在用户消息中。\n"
+            f"请在回复时严格基于这些描述来回答用户，不要：\n"
+            f"  - 猜测未在描述中明确出现的游戏/番剧/品牌/角色名；\n"
+            f"  - 凭印象补充描述之外的背景知识；\n"
+            f"  - 改写/扩充已描述的内容；\n"
+            f"  - 装作“看到”描述中未出现的信息。\n"
+            f"如果描述不足以回答用户问题，请明确说“无法从图中看出”。"
+        )
+        if req.system_prompt:
+            req.system_prompt = req.system_prompt + guidance
+        else:
+            req.system_prompt = guidance
+        if self.config.get("verbose_logging", False):
+            logger.info(
+                "[vision_text_bridge] 已向 system_prompt 注入严格引用提示，"
+                "图片数=%d, system_prompt 增量长度=%d",
+                n, len(guidance),
             )
 
     # ------------------------------------------------------------------ 字段提取
