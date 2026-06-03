@@ -1418,6 +1418,109 @@ def test_inject_no_images_in_prompt_no_op():
     print("✓ test_inject_no_images_in_prompt_no_op")
 
 
+def test_main_hook_clears_image_urls_immediately():
+    """v0.8: 主钩子入口**立即**清空 image_urls，防 AstrBot 切 provider。
+
+    背景: AstrBot 在 astr_main_agent._select_image_chat_provider() 根据
+        `if not req.image_urls or _provider_supports_modality(provider, "image")`
+    判断是否切 provider。需保证主钩子处理中任何时刻 image_urls 都是空的。
+    """
+    p = new_plugin()
+    req = FakeReq(prompt="看图", image_urls=["https://x.com/a.jpg"])
+    # 模拟 _run_mmx: 返回描述
+    with patch.object(
+        p, "_run_mmx",
+        return_value=make_mmx_result("猫", "", 0, True),
+    ):
+        # 主钩子入口调用 → 清空 + 处理 + 注入
+        asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
+
+    # **主钩子完成后**，image_urls 仍然空（初始就清了 + 末尾又清了）
+    assert req.image_urls == []
+    # 图说在 extra_user_content_parts 里
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 猫"
+    print("✓ test_main_hook_clears_image_urls_immediately")
+
+
+def test_main_hook_clears_extra_parts_and_contexts_images():
+    """主钩子入口清空 extra_user_content_parts 和 contexts 里的 image_url 组件。"""
+    p = new_plugin()
+    parts = [
+        {"type": "text", "text": "附加"},
+        {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
+    ]
+    contexts = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "上轮"},
+            {"type": "image_url", "image_url": {"url": "https://x.com/b.jpg"}},
+        ],
+    }]
+    req = FakeReq(
+        prompt="现在",
+        image_urls=[],
+        extra_user_content_parts=list(parts),
+        contexts=list(contexts),
+    )
+
+    # 模拟 _run_mmx: 返回两段描述（一个 a 一个 b）
+    counter = {"n": 0}
+    async def fake_run(*args, **kwargs):
+        counter["n"] += 1
+        return f"desc{counter['n']}", ""
+
+    with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
+        asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
+
+    # image_urls 仍空
+    assert req.image_urls == []
+    # extra_user_content_parts 中 image_url 被清除，原 text 保留
+    # + 2 个新加的图说 content blocks
+    text_parts = [p for p in req.extra_user_content_parts if p.get("type") == "text"]
+    text_texts = [p["text"] for p in text_parts]
+    # 原始 "附加" 保留 + 2 个图说
+    assert "附加" in text_texts
+    # 图说个数 >= 1（主钩子只处理 image_urls，因为 include_extra_parts=True
+    # 但 image_urls 已经是空——因为我们从快照里处理图说，所以应该有一个）
+    # 实际：include_extra_parts=True 走第 2 步——但快照里也只有一个 image_url（a.jpg）
+    # 等等：image_urls 快照为 [], 所以第 1 步不处理
+    # extra_parts 快照 含 image_url(a.jpg) → 第 2 步处理 → 1 个图说
+    assert any("desc1" in t for t in text_texts)
+    # image_url 组件被清除了（只保留 text）
+    assert not any(p.get("type") == "image_url" for p in req.extra_user_content_parts)
+    # contexts 里 image_url 也被清了
+    assert not any(
+        c.get("type") == "image_url"
+        for c in contexts[0]["content"]
+    )
+    print("✓ test_main_hook_clears_extra_parts_and_contexts_images")
+
+
+def test_main_hook_saves_snapshots_for_process_request():
+    """主钩子入口保存快照，_process_request 从快照读图（不从 req）。"""
+    p = new_plugin()
+    req = FakeReq(
+        prompt="看图",
+        image_urls=["https://x.com/a.jpg", "https://x.com/b.jpg"],
+    )
+
+    # 在调主钩子之前，_pending_* 是 None 或不存在
+    assert getattr(p, "_pending_image_urls", None) is None
+
+    with patch.object(
+        p, "_run_mmx",
+        return_value=make_mmx_result("猫", "", 0, True),
+    ):
+        asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
+
+    # 钩子完成后，_pending_* 被清（None）
+    assert getattr(p, "_pending_image_urls", None) is None
+    # 但图说仍注入到 extra_user_content_parts
+    assert len(req.extra_user_content_parts) == 2
+    print("✓ test_main_hook_saves_snapshots_for_process_request")
+
+
 def test_survives_prompt_overwrite_by_other_plugin():
     """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
     任何插件重写 prompt 都不会丢失。"""
@@ -1666,6 +1769,9 @@ def run_all():
         test_default_image_placeholder_marks_as_vision_model,
         test_sibling_modules_loaded,
         test_main_imports_without_sys_path_modification,
+        test_main_hook_clears_image_urls_immediately,
+        test_main_hook_clears_extra_parts_and_contexts_images,
+        test_main_hook_saves_snapshots_for_process_request,
     ]
     failed = 0
     for t in tests:

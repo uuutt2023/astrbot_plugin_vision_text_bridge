@@ -468,6 +468,48 @@ class VisionTextBridgePlugin(Star):
                 max(1, int(self.config.get("max_concurrent_vision", 3) or 1))
             )
 
+        # ============================================================
+        # **【关键】先清空 image_urls，防 AstrBot 切 provider**
+        # ============================================================
+        # AstrBot 在 astr_main_agent._select_image_chat_provider() 会根据
+        #   `if not req.image_urls or _provider_supports_modality(provider, "image")`
+        # 判断要不要切到 fallback provider。只要在那个判断**之前** `req.image_urls`
+        # 为空，AstrBot 就不会切 provider。
+        #
+        # 之前我们在 _process_request 末尾才清空 image_urls，**太晚了**——
+        # 切 provider 发生在 on_llm_request 钩子**内某点**，可能早于我们的清空。
+        # 所以现在我们在**主钩子入口**就清空（不影响插件处理图说，我们仍会在
+        # _process_request 里读出来、然后送 mmx 描述）。
+        #
+        # **重要**：先快照一份，_process_request 需要这些 url 来调 mmx。
+        saved_image_urls = list(req.image_urls or [])
+        saved_extra_parts = list(req.extra_user_content_parts or []) if req.extra_user_content_parts else []
+        saved_contexts = list(req.contexts or []) if req.contexts else []
+        # 同时记录哪些 contexts 里有图（用于 _process_request 逐个处理）
+        contexts_with_image = [
+            c for c in saved_contexts
+            if isinstance(c, dict) and isinstance(c.get("content"), list)
+            and any(
+                isinstance(x, dict) and x.get("type") == "image_url"
+                for x in c.get("content", [])
+            )
+        ]
+
+        req.image_urls = []  # **先清空**，让 AstrBot 认为该请求不含图
+        # 同时清空 extra_user_content_parts 里的 image_url 组件 + contexts 里的 image_url
+        if req.extra_user_content_parts:
+            self._remove_all_image_url_parts(req.extra_user_content_parts)
+        if req.contexts:
+            for c in req.contexts:
+                if isinstance(c, dict) and isinstance(c.get("content"), list):
+                    self._remove_all_image_url_components_in_context(c["content"])
+
+        # 把快照放进 _process_request 能拿到的位置
+        # 用一个 instance attribute 传递（simple and reliable）
+        self._pending_image_urls = saved_image_urls
+        self._pending_extra_parts = saved_extra_parts
+        self._pending_contexts_with_image = contexts_with_image
+
         # 可选的冗余日志：让用户/调试者能确认钩子被触发
         if self.config.get("verbose_logging", False):
             n_image = len(req.image_urls or [])
@@ -551,12 +593,23 @@ class VisionTextBridgePlugin(Star):
     async def _process_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """按顺序处理三类图片来源。"""
+        """按顺序处理三类图片来源。
+
+        **重要**：主钩子入口会**先清空** ``req.image_urls`` / ``req.extra_user_content_parts``
+        / ``req.contexts`` 中的 image_url 组件（防 AstrBot 切 provider）。我们
+        **优先从快照**（``self._pending_*``）读图——如果快照存在，说明是从主钩子
+        走过来的；如果快照不存在（直接调用 _process_request，e.g. 单元测试），
+        则回退到 ``req`` 上读（这种情况不会有 provider 切换问题）。
+        """
         image_index_start = 1
 
-        # 1. 处理 req.image_urls（最常见的位置）
-        if req.image_urls:
-            descriptions = await self._describe_urls(req.image_urls)
+        # 1. 处理 image_urls
+        pending_urls = getattr(self, "_pending_image_urls", None)
+        if pending_urls is None:
+            # 回退：直接读 req（单元测试 / 内部调用）
+            pending_urls = list(req.image_urls or [])
+        if pending_urls:
+            descriptions = await self._describe_urls(pending_urls)
             self._attach_descriptions_to_prompt(
                 req,
                 descriptions,
@@ -564,23 +617,41 @@ class VisionTextBridgePlugin(Star):
                 field="image_urls",
             )
             image_index_start += len(descriptions)
+        # 清快照
+        self._pending_image_urls = None
 
-        # 2. 处理 req.extra_user_content_parts（多模态 parts）
-        if self.config.get("include_extra_parts", True) and req.extra_user_content_parts:
-            urls = self._extract_image_urls_from_parts(req.extra_user_content_parts)
-            if urls:
-                descriptions = await self._describe_urls(urls)
-                self._attach_descriptions_to_prompt(
-                    req,
-                    descriptions,
-                    start_index=image_index_start,
-                    field="extra_user_content_parts",
-                )
-                image_index_start += len(descriptions)
+        # 2. 处理 extra_user_content_parts
+        if self.config.get("include_extra_parts", True):
+            pending_parts = getattr(self, "_pending_extra_parts", None)
+            if pending_parts is None:
+                pending_parts = list(req.extra_user_content_parts or [])
+            if pending_parts:
+                urls = self._extract_image_urls_from_parts(pending_parts)
+                if urls:
+                    descriptions = await self._describe_urls(urls)
+                    self._attach_descriptions_to_prompt(
+                        req,
+                        descriptions,
+                        start_index=image_index_start,
+                        field="extra_user_content_parts",
+                    )
+                    image_index_start += len(descriptions)
+            self._pending_extra_parts = None
 
-        # 3. 处理 req.contexts 历史（默认关闭，避免历史图片成本过高）
-        if self.config.get("include_history", False) and req.contexts:
-            for ctx in req.contexts:
+        # 3. 处理 contexts 历史
+        if self.config.get("include_history", False):
+            pending_ctxs = getattr(self, "_pending_contexts_with_image", None)
+            if pending_ctxs is None:
+                # 回退：从 req.contexts 里筛有图的
+                pending_ctxs = [
+                    c for c in (req.contexts or [])
+                    if isinstance(c, dict) and isinstance(c.get("content"), list)
+                    and any(
+                        isinstance(x, dict) and x.get("type") == "image_url"
+                        for x in c.get("content", [])
+                    )
+                ]
+            for ctx in pending_ctxs:
                 if not isinstance(ctx, dict):
                     continue
                 content = ctx.get("content")
@@ -596,6 +667,7 @@ class VisionTextBridgePlugin(Star):
                             context_target=ctx,
                         )
                         image_index_start += len(descriptions)
+            self._pending_contexts_with_image = None
 
     # ------------------------------------------------------------------ 描述 & 替换
 
