@@ -81,7 +81,7 @@ def make_config(**overrides):
         "command_timeout": 5,
         "max_concurrent_vision": 2,
         "vision_prompt": "请描述这张图片",
-        "image_placeholder_template": "【图片{index}：{description}】",
+        "image_placeholder_template": "【图片{index}（视觉模型描述）：{description}】",
         "max_description_length": 0,
         "include_history": False,
         "include_extra_parts": True,
@@ -262,7 +262,7 @@ def test_attach_with_prompt():
         field="image_urls",
     )
     assert req.prompt.startswith("用户问：这是什么")
-    assert "【图片1：一只橘猫趴在沙发上】" in req.prompt
+    assert "【图片1（视觉模型描述）：一只橘猫趴在沙发上】" in req.prompt
     assert req.image_urls == []  # 成功描述的图片从 image_urls 里移除了
     print("✓ test_attach_with_prompt")
 
@@ -276,7 +276,7 @@ def test_attach_no_prompt():
         start_index=1,
         field="image_urls",
     )
-    assert req.prompt == "【图片1：一只狗】"
+    assert req.prompt == "【图片1（视觉模型描述）：一只狗】"
     assert req.image_urls == []
     print("✓ test_attach_no_prompt")
 
@@ -305,8 +305,8 @@ def test_attach_index_continues():
         start_index=1,
         field="image_urls",
     )
-    assert "【图片1：desc-a】" in req.prompt
-    assert "【图片2：desc-b】" in req.prompt
+    assert "【图片1（视觉模型描述）：desc-a】" in req.prompt
+    assert "【图片2（视觉模型描述）：desc-b】" in req.prompt
     # 新行为：被处理过的图片全部清空（含 image_urls 列表中所有项）
     assert req.image_urls == []
     print("✓ test_attach_index_continues")
@@ -353,8 +353,8 @@ def test_e2e_image_urls_only():
 
     # prompt 拼接了两张图说
     assert "帮我看看" in req.prompt
-    assert "【图片1：描述: https://x.com/a.jpg】" in req.prompt
-    assert "【图片2：描述: https://x.com/b.jpg】" in req.prompt
+    assert "【图片1（视觉模型描述）：描述: https://x.com/a.jpg】" in req.prompt
+    assert "【图片2（视觉模型描述）：描述: https://x.com/b.jpg】" in req.prompt
     # image_urls 都被移除
     assert req.image_urls == []
     print("✓ test_e2e_image_urls_only")
@@ -375,7 +375,7 @@ def test_e2e_extra_parts():
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
     # 图说被注入 prompt，image_url part 被删除，text part 保留
-    assert "【图片1：x图说】" in req.prompt
+    assert "【图片1（视觉模型描述）：x图说】" in req.prompt
     assert len(req.extra_user_content_parts) == 1
     assert req.extra_user_content_parts[0]["type"] == "text"
     print("✓ test_e2e_extra_parts")
@@ -438,7 +438,7 @@ def test_e2e_history_in_contexts():
     assert len(new_content) == 1
     assert new_content[0]["type"] == "text"
     # 描述注入到了 req.prompt
-    assert "【图片1：历史图说】" in req.prompt
+    assert "【图片1（视觉模型描述）：历史图说】" in req.prompt
     print("✓ test_e2e_history_in_contexts")
 
 
@@ -453,9 +453,9 @@ def test_e2e_truncation_applied():
         asyncio.run(p._process_request(SimpleNamespace(), req))
 
     # 描述被截断到 5 个字符 + …
-    assert "【图片1：" in req.prompt
+    assert "【图片1（视觉模型描述）：" in req.prompt
     # 截断后是 5 字符 + "…" = 6 字符
-    desc_part = req.prompt.replace("【图片1：", "").rstrip("】")
+    desc_part = req.prompt.replace("【图片1（视觉模型描述）：", "").rstrip("】")
     assert len(desc_part) == 6  # 5 字符 + 省略号
     assert desc_part.endswith("…")
     print("✓ test_e2e_truncation_applied")
@@ -1282,7 +1282,7 @@ def test_end_to_end_full_flow():
             return_value=make_mmx_result("一只狗", "", 0, True),
         ):
             asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
-        assert "【图片1：一只狗】" in req.prompt
+        assert "【图片1（视觉模型描述）：一只狗】" in req.prompt
         assert req.image_urls == []
 
         # 2. 页面查询 stats
@@ -1324,15 +1324,18 @@ def test_end_to_end_full_flow():
 
 
 def test_inject_system_prompt_guidance_default_on():
-    """默认 inject_system_prompt_guidance=True 时，注入严格引用提示。"""
+    """默认 inject_system_prompt_guidance=True 时，注入严格引用提示 + 图说本身。"""
     p = new_plugin()
-    req = FakeReq(prompt="看图\n\n【图片1：一只狗】\n\n【图片2：一只猫】")
+    req = FakeReq(prompt="看图\n\n【图片1（视觉模型描述）：一只狗】\n\n【图片2（视觉模型描述）：一只猫】")
     req.system_prompt = "你是一个助手。"
     p._maybe_inject_system_prompt_guidance(req)
     # 应追加 system_prompt
-    assert "[系统提示]" in req.system_prompt
+    assert "[视觉模型描述]" in req.system_prompt
     assert "2 张图片" in req.system_prompt
     assert "严格基于" in req.system_prompt
+    # **关键**：图说本身也注入到 system_prompt （防止 AngelHeart 覆盖 req.prompt 后 LLM 看不到）
+    assert "一只狗" in req.system_prompt
+    assert "一只猫" in req.system_prompt
     # 原始 system_prompt 保留
     assert "你是一个助手。" in req.system_prompt
     print("✓ test_inject_system_prompt_guidance_default_on")
@@ -1340,7 +1343,7 @@ def test_inject_system_prompt_guidance_default_on():
 
 def test_inject_disabled_when_config_off():
     p = new_plugin(inject_system_prompt_guidance=False)
-    req = FakeReq(prompt="看图\n\n【图片1：一只狗】")
+    req = FakeReq(prompt="看图\n\n【图片1（视觉模型描述）：一只狗】")
     req.system_prompt = "你是一个助手。"
     p._maybe_inject_system_prompt_guidance(req)
     # 不应修改
@@ -1357,13 +1360,39 @@ def test_inject_no_images_in_prompt_no_op():
     print("✓ test_inject_no_images_in_prompt_no_op")
 
 
+def test_survives_prompt_overwrite_by_other_plugin():
+    """模拟 AngelHeart 等插件覆盖 req.prompt 后，system_prompt 仍含图说。"""
+    p = new_plugin()
+    # 1. 主钩子注入 prompt (含【图片1：xxx】) + system_prompt 注入
+    req = FakeReq(prompt="看图", image_urls=["https://x.com/x.jpg"])
+    with patch.object(
+        p, "_run_mmx",
+        return_value=make_mmx_result("猫", "", 0, True),
+    ):
+        asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
+
+    # 验证：主钩子处理后 prompt 含【图片1：xxx】, system_prompt 包含图说
+    assert "【图片1（视觉模型描述）：猫】" in req.prompt
+    assert "猫" in req.system_prompt  # system_prompt 里有图说
+    print("  before overwrite: prompt 含占位, system_prompt 含图说")
+
+    # 2. 模拟 AngelHeart 重写 req.prompt（完全覆盖）
+    req.prompt = "AngelHeart 重新生成的用户消息：UT 问图片"
+
+    # 3. 此时 LLM 看到的 prompt = "AngelHeart 重新生成的..."
+    #    但 system_prompt 仍含完整图说
+    assert "【图片1" not in req.prompt
+    assert "猫" in req.system_prompt  # system_prompt 未被覆盖
+    print("✓ test_survives_prompt_overwrite_by_other_plugin")
+
+
 def test_inject_creates_system_prompt_if_empty():
     p = new_plugin()
-    req = FakeReq(prompt="看图\n\n【图片1：一只狗】")
+    req = FakeReq(prompt="看图\n\n【图片1（视觉模型描述）：一只狗】")
     req.system_prompt = ""
     p._maybe_inject_system_prompt_guidance(req)
     assert req.system_prompt  # 非空
-    assert "[系统提示]" in req.system_prompt
+    assert "[视觉模型描述]" in req.system_prompt
     print("✓ test_inject_creates_system_prompt_if_empty")
 
 
@@ -1371,15 +1400,19 @@ def test_inject_counts_images_correctly():
     p = new_plugin()
     req = FakeReq(prompt="""用户消息
 
-【图片1：猫】
-【图片2：狗】
-【图片3：鸟】""")
+【图片1（视觉模型描述）：猫】
+【图片2（视觉模型描述）：狗】
+【图片3（视觉模型描述）：鸟】""")
     req.system_prompt = "X"
     p._maybe_inject_system_prompt_guidance(req)
     assert "3 张图片" in req.system_prompt
     assert "【图片1】" in req.system_prompt
     assert "【图片2】" in req.system_prompt
     assert "【图片3】" in req.system_prompt
+    # 所有图说都进入 system_prompt
+    assert "猫" in req.system_prompt
+    assert "狗" in req.system_prompt
+    assert "鸟" in req.system_prompt
     print("✓ test_inject_counts_images_correctly")
 
 
@@ -1536,6 +1569,7 @@ def run_all():
         test_inject_no_images_in_prompt_no_op,
         test_inject_creates_system_prompt_if_empty,
         test_inject_counts_images_correctly,
+        test_survives_prompt_overwrite_by_other_plugin,
         test_default_vision_prompt_is_conservative,
         test_default_image_placeholder_marks_as_vision_model,
         test_sibling_modules_loaded,

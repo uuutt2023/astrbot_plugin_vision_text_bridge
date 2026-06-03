@@ -916,34 +916,52 @@ class VisionTextBridgePlugin(Star):
     def _maybe_inject_system_prompt_guidance(
         self, req: ProviderRequest
     ) -> None:
-        """可选：向 system_prompt 注入“请严格引用图片描述”的提示。
+        """向 system_prompt 注入“图说本身 + 严格引用提示”。
 
-        背景：LLM 在拿到 prompt 中注入了图片描述后，**可能会**：
-          1. 改写描述（加味道、补充背景）
-          2. 凭印象/上下文猜测未明确的信息（例如看到周边就猜游戏名）
-          3. 重复描述、选择不引用
+        **为什么必须把图说也注入到 system_prompt**：
+        某些插件（例如 ``astrbot_plugin_angel_heart``）的
+        ``on_llm_request`` 钩子会在它们自己的优先级中 **完全重写**
+        ``req.prompt`` 为它们从 SQLite 重新生成的 final_prompt_str。
+        这会导致我们注入到 ``req.prompt`` 的【图片1：xxx】占位文本
+        被覆盖、丢失。LLM 看到的会是重写后的 prompt（不含图说）。
 
-        本方法在 system_prompt 末尾追加一段明确的指示，让 LLM 严格基于
-        prompt 中已有的图片描述来回答，不要凭“印象”扩充。
+        唯一在所有插件链中都被保留的位置是 ``req.system_prompt``。
+        为了让 LLM 仍能看到图说，**我们直接把图说也注入到 system_prompt**，
+        并附上“请严格引用”的指令。
+
         仅在配置 ``inject_system_prompt_guidance: true``（默认）时生效。
         """
         if not self.config.get("inject_system_prompt_guidance", True):
             return
-        # 计算被注入到 prompt 中的图片数量。从 image_urls 是否被清空判断不够准，
-        # 这里按 “prompt 中是否含【图片x：】” 文本作为信号。
         if not req.prompt:
             return
         import re
         n = len(re.findall(r"【图片\d+", req.prompt))
         if n <= 0:
             return
+
+        # 提取 prompt 中所有【图片N：...】占位块（含描述）
+        # 使用非贪婪匹配，遇到下一个【图片或字符串结尾
+        caption_pattern = re.compile(r"【图片\d+（视觉模型描述）：.*?】", re.DOTALL)
+        captions = caption_pattern.findall(req.prompt)
+        if not captions:
+            # fallback: 试试旧版格式 【图片N：...】
+            captions = re.findall(r"【图片\d+：.*?】", req.prompt, re.DOTALL)
+        if not captions:
+            return
+
         if n == 1:
             tags_hint = "【图片1】"
         else:
             tags_hint = f"【图片1】、 【图片2】 … 【图片{n}】"
+
+        # 拼接图说正文 + 严格引用指导
+        # 注意：放在 system_prompt 后面，因为 LLM 通常更重视靠近用户消息的指令。
+        captions_text = "\n\n".join(captions)
         guidance = (
-            f"\n\n[系统提示] 用户提供了 {n} 张图片的视觉描述（由视觉模型生成）"
-            f"，已标记为 {tags_hint}插入在用户消息中。\n"
+            f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述如下：\n\n"
+            f"{captions_text}\n\n"
+            f"以上描述标记为 {tags_hint}。\n"
             f"请在回复时严格基于这些描述来回答用户，不要：\n"
             f"  - 猜测未在描述中明确出现的游戏/番剧/品牌/角色名；\n"
             f"  - 凭印象补充描述之外的背景知识；\n"
