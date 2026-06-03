@@ -119,5 +119,11 @@
     "type": "bool",
     "hint": "默认关闭，仅删除 data:image/...;base64 残留。开启后，链末兑底钩子会删除所有 image_url 组件（不区分 URL 形式），避免 LLM 报 'unknown variant image_url' 400 错误。代价：主钩子未成功转述的图片信息会丢失。",
     "default": false
+  },
+  "keep_provider_modality_as_is": {
+    "description": "不修改 provider modalities（取消\"骗 AstrBot\"行为）",
+    "type": "bool",
+    "hint": "默认 false：插件初始化时给所有 provider 补上 image modality 标签，骗 AstrBot 不要切 fallback provider。**依赖**：本插件已在 on_llm_request 钩子入口清空 image_urls，所以主 provider 不会被发图。开启此项后，如果你的主 provider 真的不支持图，AstrBot 会切到 fallback（可能不是预期行为）。",
+    "default": false
   }
 }

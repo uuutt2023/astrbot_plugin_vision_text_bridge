@@ -27,6 +27,13 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
+try:
+    # 用于以 ContentPart Pydantic 对象形式注入 req.extra_user_content_parts
+    # AstrBot 内部在 _encode_message 里调 part.model_dump_for_context()，
+    # 必须用 Pydantic 对象（不能用裸 dict）。
+    from astrbot.core.agent.message import TextPart  # type: ignore
+except Exception:  # noqa: BLE001
+    TextPart = None  # fallback: 退到 dict（不推荐，但不让插件加载失败）
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +256,14 @@ class VisionTextBridgePlugin(Star):
             else:
                 await self._login_mmx(api_key)
 
+        # 5. **骗 AstrBot 不切 provider**
+        # AstrBot 会在 on_llm_request 钩子**之前**检测 provider 是否支持图。
+        # 如果不支持图，它会自动切到 fallback（通常是 deepseek-v4-flash，质量差且
+        # 我们插件不设计让 LLM 重新看图）。**本插件**已经在 on_llm_request 钩子
+        # 入口**清空** image_urls，所以主 provider 不会被发图——我们**名义上**给
+        # 它加上 "image" modality，**骗** AstrBot 不切 fallback。
+        self._mark_all_providers_support_image()
+
     def _get_plugin_data_dir(self) -> "Path":
         """拿到本插件的 data 目录。优先用 StarTools。"""
         try:
@@ -261,6 +276,126 @@ class VisionTextBridgePlugin(Star):
             p = Path(__file__).resolve().parent / "data"
             p.mkdir(parents=True, exist_ok=True)
             return p
+
+    def _mark_all_providers_support_image(self) -> None:
+        """**骗** AstrBot 所有 provider 都标"支持"image modality。
+
+        **为什么需要**：
+        AstrBot 在 ``astr_main_agent._select_image_chat_provider()`` 里检查
+        ``if not req.image_urls or _provider_supports_modality(provider, "image")``
+        ，决定要不要切到 fallback。本插件在 on_llm_request 钩子入口**已清空**
+        ``req.image_urls``，理论上不切——但日志显示 AstrBot **在调 on_llm_request
+        钩子之前**就切了，所以清空 image_urls 来不及。
+
+        唯一可行的修法是**让 provider 名义上支持图**：把
+        ``provider.provider_config["modalities"]`` 改为 ``["text", "image"]``。
+        这样 AstrBot 检查时直接 return provider，**不切**。
+
+        **安全性**：本插件保证 image_urls 在 hook 入口总是空的（v0.8），
+        所以**实际不会**给 provider 发图（LLM 不会看到图）。这只是名义上
+        补一个 modality 标签。
+
+        **影响范围**：AstraBot 加载后**内存**里改。AstrBot 重启会从配置
+        文件重新加载，重复 initialize 时会再改一次。
+        """
+        if self.config.get("keep_provider_modality_as_is", False):
+            logger.info(
+                "[vision_text_bridge] keep_provider_modality_as_is=true, 不动 provider modalities"
+            )
+            return
+        try:
+            ctx = self.context.astr_context  # type: ignore[attr-defined]
+        except Exception:
+            logger.debug("[vision_text_bridge] context.astr_context 不存在，跳过 provider 伪装")
+            return
+        try:
+            # AstrBot 4.x 的 context 有 provider_manager / get_provider_by_id
+            # 不同版本的 API 名称不同，例多型者小心。
+            manager = getattr(ctx, "provider_manager", None) or getattr(ctx, "providers", None)
+            if manager is None:
+                # 尝试用 get_provider_by_id 查已知 provider id
+                candidates = self._enumerate_provider_ids()
+            else:
+                candidates = self._providers_from_manager(manager)
+            modified = 0
+            for prov in candidates:
+                cfg = getattr(prov, "provider_config", None)
+                if not isinstance(cfg, dict):
+                    continue
+                modalities = cfg.get("modalities")
+                if modalities is None:
+                    # 未设过 modalites → 当作纯文本，加上 "image" 标签
+                    cfg["modalities"] = ["text", "image"]
+                    modified += 1
+                elif isinstance(modalities, list) and "image" not in modalities:
+                    cfg["modalities"] = list(modalities) + ["image"]
+                    modified += 1
+                else:
+                    continue
+                pid = cfg.get("id", "<unknown>")
+                logger.info(
+                    "[vision_text_bridge] 骗 AstrBot: provider %s 补上 'image' modality（实际由插件转文本）",
+                    pid,
+                )
+            if modified:
+                logger.info(
+                    "[vision_text_bridge] 已修改 %d 个 provider 的 modalities 标签", modified
+                )
+        except Exception as exc:
+            logger.warning(
+                "[vision_text_bridge] 修改 provider modalities 失败（不影响插件运行）: %s", exc
+            )
+
+    def _enumerate_provider_ids(self) -> list[Any]:
+        """从已知的 provider id 列表生成 provider 对象列表。
+
+        适用于 context 没有 provider_manager 但有 get_provider_by_id 的版本。
+        """
+        ctx = self.context.astr_context  # type: ignore[attr-defined]
+        out: list[Any] = []
+        # AstrBot 4.x 的 config 可能提供 provider 配置
+        try:
+            cfg = ctx.get_config() if hasattr(ctx, "get_config") else None
+        except Exception:
+            cfg = None
+        # 退而求其次：拿当前 default provider 和 fallback providers
+        seen_ids: set[str] = set()
+        for attr in ("_using_provider_id", "default_provider_id"):
+            pid = getattr(ctx, attr, None)
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                prov = ctx.get_provider_by_id(pid) if hasattr(ctx, "get_provider_by_id") else None
+                if prov is not None:
+                    out.append(prov)
+        # 还拿 fallback_chat_models
+        if cfg and isinstance(cfg.get("provider_settings"), dict):
+            fb = cfg["provider_settings"].get("fallback_chat_models", []) or []
+            for pid in fb:
+                if pid in seen_ids:
+                    continue
+                seen_ids.add(pid)
+                prov = ctx.get_provider_by_id(pid) if hasattr(ctx, "get_provider_by_id") else None
+                if prov is not None:
+                    out.append(prov)
+        return out
+
+    def _providers_from_manager(self, manager: Any) -> list[Any]:
+        """从 provider_manager/providers 拿到所有 provider。"""
+        out: list[Any] = []
+        # provider_manager.providers 是 dict[id, Provider]
+        provs = getattr(manager, "providers", None)
+        if isinstance(provs, dict):
+            out.extend(provs.values())
+        elif isinstance(provs, list):
+            out.extend(provs)
+        # 还可能叫 get_all_providers
+        getter = getattr(manager, "get_all_providers", None)
+        if callable(getter):
+            try:
+                out.extend(getter())
+            except Exception:
+                pass
+        return out
 
     # ------------------------------------------------------------------ 页面 API
 
@@ -977,11 +1112,17 @@ class VisionTextBridgePlugin(Star):
         # 1) **以 content block 形式** 附加到 req.extra_user_content_parts
         #    这是 AstrBot 在 _encode_message 中**直接作为 user content block**
         #    发给 LLM 的字段，且**不被 AngelHeart 等重写插件修改**。
+        #
+        # **重要**：必须是 ContentPart Pydantic 对象（具有 model_dump_for_context 方法），
+        # 不能是 dict。直接 append dict 会让 AstrBot 在 _encode_message 里
+        # 崩溃：``'dict' object has no attribute 'model_dump_for_context'``。
         if req.extra_user_content_parts is None:
             req.extra_user_content_parts = []
         for part in parts_to_attach:
-            # 兼容 AstrBot 的 ContentPart Pydantic 模型：允许 dict 或对象
-            req.extra_user_content_parts.append(part)
+            # 优先用 TextPart（保证 model_dump_for_context 存在）；如果导入失败
+            # 才退到 dict（但可能崩）
+            obj = self._to_text_part(part)
+            req.extra_user_content_parts.append(obj)
 
         # 2) **全部** 清除被处理过的 image_url，不留残留
         # 这样即使 mmx 调用失败，也不会让 raw image_url 走到 LLM 那里
@@ -1196,6 +1337,20 @@ class VisionTextBridgePlugin(Star):
         if isinstance(part, dict):
             return part.get("type") == "image_url"
         return getattr(part, "type", None) == "image_url"
+
+    @staticmethod
+    def _to_text_part(part_dict: dict) -> Any:
+        """将 ``{"type": "text", "text": "..."}`` dict 转为 AstrBot ContentPart 对象。
+
+        AstrBot 在 ``ProviderRequest._encode_message`` 里用
+        ``part.model_dump_for_context()`` 序列化 part，如果传裸 dict 会崩。
+        优先用 :class:`TextPart`；如果导入失败（如插件不依赖 astrbot
+        core.agent.message 路径）退到 dict（理论下会崩，**仅为不让插件
+        加载失败**）。
+        """
+        if TextPart is not None and isinstance(part_dict, dict):
+            return TextPart(text=part_dict.get("text", ""))
+        return part_dict
 
     @staticmethod
     def _remove_all_image_url_parts(parts: list[Any]) -> None:

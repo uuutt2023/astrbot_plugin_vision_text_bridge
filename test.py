@@ -1521,6 +1521,73 @@ def test_main_hook_saves_snapshots_for_process_request():
     print("✓ test_main_hook_saves_snapshots_for_process_request")
 
 
+def test_to_text_part_creates_pydantic_object():
+    """验证 _to_text_part 返回的对象有 model_dump_for_context 方法（防止 v0.7 崩溃）。"""
+    p = new_plugin()
+    obj = p._to_text_part({"type": "text", "text": "hello"})
+    # 必须有 model_dump_for_context 方法
+    if hasattr(obj, "model_dump_for_context"):
+        # 如果有，是 Pydantic 对象
+        result = obj.model_dump_for_context()
+        assert result["text"] == "hello"
+        assert result["type"] == "text"
+        print("✓ test_to_text_part_creates_pydantic_object (Pydantic)")
+    else:
+        # fallback 到 dict（在没有 astrbot 模块的测试环境下）
+        assert obj == {"type": "text", "text": "hello"}
+        print("✓ test_to_text_part_creates_pydantic_object (dict fallback)")
+
+
+def test_mark_providers_adds_image_modality():
+    """验证 _mark_all_providers_support_image 给 provider 补 'image' modality。"""
+    p = new_plugin()
+
+    # Mock context with provider_manager
+    class FakeProvider:
+        def __init__(self, pid, modalities=None):
+            self.provider_config = {"id": pid}
+            if modalities is not None:
+                self.provider_config["modalities"] = modalities
+
+    class FakeManager:
+        def __init__(self, providers):
+            self.providers = {p.provider_config["id"]: p for p in providers}
+
+    p1 = FakeProvider("minimax-token-plan/MiniMax-M2.5", modalities=["text"])
+    p2 = FakeProvider("deepseek/deepseek-v4-flash", modalities=None)
+    p3 = FakeProvider("openai/gpt-4o", modalities=["text", "image"])  # 已有 image
+
+    fake_ctx = SimpleNamespace(provider_manager=FakeManager([p1, p2, p3]))
+    p.context = SimpleNamespace(astr_context=fake_ctx)
+
+    p._mark_all_providers_support_image()
+
+    # 三个都应被加上 'image' modality
+    assert "image" in p1.provider_config["modalities"]
+    assert "image" in p2.provider_config["modalities"]
+    assert "image" in p3.provider_config["modalities"]  # 原本就有
+    # p1 的 modalities 应保留 text
+    assert "text" in p1.provider_config["modalities"]
+    print("✓ test_mark_providers_adds_image_modality")
+
+
+def test_mark_providers_skipped_when_config_off():
+    """keep_provider_modality_as_is=True 时不动 provider modalities。"""
+    p = new_plugin(keep_provider_modality_as_is=True)
+
+    class FakeProvider:
+        provider_config = {"id": "x", "modalities": ["text"]}
+
+    fake_ctx = SimpleNamespace(provider_manager=SimpleNamespace(providers={"x": FakeProvider()}))
+    p.context = SimpleNamespace(astr_context=fake_ctx)
+
+    p._mark_all_providers_support_image()
+
+    # modalities 不变
+    assert FakeProvider.provider_config["modalities"] == ["text"]
+    print("✓ test_mark_providers_skipped_when_config_off")
+
+
 def test_survives_prompt_overwrite_by_other_plugin():
     """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
     任何插件重写 prompt 都不会丢失。"""
@@ -1772,6 +1839,9 @@ def run_all():
         test_main_hook_clears_image_urls_immediately,
         test_main_hook_clears_extra_parts_and_contexts_images,
         test_main_hook_saves_snapshots_for_process_request,
+        test_to_text_part_creates_pydantic_object,
+        test_mark_providers_adds_image_modality,
+        test_mark_providers_skipped_when_config_off,
     ]
     failed = 0
     for t in tests:
