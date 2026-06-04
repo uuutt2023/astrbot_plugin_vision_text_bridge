@@ -7,6 +7,15 @@
 
 无新变更。
 
+## [0.8.5] - 2026-06-04
+
+### 修复
+- **chat_plus 默认配置下不传图给 LLM**：chat_plus 的 `enable_image_processing` 默认 `False`，它的 `process_message_images` 看到 `enable_image_processing=False` + `has_text=True` 会**返回 `image_urls=[]`**（不传图）。然后 chat_plus 调 `event.request_llm(image_urls=[], ...)`，构造**不包含图**的 ProviderRequest，框架**直接**用这个 req 触发 `on_llm_request` 钩子。本插件看到 `req.image_urls=[]`，不调 mmx，LLM 看不到图说。
+
+  **修复**：主钩子**还从 `event.message_obj.message` 里拿 Image 组件**，调 `convert_to_file_path()` 拿本地图路径，**绕过** chat_plus 的删除行为。这样本插件在 chat_plus 默认配置下也能处理图。
+
+  使用 **duck-typing**（`hasattr(comp, "convert_to_file_path")` + `type == "image"`）避免依赖 `astrbot.core.message.components.Image` 路径（沙箱 / 未来重命名兼容）。
+
 ## [0.8.4] - 2026-06-04
 
 ### 修复

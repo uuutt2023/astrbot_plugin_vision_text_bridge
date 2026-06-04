@@ -760,6 +760,58 @@ class VisionTextBridgePlugin(Star):
             )
         ]
 
+        # ============================================================
+        # **【v0.8.5】防御 chat_plus 等中间插件抽走图**
+        # ============================================================
+        # chat_plus 默认 enable_image_processing=False，调用 event.request_llm
+        # 时传 image_urls=[]（不把图给 LLM），但 event.message_obj.message 里
+        # 的 Image 组件**还保留**。这是它“拒绝多模态”的设计：
+        #   - 配置 enable_image_processing=True + image_to_text_provider_id=***
+        #     走“图转文本”路径
+        #   - 都不配则 image_urls=[]，LLM 完全看不到图
+        # 我们的处理：除了从 req.image_urls 取，**还从 event.message_obj.message
+        # 取** Image 组件，拿到本地图路径（**包 file:// 方案**都试）追加到
+        # saved_image_urls。这样本插件在 chat_plus 默认配置下也能处理图。
+        if event is not None:
+            try:
+                # 用 duck-typing 判断 Image 组件（避免依赖 astrbot.core.message.components
+                # 导入路径——在测试环境或未来 AstrBot 重命名时可能会变）
+                msg_obj = getattr(event, "message_obj", None)
+                chain = getattr(msg_obj, "message", None) if msg_obj else None
+                if chain:
+                    for comp in chain:
+                        # Image 组件有 convert_to_file_path 方法 + type="image" 属性
+                        ctype = getattr(comp, "type", None)
+                        has_convert = hasattr(comp, "convert_to_file_path") and callable(
+                            getattr(comp, "convert_to_file_path", None)
+                        )
+                        is_image_like = (
+                            ctype == "image" or ctype == "Image"
+                        ) and has_convert
+                        if not is_image_like:
+                            continue
+                        try:
+                            file_path = await comp.convert_to_file_path()
+                        except Exception:
+                            file_path = None
+                        if file_path and file_path not in saved_image_urls:
+                            saved_image_urls.append(file_path)
+                        # 如果有 url 字段，也加上
+                        url = getattr(comp, "url", None) or getattr(comp, "file", None)
+                        if url and url not in saved_image_urls:
+                            saved_image_urls.append(url)
+            except Exception as _e:
+                logger.debug("[vision_text_bridge] 从 event.message_obj 补提图失败: %s", _e)
+        # 同时记录哪些 contexts 里有图（用于 _process_request 逐个处理）
+        contexts_with_image = [
+            c for c in saved_contexts
+            if isinstance(c, dict) and isinstance(c.get("content"), list)
+            and any(
+                isinstance(x, dict) and x.get("type") == "image_url"
+                for x in c.get("content", [])
+            )
+        ]
+
         req.image_urls = []  # **先清空**，让 AstrBot 认为该请求不含图
         # 同时清空 extra_user_content_parts 里的 image_url 组件 + contexts 里的 image_url
         if req.extra_user_content_parts:

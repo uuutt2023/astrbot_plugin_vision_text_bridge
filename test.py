@@ -1787,6 +1787,56 @@ def test_chat_plus_style_image_reinjection_is_cleaned():
     print("✓ test_chat_plus_style_image_reinjection_is_cleaned")
 
 
+def test_chat_plus_compat_event_image_components_recovered():
+    """v0.8.5: chat_plus 默认 enable_image_processing=False，导致它调
+    event.request_llm(image_urls=[]) 不传图。LLM 看到 0 图。
+
+    本插件不应被这个默认配置劫持——从 event.message_obj.message 里
+    补提 Image 组件，拿到本地图路径。
+    """
+    import tempfile
+    from pathlib import Path
+    p = new_plugin()
+    p._vision_semaphore = asyncio.Semaphore(1)
+    # 创建一个临时图文件
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+        f.write(b"fake image bytes")
+        tmp_path = f.name
+    try:
+        # mock event with message_obj.message containing Image component
+        class _Image:
+            # AstrBot 实际 Image 组件有 type="image" 属性（Pydantic ComponentType 枚举）
+            type = "image"
+
+            def __init__(self, path):
+                self.path = path
+                self.url = None
+                self.file = None
+            async def convert_to_file_path(self):
+                return self.path
+
+        class _Msg:
+            def __init__(self, path):
+                self.message = [_Image(path)]
+        class _Evt:
+            def __init__(self, path):
+                self.message_obj = _Msg(path)
+
+        evt = _Evt(tmp_path)
+        # req.image_urls is **empty** (chat_plus 行为)
+        req = FakeReq(prompt="看图", image_urls=[])
+
+        with patch.object(p, "_run_mmx", return_value=make_mmx_result("小猫", "", 0, True)):
+            asyncio.run(p.bridge_vision_to_text(evt, req))
+
+        # **关键**：图说在 extra_user_content_parts（即使 req.image_urls=[]）
+        assert len(req.extra_user_content_parts) == 1
+        assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 小猫"
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    print("✓ test_chat_plus_compat_event_image_components_recovered")
+
+
 def test_survives_prompt_overwrite_by_other_plugin():
     """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
     任何插件重写 prompt 都不会丢失。"""
@@ -2048,6 +2098,7 @@ def run_all():
         test_get_installed_plugin_names_handles_missing_attr,
         test_check_compatibility_warns_on_uni_nickname_low_priority,
         test_chat_plus_style_image_reinjection_is_cleaned,
+        test_chat_plus_compat_event_image_components_recovered,
     ]
     failed = 0
     for t in tests:
