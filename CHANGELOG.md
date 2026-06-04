@@ -7,6 +7,15 @@
 
 无新变更。
 
+## [0.8.5.1] - 2026-06-04
+
+### 修复
+- **同张图被调 mmx 两次**（v0.8.5 bug）：v0.8.5 的 `event.message_obj.message` 补提图代码**同时**用了 `convert_to_file_path()` 返回的本地路径 **和** `comp.url` / `comp.file` 字段。在 QQ 场景下 `comp.url = 'https://multimedia.nt.qq.com.cn/...'`（远程 URL）**不等于** 本地路径——同图被调 mmx **两次**（local 成功 + remote 超时 60s）。
+
+  **修复**：只取 `convert_to_file_path()` 返回的本地路径（可能是 AstrBot 压缩后的 `io_temp_img_*.jpg`），丢弃 `comp.url` / `comp.file`（这些原始 URL 下载慢、可能超时、且与 local path 指向同图）。
+
+  新增测试 `test_v0851_no_duplicate_mmx_call_for_same_image` 验证 Image 组件同时有 url 和 path 时 mmx 只调一次。
+
 ## [0.8.5] - 2026-06-04
 
 ### 修复

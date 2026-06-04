@@ -790,16 +790,19 @@ class VisionTextBridgePlugin(Star):
                         ) and has_convert
                         if not is_image_like:
                             continue
+                        # **v0.8.5.1 修复**：只取 `convert_to_file_path()` 返回的本地路径。
+                        # `comp.url` / `comp.file` 字段在某些平台是原始 URL（如 QQ 的
+                        # `https://multimedia.nt.qq.com.cn/...`），**不**能作为 mmx 输入
+                        # （远程 URL 下载慢、可能限时 60s 超时），而且同图同时取 local + remote
+                        # 路径会导致**重复调 mmx**（v0.8.5 bug）。
+                        # `convert_to_file_path()` 返回的本地路径（可能是 AstrBot 压缩后的
+                        # `io_temp_img_*.jpg` 或平台原始路径）是可信任的。
                         try:
                             file_path = await comp.convert_to_file_path()
                         except Exception:
                             file_path = None
                         if file_path and file_path not in saved_image_urls:
                             saved_image_urls.append(file_path)
-                        # 如果有 url 字段，也加上
-                        url = getattr(comp, "url", None) or getattr(comp, "file", None)
-                        if url and url not in saved_image_urls:
-                            saved_image_urls.append(url)
             except Exception as _e:
                 logger.debug("[vision_text_bridge] 从 event.message_obj 补提图失败: %s", _e)
         # 同时记录哪些 contexts 里有图（用于 _process_request 逐个处理）

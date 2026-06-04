@@ -1808,9 +1808,9 @@ def test_chat_plus_compat_event_image_components_recovered():
             # AstrBot 实际 Image 组件有 type="image" 属性（Pydantic ComponentType 枚举）
             type = "image"
 
-            def __init__(self, path):
+            def __init__(self, path, url=None):
                 self.path = path
-                self.url = None
+                self.url = url
                 self.file = None
             async def convert_to_file_path(self):
                 return self.path
@@ -1835,6 +1835,63 @@ def test_chat_plus_compat_event_image_components_recovered():
     finally:
         Path(tmp_path).unlink(missing_ok=True)
     print("✓ test_chat_plus_compat_event_image_components_recovered")
+
+
+def test_v0851_no_duplicate_mmx_call_for_same_image():
+    """v0.8.5.1 修复：Image 组件的 url/file 字段与 convert_to_file_path() 可能指向同张图。
+    之前 v0.8.5 同时取二者，导致同张图被调 2 次 mmx（local 路径成功 + remote URL 超时）。
+    现在只取 convert_to_file_path()，确保不重复。
+    """
+    import tempfile
+    from pathlib import Path
+    p = new_plugin()
+    p._vision_semaphore = asyncio.Semaphore(1)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+        f.write(b"fake image bytes")
+        tmp_path = f.name
+    try:
+        class _Image:
+            type = "image"
+            def __init__(self, path, url):
+                self.path = path
+                self.url = url  # remote URL
+                self.file = None
+            async def convert_to_file_path(self):
+                return self.path
+
+        class _Msg:
+            def __init__(self, comp):
+                self.message = [comp]
+        class _Evt:
+            def __init__(self, comp):
+                self.message_obj = _Msg(comp)
+
+        # Image 组件有 url（远程 QQ URL）和 path（local path）
+        comp = _Image(tmp_path, "https://multimedia.nt.qq.com.cn/download?xxx")
+        evt = _Evt(comp)
+        req = FakeReq(prompt="看图", image_urls=[])
+
+        # 记录 mmx 调用次数
+        call_args = []
+
+        async def fake_run_mmx(*args, **kwargs):
+            call_args.append(args)
+            return make_mmx_result("描述", "", 0, True)
+
+        with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+            asyncio.run(p.bridge_vision_to_text(evt, req))
+
+        # **关键**：mmx 应**只调一次**（用 local path，不用 remote URL）
+        assert len(call_args) == 1, f"expected 1 mmx call, got {len(call_args)}"
+        # 调用应是 local path
+        url_arg = call_args[0][3]  # vision describe --image <path> --prompt ...
+        assert "multimedia.nt.qq.com.cn" not in url_arg, (
+            f"mmx 用了远程 URL: {url_arg}"
+        )
+        assert tmp_path in url_arg or url_arg == tmp_path
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    print("✓ test_v0851_no_duplicate_mmx_call_for_same_image")
 
 
 def test_survives_prompt_overwrite_by_other_plugin():
@@ -2099,6 +2156,7 @@ def run_all():
         test_check_compatibility_warns_on_uni_nickname_low_priority,
         test_chat_plus_style_image_reinjection_is_cleaned,
         test_chat_plus_compat_event_image_components_recovered,
+        test_v0851_no_duplicate_mmx_call_for_same_image,
     ]
     failed = 0
     for t in tests:
