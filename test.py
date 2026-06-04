@@ -113,7 +113,6 @@ def new_plugin(**overrides):
     p._configured_priority = p._resolve_priority()
     # 默认 None，让 _describe_one 在 SQLite 缓存表走 None 路径
     p._caption_cache = None
-    p._chat_archive_link = None
     # 注入一个 mock context，让 _register_web_apis 不报错
     p.context = SimpleNamespace(
         request=SimpleNamespace(
@@ -1085,6 +1084,111 @@ def test_caption_cache_basic_crud():
     print("✓ test_caption_cache_basic_crud")
 
 
+def test_caption_cache_v0_8_6_image_id_and_b64():
+    """v0.8.6: image_id 主键 + 存 base64 / mime / 宽高 / size 元信息。"""
+    import tempfile
+    import base64
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "v8_8_6.sqlite3")
+        # 模拟存一张 JPEG
+        fake_jpg = b"\xff\xd8\xff\xe0\x00\x10JFIFfake-bytes-for-test"
+        b64 = base64.b64encode(fake_jpg).decode("ascii")
+        cache.put(
+            "md5_abc",
+            "file:///tmp/x.jpg",
+            "描述",
+            image_b64=b64,
+            mime_type="image/jpeg",
+            file_size=len(fake_jpg),
+            width=320,
+            height=240,
+        )
+        # 取回
+        entry = cache.get("md5_abc", with_b64=True)
+        assert entry is not None
+        assert entry.image_id == "md5_abc"
+        assert entry.mime_type == "image/jpeg"
+        assert entry.file_size == len(fake_jpg)
+        assert entry.width == 320
+        assert entry.height == 240
+        assert entry.image_b64 == b64
+        # list 不返 base64（以减小 body）
+        items = cache.list(limit=10)
+        assert len(items) == 1
+        assert items[0].image_b64 == ""  # 默认不返
+        assert "image_b64" not in items[0].to_dict()  # to_dict 也不返
+        # 显式 include_b64=True 才返
+        items_with_b64 = cache.list(limit=10, include_b64=True)
+        assert items_with_b64[0].image_b64 == b64
+    print("✓ test_caption_cache_v0_8_6_image_id_and_b64")
+
+
+def test_caption_cache_v0_8_6_schema_upgrade():
+    """v0.8.6 schema 升级：老库 (无 image_b64 等列) 启动后能补上。"""
+    import tempfile
+    import sqlite3
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "legacy.sqlite3"
+        # 手建老 schema
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE image_captions (
+                image_key TEXT PRIMARY KEY,
+                image_url TEXT NOT NULL,
+                description TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                last_hit_at REAL
+            );
+        """)
+        conn.execute(
+            "INSERT INTO image_captions VALUES (?, ?, ?, ?, ?, ?)",
+            ("abc", "https://x.com/1.jpg", "老描述", 100.0, 5, 99.0),
+        )
+        conn.commit()
+        conn.close()
+        # 打开 CaptionCache 应自动补上缺失列
+        cache = main.CaptionCache(db_path)
+        entry = cache.get("abc", with_b64=True)
+        assert entry is not None
+        assert entry.image_id == "abc"
+        assert entry.description == "老描述"
+        # 新列都在
+        assert entry.mime_type == ""
+        assert entry.file_size == 0
+        assert entry.width == 0
+        assert entry.height == 0
+        assert entry.image_b64 == ""
+        # 新增能存
+        cache.put(
+            "def", "https://x.com/2.jpg", "新描述",
+            mime_type="image/png", file_size=10, width=1, height=1, image_b64="AAA",
+        )
+        new = cache.get("def", with_b64=True)
+        assert new is not None
+        assert new.mime_type == "image/png"
+    print("✓ test_caption_cache_v0_8_6_schema_upgrade")
+
+
+def test_caption_cache_make_id_helpers():
+    """v0.8.6: 静态 id 生成器。"""
+    # make_id_from_bytes：同 bytes 返同 id
+    id1 = main.CaptionCache.make_id_from_bytes(b"hello")
+    id2 = main.CaptionCache.make_id_from_bytes(b"hello")
+    id3 = main.CaptionCache.make_id_from_bytes(b"world")
+    assert id1 == id2
+    assert id1 != id3
+    assert len(id1) == 32
+    # make_id_from_url：退路
+    id4 = main.CaptionCache.make_id_from_url("https://x.com/a.jpg")
+    assert id4 == main.CaptionCache.make_id_from_url("https://x.com/a.jpg")
+    assert id4 != main.CaptionCache.make_id_from_url("https://x.com/b.jpg")
+    assert len(id4) == 32
+    print("✓ test_caption_cache_make_id_helpers")
+
+
 def test_caption_cache_persistence():
     """SQLite 缓存跨实例保留。"""
     import tempfile
@@ -1107,9 +1211,9 @@ def test_caption_cache_list_and_search():
     from pathlib import Path
     with tempfile.TemporaryDirectory() as tmp:
         cache = main.CaptionCache(Path(tmp) / "list.sqlite3")
-        cache.put("a", "https://a.com/1.jpg", "猫")
-        cache.put("b", "https://b.com/2.jpg", "狗")
-        cache.put("c", "https://c.com/3.jpg", "猫头鹰")
+        cache.put("id_a", "https://a.com/1.jpg", "猫")
+        cache.put("id_b", "https://b.com/2.jpg", "狗")
+        cache.put("id_c", "https://c.com/3.jpg", "猫头鹰")
         all_items = cache.list(limit=10, offset=0)
         assert len(all_items) == 3
         cat_items = cache.list(limit=10, offset=0, search="猫")
@@ -1123,11 +1227,11 @@ def test_caption_cache_list_and_search():
         page1 = cache.list(limit=1, offset=0, order_by="created_at_asc")
         assert len(page1) == 1
         # 排序测试
-        cache.get("a")  # 增加 hit_count
-        cache.get("a")
-        cache.get("a")
+        cache.get("id_a")  # 增加 hit_count
+        cache.get("id_a")
+        cache.get("id_a")
         most_hit = cache.list(limit=10, offset=0, order_by="hit_count_desc")
-        assert most_hit[0].image_key == "a"
+        assert most_hit[0].image_id == "id_a"
     print("✓ test_caption_cache_list_and_search")
 
 
@@ -1167,10 +1271,8 @@ def test_describe_one_uses_sqlite_cache():
     import hashlib
     from pathlib import Path
     url = "https://x.com/cached.jpg"
-    # v0.8.2: 缓存 key 是 md5(图片内容)。但测试环境下载不到 http URL，
-    # 调 _compute_image_cache_key 会走 fallback url 路径。这里手动算 md5
-    # 作为预填 key（逼以发生进生“下载失败”退到 url 路径）。
-    expected_key = f"url:{url}"
+    # v0.8.6: image_id 退路是 md5(url 字符串)
+    expected_key = hashlib.md5(url.encode("utf-8")).hexdigest()
     with tempfile.TemporaryDirectory() as tmp:
         p = new_plugin()
         p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
@@ -1196,9 +1298,10 @@ def test_describe_one_uses_sqlite_cache():
 def test_describe_one_writes_to_sqlite_cache():
     """mmx 成功后应同时写内存 + SQLite 缓存。"""
     import tempfile
+    import hashlib
     from pathlib import Path
     url = "https://x.com/fresh.jpg"
-    expected_key = f"url:{url}"  # 退到 url 路径
+    expected_key = hashlib.md5(url.encode("utf-8")).hexdigest()  # v0.8.6: 退路 md5(url)
     with tempfile.TemporaryDirectory() as tmp:
         p = new_plugin()
         p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
@@ -1216,94 +1319,16 @@ def test_describe_one_writes_to_sqlite_cache():
     print("✓ test_describe_one_writes_to_sqlite_cache")
 
 
-# ------------------------------------------------------------------ 单测：Chat Archive 联动
+# ------------------------------------------------------------------ 单测：Chat Archive 联动已移除 (v0.8.6)
 
 
-def test_chat_archive_link_no_plugin():
-    """data 目录中没找到 chat_archive 插件时，available=False。"""
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        # 模拟本插件 data dir: .../data/plugins/<self>/data/
-        # 兄弟目录没有 chat_archive
-        self_data = Path(tmp) / "plugins" / "self_plugin" / "data"
-        self_data.mkdir(parents=True)
-        link = main.ChatArchiveLink(plugin_data_dir=self_data)
-        assert link.available is False
-        assert link.web_cache_dir is None
-    print("✓ test_chat_archive_link_no_plugin")
-
-
-def test_chat_archive_link_detected():
-    """data 目录中找到 chat_archive 插件时，available=True。"""
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        plugins_root = Path(tmp) / "plugins"
-        # 自己的 data
-        self_data = plugins_root / "self_plugin" / "data"
-        self_data.mkdir(parents=True)
-        # Chat Archive 的 data + web_cache
-        ca_data = plugins_root / "astrbot_plugin_chat_archive" / "data"
-        web_cache = ca_data / "web_cache"
-        web_cache.mkdir(parents=True)
-        (web_cache / "abc123.jpg").write_bytes(b"fake image")
-
-        link = main.ChatArchiveLink(plugin_data_dir=self_data)
-        assert link.available is True
-        assert link.web_cache_dir is not None
-        assert link.web_cache_dir.exists()
-        files = link.list_cached_files()
-        assert len(files) == 1
-    print("✓ test_chat_archive_link_detected")
-
-
-def test_chat_archive_link_detected_without_web_cache():
-    """data 目录在但 web_cache 还没创建——仍算 available=True。"""
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        plugins_root = Path(tmp) / "plugins"
-        self_data = plugins_root / "self_plugin" / "data"
-        self_data.mkdir(parents=True)
-        ca_data = plugins_root / "astrbot_plugin_chat_archive" / "data"
-        ca_data.mkdir(parents=True)
-        # 注意：没创建 web_cache
-
-        link = main.ChatArchiveLink(plugin_data_dir=self_data)
-        assert link.available is True  # 插件在
-        assert link.web_cache_dir is None  # web_cache 还没
-    print("✓ test_chat_archive_link_detected_without_web_cache")
-
-
-def test_chat_archive_link_refresh():
-    """refresh() 应能强制重新检测。"""
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        plugins_root = Path(tmp) / "plugins"
-        self_data = plugins_root / "self_plugin" / "data"
-        self_data.mkdir(parents=True)
-        ca_data = plugins_root / "astrbot_plugin_chat_archive" / "data"
-        ca_data.mkdir(parents=True)
-
-        link = main.ChatArchiveLink(plugin_data_dir=self_data)
-        # 第一次检测：available 但 web_cache 为 None
-        assert link.available is True
-        assert link.web_cache_dir is None
-        # 创建 web_cache，refresh 应检测到
-        web_cache = ca_data / "web_cache"
-        web_cache.mkdir()
-        link.refresh()
-        assert link.web_cache_dir is not None
-    print("✓ test_chat_archive_link_refresh")
 
 
 # ------------------------------------------------------------------ 单测：web API
 
 
 def test_register_web_apis_called():
-    """_register_web_apis 应注册 7 个 web API。"""
+    """v0.8.6: _register_web_apis 应注册 6 个 web API（v0.8.5 之前 7 个，删了 chat-archive/refresh）。"""
     p = new_plugin()
     calls = []
 
@@ -1322,7 +1347,9 @@ def test_register_web_apis_called():
     assert any("cache/clear" in r for r in routes)
     assert any("cache/regenerate" in r for r in routes)
     assert any("cache/export" in r for r in routes)
-    assert any("chat-archive/refresh" in r for r in routes)
+    assert any("cache/thumbnail" in r for r in routes)  # v0.8.6 新增
+    # 确认 chat-archive/refresh 已删
+    assert not any("chat-archive" in r for r in routes)
     print("✓ test_register_web_apis_called")
 
 
@@ -1371,9 +1398,9 @@ def test_end_to_end_full_flow():
 
         # 5. 页面删除 (先清内存)
         p._description_cache.clear()
-        # v0.8.2: 缓存 key 是 md5 或 url
-        # 测试环境 _compute_image_cache_key 走 url fallback
-        key = f"url:https://x.com/x.jpg"
+        # v0.8.6: image_id 是 32 位 hex（md5(url)）
+        import hashlib
+        key = hashlib.md5("https://x.com/x.jpg".encode("utf-8")).hexdigest()
         ok = p._caption_cache.delete(key)
         assert ok
         assert p._caption_cache.count() == 0
@@ -1612,7 +1639,7 @@ def test_mark_providers_skipped_when_config_off():
 
 
 def test_cache_key_uses_md5_for_file_url():
-    """v0.8.2: file:// 路径的缓存 key 应为图片内容 md5。"""
+    """v0.8.6: file:// 路径的缓存 image_id 应为图片内容 md5。"""
     import tempfile
     from pathlib import Path
     import hashlib
@@ -1626,27 +1653,29 @@ def test_cache_key_uses_md5_for_file_url():
         # 读取文件应该能读到这些字节
         bytes_read = Path(tmp_path).read_bytes()
         expected_md5 = hashlib.md5(bytes_read).hexdigest()
-        expected_key = f"md5:{expected_md5}"
         # 调 _compute_image_cache_key
         key = asyncio.run(p._compute_image_cache_key(file_url))
-        assert key == expected_key, f"expected {expected_key}, got {key}"
+        assert key == expected_md5, f"expected {expected_md5}, got {key}"
     finally:
         Path(tmp_path).unlink(missing_ok=True)
     print("✓ test_cache_key_uses_md5_for_file_url")
 
 
 def test_cache_key_falls_back_to_url_on_read_failure():
-    """读图片字节失败时，key 退到 url。"""
+    """v0.8.6: 读图片字节失败时，key 退到 md5(url 字符串)。"""
+    import hashlib
     p = new_plugin()
     # 调一个不存在的文件
-    key = asyncio.run(p._compute_image_cache_key("file:///nonexistent/file.jpg"))
-    assert key.startswith("url:")
-    assert "nonexistent" in key
+    url = "file:///nonexistent/file.jpg"
+    key = asyncio.run(p._compute_image_cache_key(url))
+    # 应为 32 位 hex，且等于 md5(url)
+    assert len(key) == 32
+    assert key == hashlib.md5(url.encode("utf-8")).hexdigest()
     print("✓ test_cache_key_falls_back_to_url_on_read_failure")
 
 
 def test_same_image_different_path_hits_cache():
-    """**v0.8.2 关键场景**：同一张图不同路径能命中缓存（QQ 群聊的痛点）。"""
+    """**v0.8.6 关键场景**：同一张图不同路径能命中缓存（QQ 群聊的痛点）。"""
     import tempfile
     import hashlib
     from pathlib import Path
@@ -1666,7 +1695,7 @@ def test_same_image_different_path_hits_cache():
         key1 = asyncio.run(p._compute_image_cache_key(url1))
         key2 = asyncio.run(p._compute_image_cache_key(url2))
         assert key1 == key2, f"expected same md5 key, got {key1} vs {key2}"
-        assert key1.startswith("md5:")
+        assert key1 == hashlib.md5(img_bytes).hexdigest()
     finally:
         Path(path1).unlink(missing_ok=True)
         Path(path2).unlink(missing_ok=True)
@@ -2017,16 +2046,135 @@ def test_default_image_placeholder_marks_as_vision_model():
 # ------------------------------------------------------------------ 单测：插件加载
 
 
+def test_api_cache_thumbnail_returns_data_url():
+    """v0.8.6: /cache/thumbnail?image_id=... 返回 data URL。"""
+    import asyncio as _aio
+    import base64
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        p = new_plugin()
+        p._caption_cache = main.CaptionCache(Path(tmp) / "thumb.sqlite3")
+        # 存一条带 base64 的
+        fake = b"\x89PNG\r\n\x1a\n" + b"x" * 30
+        p._caption_cache.put(
+            "id1", "https://x.com/a.png", "一只猫",
+            image_b64=base64.b64encode(fake).decode("ascii"),
+            mime_type="image/png", file_size=len(fake), width=10, height=20,
+        )
+        p._description_cache.clear()
+
+        # 用 mock context 拿到 thumbnail 闭包
+        captured = {}
+        def mock_register(route, fn, methods, desc):
+            captured[route] = fn
+
+        class _R:
+            def __init__(self, args): self.args = args
+
+        p.context = SimpleNamespace(
+            request=_R({"image_id": "id1"}),
+            register_web_api=mock_register,
+        )
+        p._register_web_apis()
+        thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail"]
+
+        result = _aio.run(thumb_fn())
+        # 验证返 ok 且 data_url 是 data:image/png;base64,...
+        assert isinstance(result, dict)
+        assert result.get("ok") is True
+        d = result["data"]
+        assert d["image_id"] == "id1"
+        assert d["has_image"] is True
+        assert d["mime_type"] == "image/png"
+        assert d["data_url"].startswith("data:image/png;base64,")
+        assert d["width"] == 10
+        assert d["height"] == 20
+        assert d["file_size"] == len(fake)
+
+        # 错误的 image_id
+        p.context.request = _R({"image_id": "nonexistent"})
+        r2 = _aio.run(thumb_fn())
+        # err() 返 (jsonify, status_code)
+        assert isinstance(r2, tuple)
+        assert r2[1] == 404
+
+        # 缺 image_id
+        p.context.request = _R({})
+        r3 = _aio.run(thumb_fn())
+        # 单个 err()返 (jsonify, 400) -- 但这里 status_code 不一定是 400 因为是默认参数
+        # 实际 err()第二位置 == 400
+        if isinstance(r3, tuple):
+            r3 = r3[0]
+        # jsonify 之后可能调用过，但 get_json/get('error') 看 'error' 字段
+        assert r3["error"] == "缺少参数 image_id"
+
+    print("✓ test_api_cache_thumbnail_returns_data_url")
+
+
+def test_api_cache_thumbnail_no_image():
+    """v0.8.6: 缓存中存在但未存 image_b64（如老 v0.8.5 迁移过来）时返 has_image=False。"""
+    import asyncio as _aio
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        p = new_plugin()
+        p._caption_cache = main.CaptionCache(Path(tmp) / "no_b64.sqlite3")
+        p._caption_cache.put("id2", "https://x.com/no-img.jpg", "老条目")  # 不传 b64
+
+        captured = {}
+        def mock_register(route, fn, methods, desc):
+            captured[route] = fn
+        class _R:
+            def __init__(self, args): self.args = args
+
+        p.context = SimpleNamespace(
+            request=_R({"image_id": "id2"}),
+            register_web_api=mock_register,
+        )
+        p._register_web_apis()
+        thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail"]
+        result = _aio.run(thumb_fn())
+        assert result.get("ok") is True
+        d = result["data"]
+        assert d["has_image"] is False
+        assert d["data_url"] == ""
+        assert d["mime_type"] == ""
+    print("✓ test_api_cache_thumbnail_no_image")
+
+
+def test_sniff_image_meta():
+    """v0.8.6: _sniff_image_meta 能识别常见图片格式的 mime/宽高。"""
+    p = new_plugin()
+    # 1x1 transparent PNG
+    png_bytes = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000d4944415478da6300010000000500010d0a2db40000000049454e44ae426082"
+    )
+    mime, w, h = p._sniff_image_meta(png_bytes)
+    assert mime == "image/png"
+    assert w == 1 and h == 1
+    # 1x1 GIF
+    gif_bytes = b"GIF89a" + b"\x01\x00\x01\x00" + b"\x00" * 100
+    mime, w, h = p._sniff_image_meta(gif_bytes)
+    assert mime == "image/gif"
+    assert w == 1 and h == 1
+    # 不可识别的字节
+    mime, w, h = p._sniff_image_meta(b"random bytes 1234567890")
+    assert mime == "" and w == 0 and h == 0
+    # 空
+    mime, w, h = p._sniff_image_meta(b"")
+    assert mime == "" and w == 0 and h == 0
+    print("✓ test_sniff_image_meta")
+
+
 def test_sibling_modules_loaded():
-    """main.py 启动时应能动态加载同级 caption_cache.py / chat_archive_link.py。"""
+    """main.py 启动时应能动态加载同级 caption_cache.py（v0.8.6 起 chat_archive_link.py 已删除）。"""
     # 验证 import main 后这些类已绑定
     assert hasattr(main, "CaptionCache")
     assert hasattr(main, "CaptionEntry")
     assert hasattr(main, "CacheStats")
-    assert hasattr(main, "ChatArchiveLink")
     # 验证它们指向实际类（不是 None）
     assert main.CaptionCache.__name__ == "CaptionCache"
-    assert main.ChatArchiveLink.__name__ == "ChatArchiveLink"
     print("✓ test_sibling_modules_loaded")
 
 
@@ -2052,11 +2200,10 @@ def test_main_imports_without_sys_path_modification():
         )
         mod = _ilu.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        # 验证 _load_sibling_module 工作：main.py 模块中应有这些绑定
+        # 验证 _load_sibling_module 工作：main.py 模块中应有这些绑定（v0.8.6 起
+        # chat_archive_link.py 已删除，不再验证 ChatArchiveLink）
         assert hasattr(mod, "CaptionCache"), "CaptionCache 未绑定"
-        assert hasattr(mod, "ChatArchiveLink"), "ChatArchiveLink 未绑定"
         assert mod.CaptionCache.__name__ == "CaptionCache"
-        assert mod.ChatArchiveLink.__name__ == "ChatArchiveLink"
     finally:
         _sys.path = saved_path
     print("✓ test_main_imports_without_sys_path_modification")
@@ -2122,15 +2269,17 @@ def run_all():
         test_caption_cache_basic_crud,
         test_caption_cache_persistence,
         test_caption_cache_list_and_search,
+        test_caption_cache_v0_8_6_image_id_and_b64,
+        test_caption_cache_v0_8_6_schema_upgrade,
+        test_caption_cache_make_id_helpers,
         test_caption_cache_stats,
         test_caption_cache_vacuum,
         test_describe_one_uses_sqlite_cache,
         test_describe_one_writes_to_sqlite_cache,
-        test_chat_archive_link_no_plugin,
-        test_chat_archive_link_detected,
-        test_chat_archive_link_detected_without_web_cache,
-        test_chat_archive_link_refresh,
         test_register_web_apis_called,
+        test_api_cache_thumbnail_returns_data_url,
+        test_api_cache_thumbnail_no_image,
+        test_sniff_image_meta,
         test_end_to_end_full_flow,
         test_inject_system_prompt_guidance_default_on,
         test_inject_disabled_when_config_off,

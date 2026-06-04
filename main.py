@@ -64,12 +64,10 @@ def _load_sibling_module(name: str):
 
 
 _sibling_cache = _load_sibling_module("caption_cache")
-_sibling_link = _load_sibling_module("chat_archive_link")
 
 CaptionCache = _sibling_cache.CaptionCache
 CaptionEntry = _sibling_cache.CaptionEntry
 CacheStats = _sibling_cache.CacheStats
-ChatArchiveLink = _sibling_link.ChatArchiveLink
 
 
 # 插件名（用于 web API 路径前缀）
@@ -135,8 +133,6 @@ class VisionTextBridgePlugin(Star):
         self._caption_cache: CaptionCache | None = None
         # 内存热缓存（仅当前进程内，避免频繁 SQLite 查询）
         self._description_cache: dict[str, str] = {}
-        # Chat Archive 联动
-        self._chat_archive_link: ChatArchiveLink | None = None
         # 并发控制信号量，初始为 0，在 initialize() 中按配置创建
         self._vision_semaphore: asyncio.Semaphore | None = None
         # 当前插件实例期望的 priority
@@ -220,26 +216,13 @@ class VisionTextBridgePlugin(Star):
             )
             self._caption_cache = None
 
-        # 2. Chat Archive 联动
-        try:
-            data_dir = self._get_plugin_data_dir()
-            self._chat_archive_link = ChatArchiveLink(plugin_data_dir=data_dir)
-            if self._chat_archive_link.available:
-                logger.info(
-                    "[vision_text_bridge] Chat Archive 联动已启用，web_cache=%s",
-                    self._chat_archive_link.web_cache_dir,
-                )
-        except Exception as exc:
-            logger.exception("[vision_text_bridge] Chat Archive 联动检测失败: %s", exc)
-            self._chat_archive_link = None
-
-        # 3. 注册 web API (缓存管理页面用)
+        # 2. 注册 web API (缓存管理页面用)
         try:
             self._register_web_apis()
         except Exception as exc:
             logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
 
-        # 4. mmx-cli 安装与预登录
+        # 3. mmx-cli 安装与预登录
         if not self.mmx_path and self.config.get("auto_install_cli", False):
             await self._install_mmx_cli()
             self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd")
@@ -449,7 +432,8 @@ class VisionTextBridgePlugin(Star):
           - ``astrbot_plugin_angel_heart``：会重写 req.prompt & 重塞 base64，
             建议在 AstrBot 配置中设 priority >= 100（默认满足）
           - ``astrbot_plugin_uni_nickname``：会改 req.prompt，需 priority > 0
-          - ``astrbot_plugin_chat_archive``：联动已由 ``_chat_archive_link`` 检测
+          - ``astrbot_plugin_chat_archive``：独立运行。**v0.8.6 起本插件不再探测/依赖它**，
+            图片存到本插件自己的 SQLite（含 base64）。两个插件可以同装，互不干扰。
           - ``astrbot_plugin_sylanne`` / ``astrbot_plugin_conversation_ledger``：
             这些插件会处理图片，但与本插件**只要 priority 高于它们**就不冲突
         """
@@ -460,18 +444,13 @@ class VisionTextBridgePlugin(Star):
                 "，跳过联动检查"
             )
             return
-        # Chat Archive 已在 _chat_archive_link 中详细检测，这里只补充一条提示
+        # astrbot_plugin_chat_archive：v0.8.6 起完全独立，不联动。仅补充一条提示。
         if "astrbot_plugin_chat_archive" in names:
-            if self._chat_archive_link and self._chat_archive_link.available:
-                logger.info(
-                    "[vision_text_bridge] ✓ 联动正常: astrbot_plugin_chat_archive 已装且 web_cache 可访问"
-                )
-            else:
-                logger.info(
-                    "[vision_text_bridge] ℹ️ 检测到 astrbot_plugin_chat_archive，"
-                    "但本插件未访问到 web_cache 目录（可能是安装路径不同）。"
-                    "如果需要跨插件共享图片文件，请检查 AstrBot 插件安装路径。"
-                )
+            logger.info(
+                "[vision_text_bridge] ℹ️ 检测到 astrbot_plugin_chat_archive，"
+                "本插件 v0.8.6 起**不**与它联动（独立运行）。两个插件可以同装，"
+                "互不干扰。"
+            )
         # AngelHeart 联动提示
         if "astrbot_plugin_angel_heart" in names:
             configured = self._configured_priority
@@ -553,18 +532,7 @@ class VisionTextBridgePlugin(Star):
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
             stats = self._caption_cache.stats()
-            chat_archive = {
-                "available": bool(
-                    self._chat_archive_link and self._chat_archive_link.available
-                ),
-                "web_cache_dir": (
-                    str(self._chat_archive_link.web_cache_dir)
-                    if self._chat_archive_link and self._chat_archive_link.web_cache_dir
-                    else None
-                ),
-            }
             data = stats.to_dict()
-            data["chat_archive"] = chat_archive
             data["in_memory_cache_size"] = len(self._description_cache)
             return ok(data)
 
@@ -655,19 +623,53 @@ class VisionTextBridgePlugin(Star):
                 "items": [e.to_dict() for e in entries],
             })
 
-        # --- POST /chat-archive/refresh ---
-        async def api_chat_archive_refresh():
-            """重新检测 Chat Archive 联动状态。"""
-            if self._chat_archive_link is None:
-                return err("Chat Archive 联动未启用")
-            self._chat_archive_link.refresh()
+        # --- GET /cache/thumbnail?image_id=<32hex> ---
+        async def api_cache_thumbnail():
+            """按 image_id 返回该条缓存中的图片 base64 data URL。
+
+            webui 在渲染缓存列表时拿这条接口出缩略图，避免为了看图另外下二进制。
+            实际响应是 JSON：
+                {
+                    "image_id": "...",
+                    "mime_type": "image/jpeg",
+                    "data_url": "data:image/jpeg;base64,...",
+                    "width": 1024,
+                    "height": 768,
+                    "file_size": 12345
+                }
+            """
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            try:
+                request = self.context.request
+                args = request.args if hasattr(request, "args") else {}
+            except Exception:
+                args = {}
+            image_id = (args.get("image_id", "") or "").strip()
+            if not image_id:
+                return err("缺少参数 image_id")
+            entry = self._caption_cache.get(image_id, with_b64=True)
+            if entry is None:
+                return err("未找到该 image_id", 404)
+            if not entry.image_b64:
+                return ok({
+                    "image_id": image_id,
+                    "mime_type": entry.mime_type or "",
+                    "data_url": "",
+                    "width": entry.width,
+                    "height": entry.height,
+                    "file_size": entry.file_size,
+                    "has_image": False,
+                })
+            mime = entry.mime_type or "image/jpeg"
             return ok({
-                "available": self._chat_archive_link.available,
-                "web_cache_dir": (
-                    str(self._chat_archive_link.web_cache_dir)
-                    if self._chat_archive_link.web_cache_dir
-                    else None
-                ),
+                "image_id": image_id,
+                "mime_type": mime,
+                "data_url": f"data:{mime};base64,{entry.image_b64}",
+                "width": entry.width,
+                "height": entry.height,
+                "file_size": entry.file_size,
+                "has_image": True,
             })
 
         # 路由: /{PLUGIN_NAME}/<endpoint>
@@ -690,13 +692,10 @@ class VisionTextBridgePlugin(Star):
             f"/{PLUGIN_NAME}/cache/export", api_cache_export, ["GET"], "Export cache as JSON"
         )
         self.context.register_web_api(
-            f"/{PLUGIN_NAME}/chat-archive/refresh",
-            api_chat_archive_refresh,
-            ["POST"],
-            "Refresh chat archive link",
+            f"/{PLUGIN_NAME}/cache/thumbnail", api_cache_thumbnail, ["GET"], "Get thumbnail data URL"
         )
         logger.info(
-            "[vision_text_bridge] 已注册 7 个 web API 用于缓存管理页面"
+            "[vision_text_bridge] 已注册 web API 用于缓存管理页面"
         )
 
     async def terminate(self) -> None:
@@ -1130,11 +1129,31 @@ class VisionTextBridgePlugin(Star):
                     # 同时写内存 + SQLite（**用 cache_key**）
                     self._description_cache[cache_key] = description
                     if self._caption_cache is not None:
+                        # v0.8.6: 读取图片字节并存 base64 / mime / 尺寸元信息，
+                        # webui 能直接从 SQLite 出缩略图，不需额外插件。
+                        b64, mime, w, h, size = "", "", 0, 0, 0
+                        try:
+                            img_bytes = await self._read_image_bytes(url)
+                            if img_bytes:
+                                import base64 as _b64lib
+                                b64 = _b64lib.b64encode(img_bytes).decode("ascii")
+                                size = len(img_bytes)
+                                mime, w, h = self._sniff_image_meta(img_bytes)
+                        except Exception as exc:
+                            logger.debug(
+                                "[vision_text_bridge] 读图片字节准备缓存时失败（仅文本缓存受影响）: %s",
+                                exc,
+                            )
                         try:
                             self._caption_cache.put(
-                                key=cache_key,
-                                url=url,  # 记录原始 url 以供页面查看
+                                image_id=cache_key,
+                                url=url,
                                 description=description,
+                                image_b64=b64,
+                                mime_type=mime,
+                                file_size=size,
+                                width=w,
+                                height=h,
                             )
                         except Exception as exc:
                             logger.warning(
@@ -1861,29 +1880,26 @@ class VisionTextBridgePlugin(Star):
         return False
 
     async def _compute_image_cache_key(self, url: str) -> str:
-        """计算图片缓存 key。
+        """计算图片缓存 image_id（**v0.8.6 起这就是 image_id**）。
 
         **策略**：
           1. 读取图片字节（file://读本地，http(s)://下载）
-          2. 计算 md5(图片内容)
-          3. 返回 ``"md5:<hash>"`` 作为缓存 key
+          2. 计算 md5(图片内容) 作为 image_id
 
-        **如果读取失败**（http 下载超时、文件被删、权限不足），退到用 url 字符串。
-        这样仍然能缓存“url 完全一样”的场景。
+        **如果读取失败**（http 下载超时、文件被删、权限不足），退到
+        ``md5(url字符串)``（同样 32 位 hex，保持主键格式一致）。
         """
         try:
             data = await self._read_image_bytes(url)
         except Exception as exc:
             logger.debug(
-                "[vision_text_bridge] 读图片字节失败，缓存 key 退到 url: %s, err=%s",
+                "[vision_text_bridge] 读图片字节失败，image_id 退到 md5(url): %s, err=%s",
                 self._safe_preview(url), exc,
             )
-            return f"url:{url}"
+            return CaptionCache.make_id_from_url(url)
         if not data:
-            return f"url:{url}"
-        import hashlib
-        h = hashlib.md5(data).hexdigest()
-        return f"md5:{h}"
+            return CaptionCache.make_id_from_url(url)
+        return CaptionCache.make_id_from_bytes(data)
 
     async def _read_image_bytes(self, url: str) -> bytes:
         """读取图片字节。优先本地 file://，退到 http(s):// 下载。"""
@@ -1925,6 +1941,74 @@ class VisionTextBridgePlugin(Star):
         re.compile(r"(sk-[A-Za-z0-9_-]{8,})"),  # MiniMax API Key
         re.compile(r"(?i)(token|signature|x-sign)=[^&\s]+"),
     )
+
+    @staticmethod
+    def _sniff_image_meta(data: bytes) -> tuple[str, int, int]:
+        """从图片字节嗅探 mime / 宽 / 高。
+
+        优先用 PIL（能解析 PNG/JPEG/GIF/WebP/BMP/ICO 等所有 AstrBot 支持的格式）。
+        若 PIL 不可用，降级到 magic-byte 手读（PNG/GIF/JPEG SOF/WebP VP8）。
+
+        返回 (mime, width, height)。不支持返 ('', 0, 0)。
+        """
+        if not data or len(data) < 16:
+            return "", 0, 0
+        try:
+            from PIL import Image as _PILImage
+            import io as _io
+            with _PILImage.open(_io.BytesIO(data)) as im:
+                fmt = (im.format or "").upper()
+                mime = {
+                    "PNG": "image/png",
+                    "JPEG": "image/jpeg",
+                    "JPG": "image/jpeg",
+                    "GIF": "image/gif",
+                    "WEBP": "image/webp",
+                    "BMP": "image/bmp",
+                    "ICO": "image/x-icon",
+                }.get(fmt, "image/jpeg")
+                return mime, int(im.width or 0), int(im.height or 0)
+        except Exception:
+            pass
+        # Fallback: PNG magic
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            if len(data) >= 24:
+                w = int.from_bytes(data[16:20], "big")
+                h = int.from_bytes(data[20:24], "big")
+                return "image/png", w, h
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            if len(data) >= 10:
+                w = int.from_bytes(data[6:8], "little")
+                h = int.from_bytes(data[8:10], "little")
+                return "image/gif", w, h
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i < len(data) - 9:
+                if data[i] != 0xFF:
+                    break
+                marker = data[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                              0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    h = int.from_bytes(data[i + 5:i + 7], "big")
+                    w = int.from_bytes(data[i + 7:i + 9], "big")
+                    return "image/jpeg", w, h
+                else:
+                    seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+                    i += 2 + seg_len
+            return "image/jpeg", 0, 0
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            fourcc = data[12:16]
+            if fourcc == b"VP8 " and len(data) >= 30:
+                w = int.from_bytes(data[26:28], "little") & 0x3FFF
+                h = int.from_bytes(data[28:30], "little") & 0x3FFF
+                return "image/webp", w, h
+            if fourcc == b"VP8L" and len(data) >= 25:
+                b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+                w = ((b1 & 0x3F) << 8 | b0) + 1
+                h = (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6)) + 1
+                return "image/webp", w, h
+            return "image/webp", 0, 0
+        return "", 0, 0
 
     @classmethod
     def _redact_text(cls, text: str) -> str:

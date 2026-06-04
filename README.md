@@ -7,7 +7,7 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.0.0-blue)](https://docs.astrbot.app/)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-green)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.8.2-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.6-brightgreen)](CHANGELOG.md)
 
 [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues) · [AstrBot 文档](https://docs.astrbot.app/)
 
@@ -127,11 +127,33 @@ priority 配置在 `import` 时锁定，**修改后需重启 AstrBot**。详见 
 
 启动后 AstrBot Dashboard → 插件 → Vision → Text Bridge → 「缓存管理」：
 
-- **统计卡片**：总条目、命中总数、DB 大小、内存缓存大小、Chat Archive 联动状态
+- **统计卡片**：总条目、命中总数、DB 大小、内存缓存大小
 - **搜索框**：按 URL / 描述模糊匹配
 - **排序**：最新 / 最旧 / 命中最多 / 命中最少
+- **缩略图**：每条记录都从 SQLite 读 base64 出图，点击看大图 modal
 - **操作**：单条删除、重新生成、导出 JSON、清空全部（含 VACUUM）
-- **Chat Archive 联动刷新**
+- **快捷键**：`R` 刷新列表
+
+后端 API（自动注册）：
+
+- `GET  /astrbot_plugin_vision_text_bridge/cache/stats`
+- `GET  /astrbot_plugin_vision_text_bridge/cache/list?limit&offset&search&order_by`
+- `POST /astrbot_plugin_vision_text_bridge/cache/delete` body `{"key": "<image_id>"}`
+- `POST /astrbot_plugin_vision_text_bridge/cache/clear`
+- `POST /astrbot_plugin_vision_text_bridge/cache/regenerate` body `{"key": "<image_id>"}`
+- `GET  /astrbot_plugin_vision_text_bridge/cache/export`
+- `GET  /astrbot_plugin_vision_text_bridge/cache/thumbnail?image_id=<32hex>` 返 `{data_url, mime_type, width, height, file_size}`
+
+## Webui 设计参考
+
+v0.8.6 起，缓存管理页面的**视觉风格**参考了 [`astrbot_plugin_chat_archive`](https://github.com/) 的 `web/static/css/main.css`：
+
+- **Inter 字体** + 暗色玻璃卡片（`backdrop-filter: blur(24px) saturate(160%)`）
+- **CSS 变量驱动主题**：`--primary: #6366f1` / `--accent: #10b981` / `--bg-color: #0b0f19`
+- **三个 ambient 光晕**（`.bg-orb`）：径向渐变 + blur 形成氛围感
+- **品牌 header**：icon + 渐变文字 + JetBrains Mono 字体小标签
+
+**但本插件与 chat_archive 是独立的**：v0.8.6 起移除了所有联动代码（`chat_archive_link.py` 已删除）。两个插件可以同装也可以只装一个。本插件的 webui **不**引用 chat_archive 的任何资源，独立运行。
 
 后端 API（自动注册）：
 
@@ -143,7 +165,7 @@ priority 配置在 `import` 时锁定，**修改后需重启 AstrBot**。详见 
 | `/cache/clear` | POST | 清空全部 |
 | `/cache/regenerate` | POST | 重新调 mmx 生成 |
 | `/cache/export` | GET | 导出全部为 JSON |
-| `/chat-archive/refresh` | POST | 重新检测 Chat Archive |
+| `/cache/thumbnail` | GET | `?image_id=<32hex>` 返 data URL |
 
 ## 常见问题
 

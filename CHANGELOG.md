@@ -7,6 +7,41 @@
 
 无新变更。
 
+## [0.8.6] - 2026-06-05
+
+### 重大变更
+- **解除与 `astrbot_plugin_chat_archive` 的耦合**（v0.8.3 引入的联动机制**全部移除**）：
+  - 删除 `chat_archive_link.py`（联动检测代码）。
+  - 移除 `_check_other_plugin_compatibility` 里对 `astrbot_plugin_chat_archive` 的专项检测。
+  - 移除 web API `/chat-archive/refresh`。
+  - 移除 `cache/stats` 响应中的 `chat_archive` 字段。
+  - **两个插件现可独立运行**：同装不报错，互不依赖。`astrbot_plugin_chat_archive` 检测只输出一条 info 提示。
+
+### 新增
+- **图片二进制持久化到 SQLite**（`image_captions.image_b64` BLOB）：
+  - schema 新增列：`image_id`（md5 主键）、`image_b64`（base64 文本）、`mime_type`、`file_size`、`width`、`height`。
+  - `caption_cache.CaptionEntry` 新字段：`image_id` / `image_b64` / `mime_type` / `file_size` / `width` / `height`。
+  - 主键从 `image_key` （URL 字符串）改为 `image_id` （32 位 hex md5）。**老库自动迁移**（v0.8.5.x 的 `image_key` 旧主键被重命名表为 `image_captions__legacy` 后，INSERT 复制到新表， DROP 临时表）。
+  - `_describe_one` 成功路径调 `_read_image_bytes` 读字节 → base64 → `caption_cache.put(image_b64=..., mime_type=..., file_size=..., width=..., height=...)`。
+- **新 web API** `/cache/thumbnail?image_id=<32hex>`：返 `data:image/...;base64,...` JSON，webui 用它出缩略图。
+- **Webui 重设计**（glassmorphism 风格）：
+  - 参考 `astrbot_plugin_chat_archive` 的 `web/static/css/main.css`（Inter 字体、暗色玻璃、径向渐变 ambient 光晕、CSS 变量驱动主题）—— **仅**参考设计语言，**不**引用、不依赖该插件。
+  - 新设计元素：三个 ambient 光晕 `.bg-orb`、顶部 brand mark glass card、表格缩略图列、点击看大图 modal、描述展开收起按钮、键盘快捷键 `R` 刷新、响应式布局。
+- **`_sniff_image_meta(bytes)` 方法**：从图片字节嗅探 mime / 宽 / 高。优先用 PIL，降级到手读 magic bytes（PNG/GIF/JPEG SOF/WebP VP8）。
+
+### 改动
+- **image_id 改用 md5 (32 hex)**：v0.8.5 的 `md5:<hash>` / `url:<url>` 前缀**全部移除**。image_id 现在就是 32 位 hex。
+  - `make_id_from_bytes(data)` = `md5(data)`，同图内容不变 id 不变（**重试必命中**）。
+  - `make_id_from_url(url)` 退路（读字节失败时），仍返 32 hex。
+- `list()` 默认**不**返 `image_b64`（避免接口 body 过大），要返传 `include_b64=True`。推荐用 `cache/thumbnail` API 单独取。
+- 测试从 91 增到 93。
+
+### 补丁修复
+- **列表项 `image_key` 字段在 v0.8.6 改为 `image_id`**（同时保留 `image_key` 作为只读别名向前兼容）。老用户没感知，新代码用 `image_id`。
+- **`_to_dict` 默认不返 base64**（大字段）。
+- **`register_web_api` 从 7 个变为 6 个**（减 `chat-archive/refresh`）。
+- **`api_cache_thumbnail` 缺 image_id 或找不到时返 400/404**（清晰错误提示）。
+
 ## [0.8.5.1] - 2026-06-04
 
 ### 修复

@@ -2,19 +2,20 @@
 caption_cache
 =============
 
-基于 SQLite 的图片描述缓存。
+基于 SQLite 的图片描述缓存(含图片二进制)。
 
-设计要点：
+设计要点:
 
-- **image_key 为主键**：用图片 URL 或本地路径的规范化形式作为 key。
-  这样同一张图片（即使 URL 形式不同）能命中同一条缓存。
-- **image_url 保留原始 URL**：用于页面展示与"重新生成"功能。
-- **dHash 字段（可选）**：如果传入了图片字节（如本地文件或已下载的字节），
-  可计算 dHash 作为辅助 key。**不强制要求**，因为大多数情况下 URL 已足够唯一。
-- **线程安全**：SQLite 默认配置在多线程下不安全。本模块使用
-  ``check_same_thread=False`` + 每个调用都开新连接的简单策略，
+- **image_id 为主键**:用图片内容 md5(hashlib.md5(bytes).hexdigest())作为
+  唯一标识。同一张图不论 URL 是什么都会命中同一条缓存。
+- **image_b64 存图二进制**:base64 编码后存为 BLOB。webui 可以从这
+  个字段出图缩略图,不再依赖外部 Chat Archive 等插件。
+- **mime_type / file_size / width / height**:元信息。
+- **image_url 保留原始 URL**:用于页面展示与"重新生成"功能。
+- **线程安全**:SQLite 默认配置在多线程下不安全。本模块使用
+  ``check_same_thread=False`` + 每个调用都开新连接的简单策略,
   适合低并发场景。
-- **WAL 模式**：开 WAL 提升并发读性能。
+- **WAL 模式**:开 WAL 提升并发读性能。
 """
 
 from __future__ import annotations
@@ -33,22 +34,40 @@ from typing import Iterable
 class CaptionEntry:
     """缓存中的一条记录。"""
 
-    image_key: str
-    image_url: str
-    description: str
+    image_id: str  # 图片唯一标识(md5 of image bytes)
+    image_url: str  # 原始 URL / 本地路径
+    description: str  # mmx 图像理解结果
     created_at: float
     hit_count: int
     last_hit_at: float | None
+    mime_type: str = ""  # image/jpeg, image/png, image/webp, image/gif
+    file_size: int = 0  # 原始字节数
+    width: int = 0  # 图片宽(从字节解析)
+    height: int = 0  # 图片高
+    image_b64: str = ""  # base64 编码的图片(webui 缩略图用)
 
     def to_dict(self) -> dict:
-        return {
-            "image_key": self.image_key,
+        d = {
+            "image_id": self.image_id,
+            "image_key": self.image_id,  # 向后兼容别名
             "image_url": self.image_url,
             "description": self.description,
             "created_at": self.created_at,
             "hit_count": self.hit_count,
             "last_hit_at": self.last_hit_at,
+            "mime_type": self.mime_type,
+            "file_size": self.file_size,
+            "width": self.width,
+            "height": self.height,
         }
+        # 列表 API 不返 base64(太大);以独立接口 /cache/thumbnail/<image_id> 取缩略图
+        return d
+
+    def to_dict_with_b64(self) -> dict:
+        """返回带 base64 的完整字典(仅必要时候用,如单条查看)。"""
+        d = self.to_dict()
+        d["image_b64"] = self.image_b64
+        return d
 
 
 @dataclass
@@ -72,13 +91,18 @@ class CacheStats:
 
 
 class CaptionCache:
-    """SQLite-backed image caption cache."""
+    """SQLite-backed image caption cache (含图片二进制)."""
 
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS image_captions (
-        image_key TEXT PRIMARY KEY,
+        image_id TEXT PRIMARY KEY,
         image_url TEXT NOT NULL,
         description TEXT NOT NULL,
+        mime_type TEXT NOT NULL DEFAULT '',
+        file_size INTEGER NOT NULL DEFAULT 0,
+        width INTEGER NOT NULL DEFAULT 0,
+        height INTEGER NOT NULL DEFAULT 0,
+        image_b64 TEXT NOT NULL DEFAULT '',
         created_at REAL NOT NULL,
         hit_count INTEGER NOT NULL DEFAULT 0,
         last_hit_at REAL
@@ -89,6 +113,15 @@ class CaptionCache:
         ON image_captions(hit_count DESC);
     """
 
+    # v0.8.6 起添加的列(用于老 DB 升级)
+    _ALT_COLUMNS = [
+        ("mime_type", "TEXT NOT NULL DEFAULT ''"),
+        ("file_size", "INTEGER NOT NULL DEFAULT 0"),
+        ("width", "INTEGER NOT NULL DEFAULT 0"),
+        ("height", "INTEGER NOT NULL DEFAULT 0"),
+        ("image_b64", "TEXT NOT NULL DEFAULT ''"),
+    ]
+
     def __init__(self, db_path: str | os.PathLike):
         self._db_path = str(db_path)
         self._lock = threading.Lock()
@@ -96,7 +129,40 @@ class CaptionCache:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         # init schema
         with self._connect() as conn:
-            conn.executescript(self.SCHEMA)
+            # **v0.8.6 schema 升级逻辑**：
+            # 1. 检查 image_captions 表是否存在
+            # 2. 存在 → 可能是老库 (v0.8.5.x 用 image_key 为主键)，可能是新库 (v0.8.6+)
+            # 3. 不存在 → 全新创建
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='image_captions'"
+            ).fetchone()
+            table_exists = row is not None
+            if table_exists:
+                existing_cols = {
+                    r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()
+                }
+                if "image_key" in existing_cols and "image_id" not in existing_cols:
+                    # 升级路径 1：老库 v0.8.5.x (用 image_key)。重命名表后用新 schema 重建，
+                    # 再把数据迁过来。**老库的 image_key 需要拷贝到新库的 image_id**（两者是同一个东西）。
+                    conn.execute("ALTER TABLE image_captions RENAME TO image_captions__legacy")
+                    conn.executescript(self.SCHEMA)
+                    conn.execute(
+                        "INSERT INTO image_captions "
+                        "(image_id, image_url, description, created_at, hit_count, last_hit_at) "
+                        "SELECT image_key, image_url, description, created_at, hit_count, last_hit_at "
+                        "FROM image_captions__legacy"
+                    )
+                    conn.execute("DROP TABLE image_captions__legacy")
+                else:
+                    # 升级路径 2：已用新 schema (v0.8.6+)，但可能缺新加的列
+                    for col_name, col_def in self._ALT_COLUMNS:
+                        if col_name not in existing_cols:
+                            conn.execute(
+                                f"ALTER TABLE image_captions ADD COLUMN {col_name} {col_def}"
+                            )
+            else:
+                # 全新创建
+                conn.executescript(self.SCHEMA)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -110,85 +176,105 @@ class CaptionCache:
 
     @staticmethod
     def normalize_key(url_or_path: str) -> str:
-        """规范化图片 key。
-
-        - 去除查询参数差异（如果有明显的签名参数，保留；否则保留全部）
-        - 统一大小写
-        - 去前后空格
-        - 计算 sha256 作为定长 key
-        """
+        """规范化图片 key(v0.8.6 仍然保留,作为辅助接口)。"""
         raw = (url_or_path or "").strip()
         if not raw:
             return ""
-        # 保留原样大小写（URL 区分大小写），但做基本的 trim
         return raw
 
     @staticmethod
-    def make_key(url_or_path: str) -> str:
-        """生成存储用的主键。直接用 URL 原文，保留可读性。"""
-        return CaptionCache.normalize_key(url_or_path)
+    def make_id_from_url(url_or_path: str) -> str:
+        """从 URL/path 生成 image_id(v0.8.6 退化的 key 生成,
+        实际推荐用 make_id_from_bytes 拿 md5)。"""
+        return hashlib.md5((url_or_path or "").encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def make_id_from_bytes(data: bytes) -> str:
+        """从图片字节生成 image_id(**推荐**:同一张图内容不变 id 不变)。"""
+        return hashlib.md5(data).hexdigest()
 
     # ------------------------------------------------------------------ CRUD
 
-    def get(self, key: str) -> CaptionEntry | None:
-        """根据 key 查询一条记录，命中后增加 hit_count。"""
-        if not key:
+    def get(self, image_id: str, with_b64: bool = False) -> CaptionEntry | None:
+        """根据 image_id 查询一条记录,命中后增加 hit_count。
+
+        Args:
+            image_id: 图片唯一标识
+            with_b64: 是否返回 base64(**不**在 list 中用,列表里**不**含 base64)
+        """
+        if not image_id:
             return None
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM image_captions WHERE image_key = ?", (key,)
+                "SELECT * FROM image_captions WHERE image_id = ?", (image_id,)
             ).fetchone()
             if row is None:
                 return None
             now = time.time()
             conn.execute(
                 "UPDATE image_captions SET hit_count = hit_count + 1, last_hit_at = ? "
-                "WHERE image_key = ?",
-                (now, key),
+                "WHERE image_id = ?",
+                (now, image_id),
             )
             conn.commit()
-            return CaptionEntry(
-                image_key=row["image_key"],
-                image_url=row["image_url"],
-                description=row["description"],
-                created_at=row["created_at"],
-                hit_count=row["hit_count"] + 1,
-                last_hit_at=now,
-            )
+            return self._row_to_entry(row, hit_count_delta=1, last_hit_at=now, with_b64=with_b64)
 
-    def put(self, key: str, url: str, description: str) -> None:
-        """插入或更新一条记录（基于 key 主键）。"""
-        if not key or not description:
+    def put(
+        self,
+        image_id: str,
+        url: str,
+        description: str,
+        *,
+        image_b64: str = "",
+        mime_type: str = "",
+        file_size: int = 0,
+        width: int = 0,
+        height: int = 0,
+    ) -> None:
+        """插入或更新一条记录(基于 image_id 主键)。
+
+        v0.8.6 起:
+        - 主键 image_id 是 md5(由调用方从图片内容算出)
+        - url 保留原始 URL/path
+        - 额外字段:image_b64 (base64)、mime_type、file_size、width、height
+        """
+        if not image_id or not description:
             return
         with self._lock, self._connect() as conn:
             now = time.time()
             conn.execute(
                 """
                 INSERT INTO image_captions
-                    (image_key, image_url, description, created_at, hit_count, last_hit_at)
-                VALUES (?, ?, ?, ?, 0, NULL)
-                ON CONFLICT(image_key) DO UPDATE SET
+                    (image_id, image_url, description, mime_type, file_size,
+                     width, height, image_b64, created_at, hit_count, last_hit_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                ON CONFLICT(image_id) DO UPDATE SET
                     image_url = excluded.image_url,
                     description = excluded.description,
+                    mime_type = excluded.mime_type,
+                    file_size = excluded.file_size,
+                    width = excluded.width,
+                    height = excluded.height,
+                    image_b64 = excluded.image_b64,
                     created_at = excluded.created_at
                 """,
-                (key, url, description, now),
+                (image_id, url, description, mime_type, file_size, width, height, image_b64, now),
             )
             conn.commit()
 
-    def delete(self, key: str) -> bool:
+    def delete(self, image_id: str) -> bool:
         """删除一条记录。"""
-        if not key:
+        if not image_id:
             return False
         with self._lock, self._connect() as conn:
             cur = conn.execute(
-                "DELETE FROM image_captions WHERE image_key = ?", (key,)
+                "DELETE FROM image_captions WHERE image_id = ?", (image_id,)
             )
             conn.commit()
             return cur.rowcount > 0
 
     def clear(self) -> int:
-        """清空所有记录，返回删除条数。"""
+        """清空所有记录,返回删除条数。"""
         with self._lock, self._connect() as conn:
             cur = conn.execute("DELETE FROM image_captions")
             conn.commit()
@@ -200,8 +286,13 @@ class CaptionCache:
         offset: int = 0,
         search: str = "",
         order_by: str = "created_at_desc",
+        include_b64: bool = False,
     ) -> list[CaptionEntry]:
-        """列出记录，支持分页和搜索（按 url 或 description 模糊匹配）。"""
+        """列出记录,支持分页和搜索(按 url 或 description 模糊匹配)。
+
+        默认**不**返 base64(避免接口 body 过大)。需要时用
+        ``include_b64=True``(仍建议用 /cache/thumbnail/<id> 单独 endpoint)。
+        """
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
         order_sql = {
@@ -226,16 +317,24 @@ class CaptionCache:
                     (limit, offset),
                 ).fetchall()
         return [
-            CaptionEntry(
-                image_key=r["image_key"],
-                image_url=r["image_url"],
-                description=r["description"],
-                created_at=r["created_at"],
-                hit_count=r["hit_count"],
-                last_hit_at=r["last_hit_at"],
-            )
-            for r in rows
+            self._row_to_entry(r, with_b64=include_b64) for r in rows
         ]
+
+    def _row_to_entry(self, r, hit_count_delta: int = 0, last_hit_at: float | None = None, with_b64: bool = False) -> CaptionEntry:
+        b64 = r["image_b64"] if with_b64 else ""
+        return CaptionEntry(
+            image_id=r["image_id"],
+            image_url=r["image_url"],
+            description=r["description"],
+            created_at=r["created_at"],
+            hit_count=r["hit_count"] + hit_count_delta,
+            last_hit_at=last_hit_at if last_hit_at is not None else r["last_hit_at"],
+            mime_type=r["mime_type"],
+            file_size=r["file_size"],
+            width=r["width"],
+            height=r["height"],
+            image_b64=b64,
+        )
 
     def count(self, search: str = "") -> int:
         with self._lock, self._connect() as conn:
@@ -280,7 +379,7 @@ class CaptionCache:
         )
 
     def vacuum(self) -> None:
-        """清理数据库碎片（VACUUM）。调用时机：大量删除后。"""
+        """清理数据库碎片(VACUUM)。调用时机:大量删除后。"""
         with self._lock, self._connect() as conn:
             conn.execute("VACUUM")
             conn.commit()

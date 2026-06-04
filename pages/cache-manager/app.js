@@ -1,4 +1,7 @@
-/* Vision Text Bridge · 缓存管理页面逻辑 */
+/* Vision Text Bridge · Webui Logic
+ *
+ * v0.8.6 重写：glassmorphism 风格 + 缩略图 + 模态详情
+ */
 
 const bridge = window.AstrBotPluginPage;
 const ctx = await bridge.ready();
@@ -12,15 +15,19 @@ const state = {
   order_by: "created_at_desc",
   total: 0,
   loading: false,
+  thumbCache: new Map(),  // image_id -> { data_url, mime }
 };
 
-function showToast(message, type = "success") {
+// ----- utils -----
+
+function showToast(message, type = "success", duration = 2400) {
   const el = $("toast");
   el.textContent = message;
   el.className = `toast show ${type}`;
-  setTimeout(() => {
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => {
     el.className = "toast";
-  }, 2400);
+  }, duration);
 }
 
 function fmtTime(ts) {
@@ -45,6 +52,11 @@ function fmtSize(bytes) {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
+function fmtDim(w, h) {
+  if (!w || !h) return "—";
+  return `${w}×${h}`;
+}
+
 function escapeHtml(s) {
   if (s == null) return "";
   return String(s)
@@ -55,6 +67,13 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
+function truncate(s, n) {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+// ----- data loading -----
+
 async function loadStats() {
   try {
     const resp = await bridge.apiGet("cache/stats");
@@ -63,17 +82,6 @@ async function loadStats() {
     $("stat-hits").textContent = data.total_hits ?? 0;
     $("stat-dbsize").textContent = fmtSize(data.db_size_bytes);
     $("stat-memcache").textContent = data.in_memory_cache_size ?? 0;
-    if (data.chat_archive) {
-      if (data.chat_archive.available) {
-        $("stat-chatarchive").innerHTML =
-          "✅ 已联动 — web_cache: <code>" +
-          escapeHtml(data.chat_archive.web_cache_dir || "(unknown)") +
-          "</code>";
-      } else {
-        $("stat-chatarchive").innerHTML =
-          "❌ 未检测到 astrbot_plugin_chat_archive。本插件不依赖它，但启用可共享图片文件缓存。";
-      }
-    }
   } catch (e) {
     showToast("加载统计失败: " + (e?.message || e), "error");
   }
@@ -107,62 +115,182 @@ async function loadList() {
 function renderList(items) {
   const tbody = $("cache-tbody");
   if (items.length === 0) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="7">${
-      state.search ? "没有匹配项" : "暂无缓存"
-    }</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="7">
+      <div class="empty-state">
+        <div class="empty-icon">${state.search ? "🔍" : "📭"}</div>
+        <div>${state.search ? "没有匹配项" : "暂无缓存"}</div>
+      </div>
+    </td></tr>`;
     return;
   }
   tbody.innerHTML = items
-    .map(
-      (it, i) => `
-    <tr data-key="${escapeHtml(it.image_key)}">
-      <td class="muted">${state.offset + i + 1}</td>
+    .map((it) => {
+      const descId = `desc-${it.image_id}`;
+      const dim = it.width && it.height
+        ? `${it.width}×${it.height}`
+        : "—";
+      const needsToggle = (it.description || "").length > 280;
+      return `
+    <tr data-id="${escapeHtml(it.image_id)}">
+      <td>
+        <div class="thumb-slot" data-id="${escapeHtml(it.image_id)}">
+          <div class="thumb-placeholder">🖼️</div>
+        </div>
+      </td>
       <td>
         <div class="url-cell" title="${escapeHtml(it.image_url)}">
           ${escapeHtml(truncate(it.image_url, 200))}
         </div>
-      </td>
-      <td>
-        <div class="desc-cell">${escapeHtml(truncate(it.description, 280))}</div>
-      </td>
-      <td class="muted">${it.hit_count}</td>
-      <td class="muted">${fmtTime(it.created_at)}</td>
-      <td class="muted">${it.last_hit_at ? fmtTime(it.last_hit_at) : "-"}</td>
-      <td>
-        <div class="row-actions">
-          <button class="btn" data-action="regen" data-key="${escapeHtml(
-            it.image_key
-          )}">🔁 重新生成</button>
-          <button class="btn danger" data-action="delete" data-key="${escapeHtml(
-            it.image_key
-          )}">🗑️ 删除</button>
+        <div style="margin-top: 4px;">
+          <code style="font-size: 0.7rem; color: var(--text-muted);">${escapeHtml((it.image_id || "").slice(0, 16))}…</code>
         </div>
       </td>
+      <td>
+        <div class="desc-cell" id="${descId}">${escapeHtml(it.description || "")}</div>
+        ${needsToggle
+          ? `<button class="desc-toggle" data-target="${descId}">展开 ↓</button>`
+          : ""}
+      </td>
+      <td class="hit-cell">${it.hit_count}</td>
+      <td class="dim-cell">${dim}</td>
+      <td class="time-cell">${fmtTime(it.created_at)}</td>
+      <td class="action-cell">
+        <button class="btn" data-action="view" data-id="${escapeHtml(it.image_id)}">👁️</button>
+        <button class="btn" data-action="regen" data-id="${escapeHtml(it.image_id)}">🔁</button>
+        <button class="btn danger" data-action="delete" data-id="${escapeHtml(it.image_id)}">🗑️</button>
+      </td>
     </tr>
-  `
-    )
+  `;
+    })
     .join("");
 
+  // 懒加载缩略图
+  tbody.querySelectorAll(".thumb-slot").forEach((slot) => {
+    const id = slot.dataset.id;
+    ensureThumb(id, slot);
+  });
+
+  // 操作按钮
   tbody.querySelectorAll("button[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const action = btn.dataset.action;
-      const key = btn.dataset.key;
-      if (action === "delete") onDelete(key);
-      else if (action === "regen") onRegenerate(key);
+      const id = btn.dataset.id;
+      if (action === "delete") onDelete(id);
+      else if (action === "regen") onRegenerate(id);
+      else if (action === "view") onView(id);
+    });
+  });
+
+  // 描述展开
+  tbody.querySelectorAll(".desc-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cell = $(btn.dataset.target);
+      if (cell) {
+        cell.classList.toggle("expanded");
+        btn.textContent = cell.classList.contains("expanded") ? "收起 ↑" : "展开 ↓";
+      }
     });
   });
 }
 
-function truncate(s, n) {
-  if (!s) return "";
-  return s.length > n ? s.slice(0, n) + "…" : s;
+// ----- thumbnail lazy loading -----
+
+async function ensureThumb(imageId, slot) {
+  if (!imageId || !slot) return;
+  if (state.thumbCache.has(imageId)) {
+    renderThumb(slot, state.thumbCache.get(imageId));
+    return;
+  }
+  try {
+    const resp = await bridge.apiGet("cache/thumbnail", { image_id: imageId });
+    const data = resp?.data || resp;
+    if (data?.has_image && data.data_url) {
+      const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
+      state.thumbCache.set(imageId, thumb);
+      renderThumb(slot, thumb);
+    } else {
+      // 没有图（老 v0.8.5 迁移过来的条目），显示占位
+      slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+    }
+  } catch (e) {
+    slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
+  }
 }
 
-async function onDelete(key) {
-  if (!confirm(`删除缓存条目?\n${truncate(key, 120)}`)) return;
+function renderThumb(slot, thumb) {
+  slot.innerHTML = `<img class="thumb" src="${thumb.data_url}" alt="thumb" loading="lazy" />`;
+  const img = slot.querySelector("img");
+  if (img) {
+    img.addEventListener("click", () => showModalImg(thumb));
+  }
+}
+
+// ----- modal: 查看详情 -----
+
+async function onView(imageId) {
   try {
-    const resp = await bridge.apiPost("cache/delete", { key });
+    const resp = await bridge.apiGet("cache/thumbnail", { image_id: imageId });
+    const data = resp?.data || resp;
+    const body = $("modal-body");
+    let html = "";
+    if (data?.has_image) {
+      html += `<div class="field">
+        <div class="field-label">缩略图</div>
+        <img src="${data.data_url}" alt="full" />
+      </div>`;
+    } else {
+      html += `<div class="field">
+        <div class="field-label">缩略图</div>
+        <div style="color: var(--text-muted);">该条目未存储图片二进制（v0.8.5 之前的数据）</div>
+      </div>`;
+    }
+    html += `
+      <div class="field">
+        <div class="field-label">image_id</div>
+        <div class="field-value"><code>${escapeHtml(imageId)}</code></div>
+      </div>
+      <div class="field">
+        <div class="field-label">mime_type / 尺寸</div>
+        <div class="field-value">${escapeHtml(data.mime_type || "—")} · ${data.width || "—"}×${data.height || "—"} · ${fmtSize(data.file_size || 0)}</div>
+      </div>`;
+    body.innerHTML = html;
+    $("detail-modal").hidden = false;
+  } catch (e) {
+    showToast("查看失败: " + (e?.message || e), "error");
+  }
+}
+
+function showModalImg(thumb) {
+  const body = $("modal-body");
+  body.innerHTML = `<div class="field">
+    <div class="field-label">原图（${thumb.mime || "image"}）</div>
+    <img src="${thumb.data_url}" alt="full" />
+  </div>`;
+  $("detail-modal").hidden = false;
+}
+
+$("modal-close").addEventListener("click", () => {
+  $("detail-modal").hidden = true;
+});
+
+$("detail-modal").addEventListener("click", (e) => {
+  if (e.target.id === "detail-modal") $("detail-modal").hidden = true;
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("detail-modal").hidden) {
+    $("detail-modal").hidden = true;
+  }
+});
+
+// ----- actions -----
+
+async function onDelete(id) {
+  if (!confirm("删除缓存条目?\n" + id)) return;
+  try {
+    const resp = await bridge.apiPost("cache/delete", { key: id });
     if (resp?.ok !== false) {
+      state.thumbCache.delete(id);
       showToast("已删除");
       await Promise.all([loadStats(), loadList()]);
     } else {
@@ -173,10 +301,10 @@ async function onDelete(key) {
   }
 }
 
-async function onRegenerate(key) {
+async function onRegenerate(id) {
   showToast("正在重新生成描述...");
   try {
-    const resp = await bridge.apiPost("cache/regenerate", { key });
+    const resp = await bridge.apiPost("cache/regenerate", { key: id });
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
       if (data.ok) {
@@ -199,6 +327,7 @@ async function onClear() {
     const resp = await bridge.apiPost("cache/clear", {});
     const data = resp?.data || resp;
     showToast("已清空 " + (data?.cleared ?? 0) + " 条");
+    state.thumbCache.clear();
     await Promise.all([loadStats(), loadList()]);
   } catch (e) {
     showToast("清空失败: " + (e?.message || e), "error");
@@ -226,28 +355,14 @@ async function onExport() {
   }
 }
 
-async function onChatArchiveRefresh() {
-  try {
-    const resp = await bridge.apiPost("chat-archive/refresh", {});
-    const data = resp?.data || resp;
-    if (data?.available) {
-      showToast("Chat Archive 联动已启用");
-    } else {
-      showToast("未检测到 Chat Archive 插件");
-    }
-    await loadStats();
-  } catch (e) {
-    showToast("刷新失败: " + (e?.message || e), "error");
-  }
-}
+// ----- event binding -----
 
-// 事件绑定
 $("refresh-btn").addEventListener("click", async () => {
+  state.thumbCache.clear();
   await Promise.all([loadStats(), loadList()]);
 });
 $("clear-btn").addEventListener("click", onClear);
 $("export-btn").addEventListener("click", onExport);
-$("chatarchive-refresh-btn").addEventListener("click", onChatArchiveRefresh);
 
 let searchTimer = null;
 $("search-input").addEventListener("input", (e) => {
@@ -276,10 +391,17 @@ $("next-btn").addEventListener("click", () => {
   }
 });
 
+// 键盘快捷键
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "r" || e.key === "R") {
+    $("refresh-btn").click();
+  }
+});
+
 // 初始加载
 await Promise.all([loadStats(), loadList()]);
 
-// 监听上下文变化（语言切换等），目前无需重新渲染
 bridge.onContext(() => {
   /* no-op */
 });
