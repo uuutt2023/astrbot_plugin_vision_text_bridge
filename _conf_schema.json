@@ -103,9 +103,33 @@
     "default": true
   },
   "verbose_logging": {
-    "description": "冗余日志（调试用）",
+    "description": "冗余日志总开关（调试用）",
     "type": "bool",
-    "hint": "开启后，on_llm_request 钩子每次触发都会输出一行 INFO 日志，包含发现的图片数量。调试不生效时用得上。",
+    "hint": "开启后，下面 4 个细粒度 verbose_* 开关全部生效。调试时不必 4 个都开，定位到具体阶段后只开对应开关，避免日志爆炸。",
+    "default": false
+  },
+  "verbose_hook_trace": {
+    "description": "[细粒度] 钩子入口/出口、处理图片数量",
+    "type": "bool",
+    "hint": "on_llm_request 钩子每次触发都输出一行 INFO 日志；链末钩子也会报清理了哪些残留。开启 verbose_logging 自动覆盖。",
+    "default": false
+  },
+  "verbose_mmx_subprocess": {
+    "description": "[细粒度] mmx 子进程完整命令 + stdout/stderr",
+    "type": "bool",
+    "hint": "打印 mmx 调用的完整命令行（脱敏）、stdout/stderr 完整内容。mmx 调用失败排错用。开启 verbose_logging 自动覆盖。",
+    "default": false
+  },
+  "verbose_cache_trace": {
+    "description": "[细粒度] 缓存命中/失效/写入",
+    "type": "bool",
+    "hint": "内存缓存命中 / SQLite 缓存命中 / 写 SQLite 缓存 都报。调试“为什么不命中缓存”用。开启 verbose_logging 自动覆盖。",
+    "default": false
+  },
+  "verbose_id_computation": {
+    "description": "[细粒度] image_id (md5) 计算过程",
+    "type": "bool",
+    "hint": "读图字节、计算 md5、退路原因都会报。调试“同一张图为什么不同 id”用。开启 verbose_logging 自动覆盖。",
     "default": false
   },
   "inject_system_prompt_guidance": {

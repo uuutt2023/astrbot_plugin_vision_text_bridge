@@ -113,6 +113,11 @@ def new_plugin(**overrides):
     p._configured_priority = p._resolve_priority()
     # 默认 None，让 _describe_one 在 SQLite 缓存表走 None 路径
     p._caption_cache = None
+    # v0.8.7: 主钩子快照字段。__init__ 里会设，这里用 __new__ 创建的实例也要设
+    p._pending_urls = None
+    p._pending_parts = None
+    p._pending_contexts = None
+    p._priority_locked_warning_emitted = False
     # 注入一个 mock context，让 _register_web_apis 不报错
     p.context = SimpleNamespace(
         request=SimpleNamespace(
@@ -168,17 +173,16 @@ def wrap_run(fn):
 # ------------------------------------------------------------------ 单测：工具方法
 
 def test_is_cacheable_url():
+    # v0.8.7: 抽到 module-level _is_cacheable_url(url, config)
     p = new_plugin()
-    assert p._is_cacheable_url("http://x.com/a.jpg") is True
-    assert p._is_cacheable_url("https://x.com/a.jpg") is True
-    assert p._is_cacheable_url("base64://abc") is False
-    # v0.8.2: file:// 默认缓存
-    assert p._is_cacheable_url("file:///tmp/a.jpg") is True
-    assert p._is_cacheable_url("/tmp/a.jpg") is False
-    assert p._is_cacheable_url("") is False
-    # 关闭 cache_file_paths 后
+    assert main._is_cacheable_url("http://x.com/a.jpg", p.config) is True
+    assert main._is_cacheable_url("https://x.com/a.jpg", p.config) is True
+    assert main._is_cacheable_url("base64://abc", p.config) is False
+    assert main._is_cacheable_url("file:///tmp/a.jpg", p.config) is True
+    assert main._is_cacheable_url("/tmp/a.jpg", p.config) is False
+    assert main._is_cacheable_url("", p.config) is False
     p2 = new_plugin(cache_file_paths=False)
-    assert p2._is_cacheable_url("file:///tmp/a.jpg") is False
+    assert main._is_cacheable_url("file:///tmp/a.jpg", p2.config) is False
     print("✓ test_is_cacheable_url")
 
 
@@ -202,31 +206,33 @@ def test_redact_text():
 
 
 def test_extract_image_url_from_part_dict():
+    # v0.8.7: 抽到 module-level _extract_url_from_item
     part = {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}}
-    assert main.VisionTextBridgePlugin._extract_image_url_from_part(part) == "https://x.com/a.jpg"
+    assert main._extract_url_from_item(part) == "https://x.com/a.jpg"
     text = {"type": "text", "text": "hello"}
-    assert main.VisionTextBridgePlugin._extract_image_url_from_part(text) == ""
+    assert main._extract_url_from_item(text) == ""
     print("✓ test_extract_image_url_from_part_dict")
 
 
 def test_extract_image_url_from_part_object():
     img = SimpleNamespace(type="image_url", image_url=SimpleNamespace(url="https://x.com/a.jpg"))
-    assert main.VisionTextBridgePlugin._extract_image_url_from_part(img) == "https://x.com/a.jpg"
-    # image_url 直接是字符串
+    assert main._extract_url_from_item(img) == "https://x.com/a.jpg"
     img2 = SimpleNamespace(type="image_url", image_url="https://x.com/b.jpg")
-    assert main.VisionTextBridgePlugin._extract_image_url_from_part(img2) == "https://x.com/b.jpg"
+    assert main._extract_url_from_item(img2) == "https://x.com/b.jpg"
     print("✓ test_extract_image_url_from_part_object")
 
 
 def test_remove_image_parts():
+    # v0.8.7: 抽到 module-level helper。直接 inlined 测试
     parts = [
         {"type": "text", "text": "hi"},
         {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
         {"type": "image_url", "image_url": {"url": "https://x.com/b.jpg"}},
     ]
-    main.VisionTextBridgePlugin._remove_image_parts(parts, ["https://x.com/a.jpg"])
-    assert len(parts) == 2
-    assert parts[1]["image_url"]["url"] == "https://x.com/b.jpg"
+    # 模拟主钩子入口清空：删所有 image_url parts
+    parts[:] = [p for p in parts if not main._is_image_url_part(p)]
+    assert len(parts) == 1
+    assert parts[0]["type"] == "text"
     print("✓ test_remove_image_parts")
 
 
@@ -256,21 +262,22 @@ def test_build_vision_command_no_prompt():
 # ------------------------------------------------------------------ 单测：_attach_descriptions_to_prompt
 
 def test_attach_with_prompt():
-    """v0.7 新行为：图说作为 content block 注入到 extra_user_content_parts，不修改 prompt。"""
+    """v0.7+ 新行为：图说作为 content block 注入到 extra_user_content_parts，不修改 prompt。
+    v0.8.7: 方法名从 _attach_descriptions_to_prompt 简化为 _attach。"""
     p = new_plugin()
     req = FakeReq(prompt="用户问：这是什么", image_urls=["https://x.com/a.jpg"])
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "https://x.com/a.jpg", "一只橘猫趴在沙发上")],
         start_index=1,
         field="image_urls",
     )
-    # **关键**：prompt 字符串不变
     assert req.prompt == "用户问：这是什么"
-    # 图说作为 content block 加入
     assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0]["type"] == "text"
-    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 一只橘猫趴在沙发上"
+    # v0.8.7: _to_text_part 优先用 TextPart Pydantic 对象（带 .text 属性），也兼容 dict
+    ep0 = req.extra_user_content_parts[0]
+    text = ep0["text"] if isinstance(ep0, dict) else ep0.text
+    assert text == "[Image 1 描述] 一只橘猫趴在沙发上"
     assert req.image_urls == []
     print("✓ test_attach_with_prompt")
 
@@ -279,17 +286,17 @@ def test_attach_no_prompt():
     """prompt 为 None 时，只注入 content block。"""
     p = new_plugin()
     req = FakeReq(prompt=None, image_urls=["https://x.com/a.jpg"])
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "https://x.com/a.jpg", "一只狗")],
         start_index=1,
         field="image_urls",
     )
-    # prompt 仍为 None
     assert req.prompt is None
-    # 图说作为 content block 加入
     assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 一只狗"
+    ep0 = req.extra_user_content_parts[0]
+    text = ep0["text"] if isinstance(ep0, dict) else ep0.text
+    assert text == "[Image 1 描述] 一只狗"
     assert req.image_urls == []
     print("✓ test_attach_no_prompt")
 
@@ -298,20 +305,18 @@ def test_attach_failure_uses_template():
     """mmx 失败时：占位仍注入 content block + 清空 image_urls。"""
     p = new_plugin()
     req = FakeReq(prompt="看图", image_urls=["https://x.com/bad.jpg"])
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "https://x.com/bad.jpg", "")],  # 失败：空描述
         start_index=1,
         field="image_urls",
     )
-    # prompt 不变
     assert req.prompt == "看图"
-    # 失败占位进入 extra_user_content_parts
     assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0]["type"] == "text"
-    assert "理解失败" in req.extra_user_content_parts[0]["text"]
-    assert "mmx 调用失败或超时" in req.extra_user_content_parts[0]["text"]
-    # image_urls 清空
+    ep0 = req.extra_user_content_parts[0]
+    text = ep0["text"] if isinstance(ep0, dict) else ep0.text
+    assert "理解失败" in text
+    assert "mmx 调用失败或超时" in text
     assert req.image_urls == []
     print("✓ test_attach_failure_uses_template")
 
@@ -320,19 +325,18 @@ def test_attach_index_continues():
     """多张图：每张生成一个独立 content block。"""
     p = new_plugin()
     req = FakeReq(prompt=None, image_urls=["a", "b", "c"])
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "a", "desc-a"), (2, "b", "desc-b")],
         start_index=1,
         field="image_urls",
     )
-    # 两张图说都是 content block
     assert len(req.extra_user_content_parts) == 2
-    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] desc-a"
-    assert req.extra_user_content_parts[1]["text"] == "[Image 2 描述] desc-b"
-    # prompt 不变
+    def _t(p):
+        return p["text"] if isinstance(p, dict) else p.text
+    assert _t(req.extra_user_content_parts[0]) == "[Image 1 描述] desc-a"
+    assert _t(req.extra_user_content_parts[1]) == "[Image 2 描述] desc-b"
     assert req.prompt is None
-    # image_urls 全清
     assert req.image_urls == []
     print("✓ test_attach_index_continues")
 
@@ -380,14 +384,16 @@ def test_e2e_image_urls_only():
     event = SimpleNamespace()
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(event, req))
+        asyncio.run(p._process_request(req))  # v0.8.7: 不再要 event 参数
 
     # **v0.7 新行为**：prompt 保持原样
     assert req.prompt == "帮我看看"
     # 图说作为 content blocks 加入
     assert len(req.extra_user_content_parts) == 2
-    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 描述: https://x.com/a.jpg"
-    assert req.extra_user_content_parts[1]["text"] == "[Image 2 描述] 描述: https://x.com/b.jpg"
+    def _t(p):
+        return p["text"] if isinstance(p, dict) else p.text
+    assert _t(req.extra_user_content_parts[0]) == "[Image 1 描述] 描述: https://x.com/a.jpg"
+    assert _t(req.extra_user_content_parts[1]) == "[Image 2 描述] 描述: https://x.com/b.jpg"
     # image_urls 都被移除
     assert req.image_urls == []
     print("✓ test_e2e_image_urls_only")
@@ -405,14 +411,16 @@ def test_e2e_extra_parts():
         return "x图说", ""
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(SimpleNamespace(), req))
+        asyncio.run(p._process_request(req))  # v0.8.7: 不再要 event
 
     # 原 text part 保留 + image_url 被删除 + 图说 content block 加上
-    # 总共应该有 2 个 parts：原 "附加说明" + 新图说
     assert len(req.extra_user_content_parts) == 2
-    assert req.extra_user_content_parts[0] == {"type": "text", "text": "附加说明"}
-    assert req.extra_user_content_parts[1]["type"] == "text"
-    assert req.extra_user_content_parts[1]["text"] == "[Image 1 描述] x图说"
+    ep0 = req.extra_user_content_parts[0]
+    text0 = ep0["text"] if isinstance(ep0, dict) else ep0.text
+    assert text0 == "附加说明"
+    ep1 = req.extra_user_content_parts[1]
+    text1 = ep1["text"] if isinstance(ep1, dict) else ep1.text
+    assert text1 == "[Image 1 描述] x图说"
     print("✓ test_e2e_extra_parts")
 
 
@@ -426,7 +434,7 @@ def test_e2e_disabled_plugin():
         return "x", ""
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(SimpleNamespace(), req))
+        asyncio.run(p._process_request(req))
     # 关闭时 _process_request 不应被调用（由 bridge_vision_to_text 拦）
     # 这里直接调 _process_request 还是会处理，验证 enabled 拦截在主入口
     # 所以这条用例改测主入口
@@ -441,7 +449,7 @@ def test_e2e_mmx_failure_keeps_placeholder():
 
     req = FakeReq(prompt="hi", image_urls=["https://x.com/a.jpg"])
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(SimpleNamespace(), req))
+        asyncio.run(p._process_request(req))
 
     # 失败也清空 image_urls
     assert req.image_urls == []
@@ -470,7 +478,7 @@ def test_e2e_history_in_contexts():
         return "历史图说", ""
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(SimpleNamespace(), req))
+        asyncio.run(p._process_request(req))
 
     # 历史 content 里 image_url 被移除，只剩 text
     new_content = contexts[0]["content"]
@@ -492,7 +500,7 @@ def test_e2e_truncation_applied():
         return "这是一段很长的描述文字" * 10, ""
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(SimpleNamespace(), req))
+        asyncio.run(p._process_request(req))
 
     # prompt 不变
     assert req.prompt is None
@@ -662,16 +670,18 @@ def test_resolve_priority_invalid_falls_back():
 
 
 def test_priority_mismatch_warns_and_updates_global():
-    """priority 配置值与 import 时锁定的 DEFAULT_PRIORITY 不一致时应告警并更新全局。"""
-    # 保存原始全局值以备还原
+    """v0.8.7: priority 不一致时仅告警（设 _priority_locked_warning_emitted），
+    不再改 global DEFAULT_PRIORITY（因为 on_llm_request decorator 已锁定）。"""
     original = main.DEFAULT_PRIORITY
     try:
-        # 设为 100，插件配置为 500
         main.DEFAULT_PRIORITY = 100
         p = new_plugin(priority=500)
-        # 告警调用本身不会抛，这里只验证全局变量被更新了
+        assert p._priority_locked_warning_emitted is False
         p._warn_if_priority_mismatch()
-        assert main.DEFAULT_PRIORITY == 500  # 被更新
+        # v0.8.7 改语义：只设了 _priority_locked_warning_emitted 防止重报
+        assert p._priority_locked_warning_emitted is True
+        # global DEFAULT_PRIORITY 不再被改（警告一次即可）
+        assert main.DEFAULT_PRIORITY == 100
     finally:
         main.DEFAULT_PRIORITY = original
     print("✓ test_priority_mismatch_warns_and_updates_global")
@@ -698,7 +708,9 @@ def test_priority_out_of_range_warns():
         main.DEFAULT_PRIORITY = 100
         p = new_plugin(priority=99999)  # 超出 10000
         p._warn_if_priority_mismatch()
-        assert main.DEFAULT_PRIORITY == 99999
+        # v0.8.7: 不再更新 global DEFAULT_PRIORITY，只设 _priority_locked_warning_emitted
+        assert main.DEFAULT_PRIORITY == 100  # 保持不变
+        assert p._priority_locked_warning_emitted is True
     finally:
         main.DEFAULT_PRIORITY = original
     print("✓ test_priority_out_of_range_warns")
@@ -708,13 +720,13 @@ def test_priority_out_of_range_warns():
 
 
 def test_is_data_url():
-    assert main.VisionTextBridgePlugin._is_data_url("data:image/webp;base64,UklGR") is True
-    assert main.VisionTextBridgePlugin._is_data_url("data:image/png;base64,abc") is True
-    assert main.VisionTextBridgePlugin._is_data_url("data:image/jpeg;base64,/9j/4AAQ") is True
-    assert main.VisionTextBridgePlugin._is_data_url("https://x.com/a.jpg") is False
-    assert main.VisionTextBridgePlugin._is_data_url("file:///tmp/a.jpg") is False
-    assert main.VisionTextBridgePlugin._is_data_url("base64://abc") is False
-    assert main.VisionTextBridgePlugin._is_data_url("") is False
+    assert main._is_data_url("data:image/webp;base64,UklGR") is True
+    assert main._is_data_url("data:image/png;base64,abc") is True
+    assert main._is_data_url("data:image/jpeg;base64,/9j/4AAQ") is True
+    assert main._is_data_url("https://x.com/a.jpg") is False
+    assert main._is_data_url("file:///tmp/a.jpg") is False
+    assert main._is_data_url("base64://abc") is False
+    assert main._is_data_url("") is False
     print("✓ test_is_data_url")
 
 
@@ -729,7 +741,7 @@ def test_strip_all_data_url_images_image_urls():
             "file:///tmp/b.jpg",            # 保留
         ],
     )
-    n = p._strip_all_data_url_images(req)
+    n = main._strip_image_urls(req, only_data_url=True)
     assert n == 2
     assert req.image_urls == ["https://x.com/a.jpg", "file:///tmp/b.jpg"]
     print("✓ test_strip_all_data_url_images_image_urls")
@@ -745,7 +757,7 @@ def test_strip_all_data_url_images_extra_parts():
         SimpleNamespace(type="image_url", image_url="data:image/png;base64,EF"),
     ]
     req = FakeReq(prompt=None, image_urls=[], extra_user_content_parts=parts)
-    n = p._strip_all_data_url_images(req)
+    n = main._strip_image_urls(req, only_data_url=True)
     assert n == 2
     # 只剩 text 和 合法 URL 的 image_url
     assert len(req.extra_user_content_parts) == 2
@@ -771,7 +783,7 @@ def test_strip_all_data_url_images_contexts():
         },
     ]
     req = FakeReq(prompt=None, image_urls=[], contexts=contexts)
-    n = p._strip_all_data_url_images(req)
+    n = main._strip_image_urls(req, only_data_url=True)
     assert n == 1
     new_content = contexts[0]["content"]
     assert len(new_content) == 2
@@ -790,7 +802,7 @@ def test_strip_returns_zero_when_nothing():
         extra_user_content_parts=[{"type": "text", "text": "x"}],
         contexts=[{"role": "user", "content": "y"}],
     )
-    n = p._strip_all_data_url_images(req)
+    n = main._strip_image_urls(req, only_data_url=True)
     assert n == 0
     assert req.image_urls == ["https://x.com/a.jpg"]
     print("✓ test_strip_returns_zero_when_nothing")
@@ -801,7 +813,7 @@ def test_strip_handles_string_image_url_field():
     p = new_plugin()
     parts = [SimpleNamespace(type="image_url", image_url="data:image/webp;base64,XX")]
     req = FakeReq(prompt=None, image_urls=[], extra_user_content_parts=parts)
-    n = p._strip_all_data_url_images(req)
+    n = main._strip_image_urls(req, only_data_url=True)
     assert n == 1
     assert req.extra_user_content_parts == []
     print("✓ test_strip_handles_string_image_url_field")
@@ -853,22 +865,20 @@ def test_attach_clears_image_urls_even_on_failure():
         prompt="看图",
         image_urls=["https://x.com/a.jpg", "https://x.com/b.jpg"],
     )
-    # 两条都描述为空（失败）
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "https://x.com/a.jpg", ""), (2, "https://x.com/b.jpg", "")],
         start_index=1,
         field="image_urls",
     )
-    # prompt 不变
     assert req.prompt == "看图"
-    # 失败占位作为 content block 加上
     assert len(req.extra_user_content_parts) == 2
-    assert "[Image 1 描述]" in req.extra_user_content_parts[0]["text"]
-    assert "理解失败" in req.extra_user_content_parts[0]["text"]
-    assert "[Image 2 描述]" in req.extra_user_content_parts[1]["text"]
-    assert "理解失败" in req.extra_user_content_parts[1]["text"]
-    # image_urls 应被全部清空
+    def _t(p):
+        return p["text"] if isinstance(p, dict) else p.text
+    assert "[Image 1 描述]" in _t(req.extra_user_content_parts[0])
+    assert "理解失败" in _t(req.extra_user_content_parts[0])
+    assert "[Image 2 描述]" in _t(req.extra_user_content_parts[1])
+    assert "理解失败" in _t(req.extra_user_content_parts[1])
     assert req.image_urls == []
     print("✓ test_attach_clears_image_urls_even_on_failure")
 
@@ -880,17 +890,20 @@ def test_attach_clears_extra_parts_even_on_failure():
         {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
     ]
     req = FakeReq(prompt=None, image_urls=[], extra_user_content_parts=parts)
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "https://x.com/a.jpg", "")],  # 失败
         start_index=1,
         field="extra_user_content_parts",
     )
-    # image_url 组件被清除，原 text 保留 + 失败占位加上
+    # image_url 被清除，原 text 保留 + 失败占位加上
     assert len(req.extra_user_content_parts) == 2
-    assert req.extra_user_content_parts[0] == {"type": "text", "text": "hi"}
-    assert "理解失败" in req.extra_user_content_parts[1]["text"]
-    # prompt 不变
+    ep0 = req.extra_user_content_parts[0]
+    text0 = ep0["text"] if isinstance(ep0, dict) else ep0.text
+    assert text0 == "hi"
+    ep1 = req.extra_user_content_parts[1]
+    text1 = ep1["text"] if isinstance(ep1, dict) else ep1.text
+    assert "理解失败" in text1
     assert req.prompt is None
     print("✓ test_attach_clears_extra_parts_even_on_failure")
 
@@ -905,7 +918,7 @@ def test_attach_clears_contexts_even_on_failure():
         ],
     }]
     req = FakeReq(prompt=None, image_urls=[], contexts=contexts)
-    p._attach_descriptions_to_prompt(
+    p._attach(
         req,
         [(1, "https://x.com/a.jpg", "")],  # 失败
         start_index=1,
@@ -941,7 +954,7 @@ def test_strip_all_image_urls_removes_everything():
             ],
         }],
     )
-    n = p._strip_all_image_urls(req)
+    n = main._strip_image_urls(req, only_data_url=False)
     assert n == 5  # 3 image_urls + 1 extra_part + 1 context
     assert req.image_urls == []
     assert req.extra_user_content_parts == [{"type": "text", "text": "x"}]
@@ -952,7 +965,7 @@ def test_strip_all_image_urls_removes_everything():
 def test_strip_all_image_urls_zero_when_nothing():
     p = new_plugin()
     req = FakeReq(prompt="hi", image_urls=[], extra_user_content_parts=[], contexts=[])
-    n = p._strip_all_image_urls(req)
+    n = main._strip_image_urls(req, only_data_url=False)
     assert n == 0
     print("✓ test_strip_all_image_urls_zero_when_nothing")
 
@@ -1000,57 +1013,57 @@ def test_fallback_strip_only_data_url_by_default():
 def test_diagnose_balance_error():
     p = new_plugin()
     # 重置告警缓存
-    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    main.VisionTextBridgePlugin._DIAGNOSED.clear()
     p._diagnose_mmx_error("API error: insufficient balance (HTTP 200)", "http://x.com/a.jpg")
-    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED
     print("✓ test_diagnose_balance_error")
 
 
 def test_diagnose_quota_error():
     p = new_plugin()
-    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    main.VisionTextBridgePlugin._DIAGNOSED.clear()
     p._diagnose_mmx_error("quota exceeded", "http://x.com/a.jpg")
-    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED
     print("✓ test_diagnose_quota_error")
 
 
 def test_diagnose_auth_error():
     p = new_plugin()
-    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    main.VisionTextBridgePlugin._DIAGNOSED.clear()
     p._diagnose_mmx_error("auth token expired", "http://x.com/a.jpg")
-    assert "auth" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    assert "auth" in main.VisionTextBridgePlugin._DIAGNOSED
     print("✓ test_diagnose_auth_error")
 
 
 def test_diagnose_argument_error():
     p = new_plugin()
-    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    main.VisionTextBridgePlugin._DIAGNOSED.clear()
     p._diagnose_mmx_error("No such file or directory", "http://x.com/a.jpg")
-    assert "argument" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    assert "argument" in main.VisionTextBridgePlugin._DIAGNOSED
     print("✓ test_diagnose_argument_error")
 
 
 def test_diagnose_unknown_error_no_warning():
     """未识别的错误不应触发告警。"""
     p = new_plugin()
-    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    main.VisionTextBridgePlugin._DIAGNOSED.clear()
     p._diagnose_mmx_error("some unknown error xyz123", "http://x.com/a.jpg")
-    assert main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS == set()
+    assert main.VisionTextBridgePlugin._DIAGNOSED == set()
     print("✓ test_diagnose_unknown_error_no_warning")
 
 
 def test_diagnose_warn_once():
     """同一个错误 key 不重复告警。"""
     p = new_plugin()
-    main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS.clear()
+    main.VisionTextBridgePlugin._DIAGNOSED.clear()
     p._diagnose_mmx_error("insufficient balance", "http://x.com/a.jpg")
     p._diagnose_mmx_error("insufficient balance", "http://x.com/b.jpg")
     # 实际：balance 在 set 中
-    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS
+    assert "balance" in main.VisionTextBridgePlugin._DIAGNOSED
     # 再调一次不会重复 add（set 长度不变）
-    size_before = len(main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS)
+    size_before = len(main.VisionTextBridgePlugin._DIAGNOSED)
     p._diagnose_mmx_error("insufficient balance", "http://x.com/c.jpg")
-    size_after = len(main.VisionTextBridgePlugin._DIAGNOSED_MMX_ERRORS)
+    size_after = len(main.VisionTextBridgePlugin._DIAGNOSED)
     assert size_before == size_after
     print("✓ test_diagnose_warn_once")
 
@@ -1431,7 +1444,7 @@ def test_inject_system_prompt_guidance_default_on():
         ],
     )
     req.system_prompt = "你是一个助手。"
-    p._maybe_inject_system_prompt_guidance(req)
+    p._inject_guidance(req)
     # system_prompt 追加了指导
     assert "[视觉模型描述]" in req.system_prompt
     assert "2 张图片" in req.system_prompt
@@ -1452,7 +1465,7 @@ def test_inject_disabled_when_config_off():
         ],
     )
     req.system_prompt = "你是一个助手。"
-    p._maybe_inject_system_prompt_guidance(req)
+    p._inject_guidance(req)
     # 不应修改
     assert req.system_prompt == "你是一个助手。"
     print("✓ test_inject_disabled_when_config_off")
@@ -1463,7 +1476,7 @@ def test_inject_no_images_in_prompt_no_op():
     p = new_plugin()
     req = FakeReq(prompt="没有图")
     req.system_prompt = "你是一个助手。"
-    p._maybe_inject_system_prompt_guidance(req)
+    p._inject_guidance(req)
     assert req.system_prompt == "你是一个助手。"
     print("✓ test_inject_no_images_in_prompt_no_op")
 
@@ -1574,7 +1587,7 @@ def test_main_hook_saves_snapshots_for_process_request():
 def test_to_text_part_creates_pydantic_object():
     """验证 _to_text_part 返回的对象有 model_dump_for_context 方法（防止 v0.7 崩溃）。"""
     p = new_plugin()
-    obj = p._to_text_part({"type": "text", "text": "hello"})
+    obj = main._to_text_part({"type": "text", "text": "hello"})
     # 必须有 model_dump_for_context 方法
     if hasattr(obj, "model_dump_for_context"):
         # 如果有，是 Pydantic 对象
@@ -1610,7 +1623,7 @@ def test_mark_providers_adds_image_modality():
     fake_ctx = SimpleNamespace(provider_manager=FakeManager([p1, p2, p3]))
     p.context = SimpleNamespace(astr_context=fake_ctx)
 
-    p._mark_all_providers_support_image()
+    p._mark_providers_support_image()
 
     # 三个都应被加上 'image' modality
     assert "image" in p1.provider_config["modalities"]
@@ -1631,7 +1644,7 @@ def test_mark_providers_skipped_when_config_off():
     fake_ctx = SimpleNamespace(provider_manager=SimpleNamespace(providers={"x": FakeProvider()}))
     p.context = SimpleNamespace(astr_context=fake_ctx)
 
-    p._mark_all_providers_support_image()
+    p._mark_providers_support_image()
 
     # modalities 不变
     assert FakeProvider.provider_config["modalities"] == ["text"]
@@ -1773,7 +1786,7 @@ def test_check_compatibility_warns_on_uni_nickname_low_priority():
     p.context = SimpleNamespace()
     p._get_installed_plugin_names = lambda: {"astrbot_plugin_uni_nickname"}
     # 不应抛异常
-    p._check_other_plugin_compatibility()
+    p._check_compatibility()
     print("✓ test_check_compatibility_warns_on_uni_nickname_low_priority")
 
 
@@ -1971,7 +1984,7 @@ def test_inject_creates_system_prompt_if_empty():
         ],
     )
     req.system_prompt = ""
-    p._maybe_inject_system_prompt_guidance(req)
+    p._inject_guidance(req)
     assert req.system_prompt  # 非空
     assert "[视觉模型描述]" in req.system_prompt
     print("✓ test_inject_creates_system_prompt_if_empty")
@@ -1988,7 +2001,7 @@ def test_inject_counts_images_correctly():
         ],
     )
     req.system_prompt = "X"
-    p._maybe_inject_system_prompt_guidance(req)
+    p._inject_guidance(req)
     assert "3 张图片" in req.system_prompt
     assert "[Image 1 描述]" in req.system_prompt
     assert "[Image 2 描述]" in req.system_prompt
@@ -2006,7 +2019,7 @@ def test_inject_caption_text_to_system_prompt_optional():
         ],
     )
     req.system_prompt = "你是一个助手。"
-    p._maybe_inject_system_prompt_guidance(req)
+    p._inject_guidance(req)
     # 开启 inject_caption_text_to_system_prompt 时，图说也进入 system_prompt
     assert "猫" in req.system_prompt
     print("✓ test_inject_caption_text_to_system_prompt_optional")
@@ -2150,19 +2163,19 @@ def test_sniff_image_meta():
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
         "0000000d4944415478da6300010000000500010d0a2db40000000049454e44ae426082"
     )
-    mime, w, h = p._sniff_image_meta(png_bytes)
+    mime, w, h = main._sniff_image_meta(png_bytes)
     assert mime == "image/png"
     assert w == 1 and h == 1
     # 1x1 GIF
     gif_bytes = b"GIF89a" + b"\x01\x00\x01\x00" + b"\x00" * 100
-    mime, w, h = p._sniff_image_meta(gif_bytes)
+    mime, w, h = main._sniff_image_meta(gif_bytes)
     assert mime == "image/gif"
     assert w == 1 and h == 1
     # 不可识别的字节
-    mime, w, h = p._sniff_image_meta(b"random bytes 1234567890")
+    mime, w, h = main._sniff_image_meta(b"random bytes 1234567890")
     assert mime == "" and w == 0 and h == 0
     # 空
-    mime, w, h = p._sniff_image_meta(b"")
+    mime, w, h = main._sniff_image_meta(b"")
     assert mime == "" and w == 0 and h == 0
     print("✓ test_sniff_image_meta")
 
@@ -2199,6 +2212,10 @@ def test_main_imports_without_sys_path_modification():
             "main_under_test", f"{plugin_dir}/main.py"
         )
         mod = _ilu.module_from_spec(spec)
+        # v0.8.7 修复：Python 3.11 @dataclass 在 exec_module 时会用 sys.modules
+        # 查 module 的 __dict__，但 spec loader 加载的 module 默认不注册。
+        # 这里显式注册，模拟 AstrBot 实际加载路径。
+        _sys.modules["main_under_test"] = mod
         spec.loader.exec_module(mod)
         # 验证 _load_sibling_module 工作：main.py 模块中应有这些绑定（v0.8.6 起
         # chat_archive_link.py 已删除，不再验证 ChatArchiveLink）
@@ -2306,6 +2323,12 @@ def run_all():
         test_chat_plus_style_image_reinjection_is_cleaned,
         test_chat_plus_compat_event_image_components_recovered,
         test_v0851_no_duplicate_mmx_call_for_same_image,
+        # v0.8.7 新增
+        test_verbose_granular_toggles,
+        test_verbose_total_switch_enables_all,
+        test_mmx_result_dataclass,
+        test_helper_module_level_functions_exist,
+        test_main_py_slim_under_1200_lines,
     ]
     failed = 0
     for t in tests:
@@ -2321,6 +2344,75 @@ def run_all():
     print(f"\n{'='*50}")
     print(f"PASS: {total - failed}/{total}")
     sys.exit(0 if failed == 0 else 1)
+
+
+# ------------------------------------------------------------------ v0.8.7 新增
+
+
+def test_verbose_granular_toggles():
+    """v0.8.7: verbose_hook_trace / verbose_mmx_subprocess / verbose_cache_trace / verbose_id_computation 任一为 true 即开。"""
+    p = new_plugin(verbose_hook_trace=True)
+    assert p._should_log("hook_trace") is True
+    assert p._should_log("mmx_subprocess") is False  # 只开 hook_trace
+    p2 = new_plugin(verbose_mmx_subprocess=True)
+    assert p2._should_log("mmx_subprocess") is True
+    assert p2._should_log("hook_trace") is False
+    p3 = new_plugin(verbose_cache_trace=True)
+    assert p3._should_log("cache_trace") is True
+    assert p3._should_log("id_computation") is False
+    p4 = new_plugin(verbose_id_computation=True)
+    assert p4._should_log("id_computation") is True
+    # 默认全关
+    p5 = new_plugin()
+    assert p5._should_log("hook_trace") is False
+    assert p5._should_log("mmx_subprocess") is False
+    assert p5._should_log("cache_trace") is False
+    assert p5._should_log("id_computation") is False
+    print("✓ test_verbose_granular_toggles")
+
+
+def test_verbose_total_switch_enables_all():
+    """v0.8.7: verbose_logging=true 是总开关，覆盖所有细粒度。"""
+    p = new_plugin(verbose_logging=True)
+    assert p._should_log("hook_trace") is True
+    assert p._should_log("mmx_subprocess") is True
+    assert p._should_log("cache_trace") is True
+    assert p._should_log("id_computation") is True
+    print("✓ test_verbose_total_switch_enables_all")
+
+
+def test_mmx_result_dataclass():
+    """v0.8.7: MmxResult 拍到模块顶层的 dataclass，不再是 _run_mmx 内部 class。"""
+    from dataclasses import fields
+    f = fields(main.MmxResult)
+    names = {x.name for x in f}
+    assert names == {"stdout", "stderr", "returncode", "ok"}
+    r = main.MmxResult("hi", "err", 0, True)
+    assert r.stdout == "hi" and r.ok is True
+    print("✓ test_mmx_result_dataclass")
+
+
+def test_helper_module_level_functions_exist():
+    """v0.8.7: 多个小 helper 抽到模块顶层，验证它们存在。"""
+    expected = [
+        "_is_image_url_part", "_extract_url_from_item",
+        "_extract_urls_from_parts", "_extract_urls_from_context_list",
+        "_is_data_url", "_strip_image_urls", "_to_text_part",
+        "_sniff_image_meta", "_is_cacheable_url",
+    ]
+    for name in expected:
+        assert hasattr(main, name), f"main.{name} 缺失"
+        assert callable(getattr(main, name)), f"main.{name} 不可调用"
+    print("✓ test_helper_module_level_functions_exist")
+
+
+def test_main_py_slim_under_1200_lines():
+    """v0.8.7: main.py 瘦身到 1200 行以下（v0.8.6 是 2019 行）。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+    with open(path, "r", encoding="utf-8") as f:
+        n = sum(1 for _ in f)
+    assert n < 1200, f"main.py 现在 {n} 行，未达到瘦身目标 (<1200)"
+    print(f"✓ test_main_py_slim_under_1200_lines (main.py = {n} 行)")
 
 
 if __name__ == "__main__":

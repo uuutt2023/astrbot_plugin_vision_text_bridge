@@ -7,6 +7,43 @@
 
 无新变更。
 
+## [0.8.7] - 2026-06-05
+
+### 重构
+- **main.py 瘦身** ：`2019 → 1168 行`（**-42%**）。
+  - **抽到模块顶层** （不依赖 self 的小 helper）：`_is_image_url_part` / `_extract_url_from_item` / `_extract_urls_from_parts` / `_extract_urls_from_context_list` / `_is_data_url` / `_strip_image_urls` / `_to_text_part` / `_sniff_image_meta` / `_is_cacheable_url`。
+  - **合并** ：`_strip_all_data_url_images` + `_strip_all_image_urls` → 单一 `_strip_image_urls(req, only_data_url=)`。
+  - **抽** ：`MmxResult` 从 `_run_mmx` 内部 class 提到模块顶层的 `@dataclass`。
+  - **重命名** ：`_attach_descriptions_to_prompt` → `_attach`；`_maybe_inject_system_prompt_guidance` → `_inject_guidance`；`_mark_all_providers_support_image` → `_mark_providers_support_image`；`_check_other_plugin_compatibility` → `_check_compatibility`；`_safe_preview` → `_preview`。
+  - **去重** ：多个 helper 合并为复合 list comprehension（主钩子入口的清空逻辑从 5 个 `self._remove_*` 调用变成 1 个表达式）。
+  - **重写** ：Mmx 错误诊断逻辑从 5 个独立 `if-elif` 重写为单一函数，删除重复 `self._warn_once` 调用。
+  - **删除过时** ：`global DEFAULT_PRIORITY` 修改（priority 锁定后改不生效，改用 `self._priority_locked_warning_emitted` 防重报）。
+  - **精简 docstring** ：内部 helper 的 1~2 行 docstring；公开方法保留完整说明。
+
+### 新增
+- **详细日志拆细为 4 个独立开关** （v0.8.6 之前是单一 `verbose_logging`）：
+  - `verbose_hook_trace` ：on_llm_request 钩子入口/出口 + 处理的图片数。调试“插件是否拦截到请求”用。
+  - `verbose_mmx_subprocess` ：mmx 完整命令（脱敏）+ stdout/stderr。**mmx 调用失败排错首选**。
+  - `verbose_cache_trace` ：内存/SQLite 缓存命中 + SQLite 写。调试“同一张图为什么不命中”用。
+  - `verbose_id_computation` ：image_id (md5) 计算过程 + 退路原因。调试“同一张图被算成不同 id”用。
+  - `verbose_logging` 仍是总开关，开启后 4 个细粒度**全部生效**。
+  - 新增 helper `_should_log(*flags) -> bool` 统一处理：总开关或任一细粒度为 true 即开。
+  - **默认全关**。调试时先开总开关看，定位到阶段后只开对应细粒度。
+
+### 改动
+- **测试从 93 → 98** 。新增：
+  - `test_verbose_granular_toggles` ：4 个细粒度开关独立验证。
+  - `test_verbose_total_switch_enables_all` ：总开关覆盖所有细粒度。
+  - `test_mmx_result_dataclass` ：MmxResult 模块顶层。
+  - `test_helper_module_level_functions_exist` ：9 个抽出去的 helper 都在。
+  - `test_main_py_slim_under_1200_lines` ：main.py < 1200 行（实际 1168）。
+- `_redact_text` 改为 `@staticmethod` （原本是实例方法但不用 self）。
+
+### 修复
+- **Python 3.11 @dataclass + importlib.spec_from_file_location 不兼容** （测试时出现 `'NoneType' object has no attribute '__dict__'`）：原因是 spec loader 加载的 module 不在 `sys.modules` 里，dataclass 装饰器查不到。修复方法是在 exec_module 前显式 `sys.modules[name] = mod`（在 `test_main_imports_without_sys_path_modification` 测试里）。
+- **`test_api_cache_thumbnail_no_image`** ：thumbnail API 在条目无 b64 时不再回退到 `image/jpeg`，保留原始 mime（`""`）。
+- **精简 mmx 错误诊断** 过程中丢了 "auth + expired/invalid" 组合判断，现已补上。
+
 ## [0.8.6] - 2026-06-05
 
 ### 重大变更

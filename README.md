@@ -7,7 +7,7 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.0.0-blue)](https://docs.astrbot.app/)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-green)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.8.6-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.7-brightgreen)](CHANGELOG.md)
 
 [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues) · [AstrBot 文档](https://docs.astrbot.app/)
 
@@ -209,6 +209,39 @@ mmx vision describe --image /path/to/any.png --prompt "描述"
 
 **前提**：插件在 on_llm_request 钩子入口**已清空** image_urls，主 provider **不会**实际收到图（只是名义"支持"）。
 
+## 详细日志开关（v0.8.7 新增）
+
+调试不生效时开启对应阶段日志。**默认全关**——v0.8.7 拆为 4 个细粒度开关，
+定位到具体阶段后只开对应项，避免日志爆炸。
+
+| 配置项 | 作用 | 调试场景 |
+| --- | --- | --- |
+| `verbose_logging` | **总开关**，开启后 4 个细粒度全部生效 | 不知从哪看起时先开这个 |
+| `verbose_hook_trace` | on_llm_request 钩子入口/出口 + 处理的图片数 | “插件是否拦截到了请求” |
+| `verbose_mmx_subprocess` | mmx 完整命令（脱敏）+ stdout/stderr | **mmx 调用失败**、不知报什么错 |
+| `verbose_cache_trace` | 内存/SQLite 缓存命中 + SQLite 写 | **同一张图为什么没命中**、写缓存是否报错 |
+| `verbose_id_computation` | image_id (md5) 计算过程 + 退路原因 | **同一张图被算成不同 id** |
+
+**总开关**（最常用）：
+```json
+{ "verbose_logging": true }
+```
+
+**精确定位**（以 mmx 调不通为例）：
+```json
+{ "verbose_mmx_subprocess": true }
+```
+
+**叠加使用**（查“同一张图为什么不命中”可能需要看 cache + id 两边）：
+```json
+{ "verbose_cache_trace": true, "verbose_id_computation": true }
+```
+
+**推荐流程**：
+1. 开 `verbose_logging` 看总体。
+2. 定位到阶段后，关掉总开关，只留对应细粒度。
+3. 调完后**全关**，避免影响生产日志。
+
 ## 离线测试
 
 ```bash
@@ -222,17 +255,18 @@ python3 test.py
 
 ```
 astrbot_plugin_vision_text_bridge/
-├── main.py                  # 主插件（on_llm_request 钩子、web API 注册）
+├── main.py                  # 主插件（on_llm_request 钩子、web API 注册，v0.8.7 瘦身到 1168 行）
 ├── caption_cache.py         # SQLite 描述缓存（独立模块）
-├── chat_archive_link.py     # Chat Archive 联动检测
-├── _conf_schema.json        # AstrBot 配置 schema
+├── _conf_schema.json        # AstrBot 配置 schema（v0.8.7 4 个 verbose_* 细粒度开关）
 ├── metadata.yaml            # AstrBot 插件元数据
 ├── pages/
-│   └── cache-manager/       # AstrBot 内置页面（HTML/JS/CSS）
-├── test.py                  # 离线测试（85 个测试）
+│   └── cache-manager/       # AstrBot 内置页面（HTML/JS/CSS，glassmorphism 风格）
+├── test.py                  # 离线测试（v0.8.7 98 个测试）
 ├── README.md
 └── CHANGELOG.md
 ```
+
+> v0.8.6 之前包含的 `chat_archive_link.py` **已在 v0.8.6 删除**——本插件不再联动 Chat Archive。
 
 ## 参考
 
