@@ -7,6 +7,20 @@
 
 无新变更。
 
+## [0.8.4] - 2026-06-04
+
+### 修复
+- **与 `astrbot_plugin_group_chat_plus` 不兼容**：chat_plus 的 `on_llm_request(priority=-1)` 会在我主钩子（priority=500）**之后**重写 `req.image_urls = _merged_image_urls`，把图重新塞回去。同时它**也**会**覆盖** `req.prompt` / `req.contexts` / `req.system_prompt`。
+
+  **后果**：LLM 同时看到原图 + 本插件注入的图说 content block → 浪费 token + LLM 走图理解路径（不读图说）。
+
+  **修复**：链末兑底 (`strip_residual_base64`, priority=-10000) **总是**清空 `req.image_urls` 和 `extra_user_content_parts` 中的 image_url 组件（**不**仅清 base64）。`chat_plus` 在 -1 重新填的图被 -10000 链末清掉。**未装 chat_plus 时**：主钩子已清空，链末再清仍是空 list，**无副作用**。
+
+### 改动
+- `test_fallback_strip_only_data_url_by_default` 调整断言为 v0.8.4 新行为（`image_urls == []`）。
+- 新增 `test_chat_plus_style_image_reinjection_is_cleaned`：模拟 chat_plus 风格中间插件重新填图，验证链末清掉。
+- 启动日志增加 `astrbot_plugin_group_chat_plus` 专项提示：装了该插件时输出兼容性说明。
+
 ## [0.8.3] - 2026-06-03
 
 ### 修复

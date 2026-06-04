@@ -515,6 +515,17 @@ class VisionTextBridgePlugin(Star):
                     "可以把本插件 priority 调高（500~1000）。",
                     name, self._configured_priority,
                 )
+        # chat_plus 专项提示：它的 on_llm_request(priority=-1) 会**重新填** req.image_urls
+        # v0.8.4 起本插件链末兑底 (priority=-10000) 总是清空 image_urls，干扰 chat_plus。
+        if "astrbot_plugin_group_chat_plus" in names:
+            logger.info(
+                "[vision_text_bridge] ✓ 检测到 astrbot_plugin_group_chat_plus。"
+                "该插件 on_llm_request (priority=-1) 会重新填 req.image_urls。"
+                "本插件 v0.8.4 链末兑底 (priority=-10000) **总是**清空 image_urls，"
+                "这能防住 chat_plus 的重新填图干扰，代价是 LLM 看不到任何原始图片二进制，"
+                "**只看本插件注入的图说 content block**。如果你希望 LLM 看到原图，"
+                "请禁用本插件或调整插件优先级顺序。"
+            )
 
     # ------------------------------------------------------------------ 页面 API
 
@@ -830,6 +841,33 @@ class VisionTextBridgePlugin(Star):
             return
 
         try:
+            # 1. 总是**清空** ``req.image_urls``。背景：
+            #    - 某些插件（已知 ``astrbot_plugin_group_chat_plus`` 的 on_llm_request
+            #      priority=-1）会在主钩子之后重新填上 ``req.image_urls``，导致 LLM
+            #      同时看到原图 + 本插件注入的图说 content block → 浪费 token 且 LLM
+            #      会优先走图理解路径（不读图说）。本钩子 priority=-10000 在所有插件
+            #      之后跑，**总是**清空 ``req.image_urls``，干掉中间插件重新填的图。
+            #    - 未装这些插件时主钩子已经清空了，链末再清仍是空 list，**无副作用**。
+            n_image_urls = len(req.image_urls or [])
+            if n_image_urls:
+                req.image_urls = []
+                logger.info(
+                    "[vision_text_bridge] 链末兜底: 清空了 %d 个 image_urls 残留"
+                    "（中间插件重新填的，如 chat_plus）",
+                    n_image_urls,
+                )
+
+            # 2. extra_user_content_parts 里的 image_url 组件也清掉（防御性）
+            if req.extra_user_content_parts:
+                self._remove_all_image_url_parts(req.extra_user_content_parts)
+
+            # 3. contexts 里的 image_url 组件也清掉（防御性）
+            if req.contexts:
+                for c in req.contexts:
+                    if isinstance(c, dict) and isinstance(c.get("content"), list):
+                        self._remove_all_image_url_components_in_context(c["content"])
+
+            # 4. 可选: 旧行为——清 data:base64 残留（防 LLM 报 "File name too long"）
             if self.config.get("strip_all_image_urls_in_fallback", False):
                 removed = self._strip_all_image_urls(req)
                 tag = "image_url"

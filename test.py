@@ -976,7 +976,8 @@ def test_fallback_strip_all_when_configured():
 
 
 def test_fallback_strip_only_data_url_by_default():
-    """默认配置下链末兑底只删 data:base64。"""
+    """v0.8.4 行为变更：链末兑底**总是**清空 req.image_urls（防 chat_plus 等中间插件
+    重新填图）。默认 strip_all_image_urls_in_fallback=False 也清空。"""
     p = new_plugin()  # 默认 strip_all_image_urls_in_fallback=False
     req = FakeReq(
         prompt="hi",
@@ -987,9 +988,10 @@ def test_fallback_strip_only_data_url_by_default():
         }],
     )
     asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
-    # https URL 保留
-    assert req.image_urls == ["https://x.com/a.jpg"]
-    assert len(req.contexts[0]["content"]) == 1
+    # v0.8.4 起：**总是**清空 image_urls（即使 https URL）
+    assert req.image_urls == []
+    # contexts 里的 image_url 也被清掉
+    assert len(req.contexts[0]["content"]) == 0
     print("✓ test_fallback_strip_only_data_url_by_default")
 
 
@@ -1746,6 +1748,45 @@ def test_check_compatibility_warns_on_uni_nickname_low_priority():
     print("✓ test_check_compatibility_warns_on_uni_nickname_low_priority")
 
 
+def test_chat_plus_style_image_reinjection_is_cleaned():
+    """v0.8.4: 模拟 chat_plus 风格的中间插件在主钩子之后重新填图，链末兜底应清掉。
+
+    场景: 插件链执行顺序
+      1. 我 priority=500 跑（清空 image_urls + 注入图说 content block）
+      2. 中间插件 priority=-1 跑（重新填 req.image_urls ＝ chat_plus 的图）
+      3. 我 priority=-10000 链末跑（**总是**清空 req.image_urls）
+
+    最终 LLM 看到的 image_urls 是空，只读图说 content block。
+    """
+    p = new_plugin()
+    # 1. 主钩子：清空 + 注入图说
+    req = FakeReq(
+        prompt="看图",
+        image_urls=["https://x.com/a.jpg"],
+    )
+    with patch.object(
+        p, "_run_mmx",
+        return_value=make_mmx_result("猫", "", 0, True),
+    ):
+        asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
+
+    # 主钩子完成后：图说在 extra_user_content_parts
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 猫"
+    assert req.image_urls == []  # 主钩子已清
+
+    # 2. 中间插件（如 chat_plus priority=-1）重新填图
+    req.image_urls = ["https://x.com/re-injected-by-chatplus.jpg"]
+
+    # 3. 链末兜底：应该清空
+    asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
+    assert req.image_urls == []
+    # 图说 content block 不受影响
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 猫"
+    print("✓ test_chat_plus_style_image_reinjection_is_cleaned")
+
+
 def test_survives_prompt_overwrite_by_other_plugin():
     """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
     任何插件重写 prompt 都不会丢失。"""
@@ -2006,6 +2047,7 @@ def run_all():
         test_login_mmx_handles_mmxresult_not_tuple,
         test_get_installed_plugin_names_handles_missing_attr,
         test_check_compatibility_warns_on_uni_nickname_low_priority,
+        test_chat_plus_style_image_reinjection_is_cleaned,
     ]
     failed = 0
     for t in tests:
