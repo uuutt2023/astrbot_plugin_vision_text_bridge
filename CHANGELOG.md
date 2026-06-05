@@ -7,6 +7,13 @@
 
 无新变更。
 
+## [0.8.7.7] - 2026-06-05
+
+### 修复
+- **webui 静态资源被浏览器/AstrBot 缓存**，导致 v0.8.7.6 的 `apiGet` 调用 实际还是 v0.8.7.5 的 `apiPost`。
+  - `index.html`：添加 `Cache-Control: no-cache` meta 标签 + 资源引用加 `?v=0.8.7.6` cache-busting
+  - 下次 webui 加载会绕过所有缓存，拿到真正的 v0.8.7.6 app.js
+
 ## [0.8.7.6] - 2026-06-05
 
 ### 修复
