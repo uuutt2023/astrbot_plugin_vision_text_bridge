@@ -2328,7 +2328,10 @@ def run_all():
         test_verbose_total_switch_enables_all,
         test_mmx_result_dataclass,
         test_helper_module_level_functions_exist,
-        test_main_py_slim_under_1200_lines,
+        test_main_py_slim_under_1250_lines,
+        test_persist_writes_b64_in_async_context,
+        test_persist_handles_read_failure_gracefully,
+        test_api_diag_returns_db_info,
     ]
     failed = 0
     for t in tests:
@@ -2406,13 +2409,118 @@ def test_helper_module_level_functions_exist():
     print("✓ test_helper_module_level_functions_exist")
 
 
-def test_main_py_slim_under_1200_lines():
-    """v0.8.7: main.py 瘦身到 1200 行以下（v0.8.6 是 2019 行）。"""
+def test_persist_writes_b64_in_async_context():
+    """v0.8.7.1 修复: _persist 在 async 上下文能正常写 base64。
+
+    之前 v0.8.7 同步版本用 asyncio.get_event_loop().run_until_complete，
+    在 async 上下文必抛 RuntimeError，fallback 到同步读 file:// 经常被
+    except 静默吞掉 → SQLite 写入了 description 但 base64 为空。
+    """
+    import asyncio
+    import tempfile
+    import pathlib
+    real = "/tmp/xx_persist_test.png"
+    with open(real, "wb") as f:
+        f.write(bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000d49444154789c6300010000000500010d0a2db40000000049454e44ae426082"
+        ))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = new_plugin()
+            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "p.sqlite3")
+            url = f"file://{real}"
+            asyncio.run(p._persist("img_test_aaa", url, "描述X"))
+            # v0.8.6+ list() 默认不返 image_b64（减小 body），验证必须传 include_b64=True
+            items = p._caption_cache.list(limit=10, include_b64=True)
+            assert len(items) == 1
+            e = items[0]
+            assert e.image_id == "img_test_aaa"
+            assert e.description == "描述X"
+            assert len(e.image_b64) > 0, f"base64 为空！bug 未修复: e.image_b64={e.image_b64!r}"
+            mime, w, h = main._sniff_image_meta(__import__("base64").b64decode(e.image_b64))
+            assert mime == "image/png"
+            assert w == 1 and h == 1
+    finally:
+        pathlib.Path(real).unlink(missing_ok=True)
+    print("✓ test_persist_writes_b64_in_async_context")
+
+
+def test_persist_handles_read_failure_gracefully():
+    """_persist 读字节失败时 description 仍写入（不影响 webui 文本展示）。"""
+    import asyncio
+    import tempfile
+    import pathlib
+    with tempfile.TemporaryDirectory() as tmp:
+        p = new_plugin()
+        p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "p2.sqlite3")
+        bad_url = "file:///nonexistent_xxx_404.jpg"
+        asyncio.run(p._persist("img_test_bbb", bad_url, "描述Y"))
+        items = p._caption_cache.list(limit=10, include_b64=True)
+        assert len(items) == 1
+        e = items[0]
+        assert e.description == "描述Y"  # 描述写入
+        assert e.image_b64 == ""  # 缩略图为空（接受）
+    print("✓ test_persist_handles_read_failure_gracefully")
+
+
+def test_api_diag_returns_db_info():
+    """v0.8.7.1: /cache/diag 诊断端点返 DB 路径 + schema + 最近 3 条。"""
+    import asyncio as _aio
+    import tempfile
+    import pathlib
+    real = "/tmp/xx_diag_test.png"
+    with open(real, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 30)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = new_plugin()
+            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "diag.sqlite3")
+            _aio.run(p._persist("id1", f"file://{real}", "描述A"))
+            _aio.run(p._persist("id2", "file:///nonexistent.jpg", "描述B"))
+
+            captured = {}
+            def mock_register(route, fn, methods, desc):
+                captured[route] = fn
+            class _R:
+                args = {}
+            p.context = SimpleNamespace(request=_R(), register_web_api=mock_register)
+            p._register_web_apis()
+            diag_fn = captured[f"/{main.PLUGIN_NAME}/cache/diag"]
+
+            result = _aio.run(diag_fn())
+            assert result.get("ok") is True
+            d = result["data"]
+            assert d["cache_initialized"] is True
+            assert d["total_entries"] == 2
+            assert "diag.sqlite3" in d["db_path"]
+            # schema 应含 image_b64
+            assert "image_b64" in d["schema_columns"]
+            assert "image_id" in d["schema_columns"]
+            # recent 返 2 条（DESC 排序）
+            assert len(d["recent_3"]) == 2
+            # 第一条（最近）= id2 (nonexistent file → b64 空)
+            r0 = d["recent_3"][0]
+            assert r0["image_id"] == "id2"
+            assert r0["has_b64"] is False
+            # 第二条 = id1 (真实 file → b64 有值)
+            r1 = d["recent_3"][1]
+            assert r1["image_id"] == "id1"
+            assert r1["has_b64"] is True
+            assert r1["b64_len"] > 0
+    finally:
+        pathlib.Path(real).unlink(missing_ok=True)
+    print("✓ test_api_diag_returns_db_info")
+
+
+def test_main_py_slim_under_1250_lines():
+    """v0.8.7+: main.py 瘦身到 1250 行以下（v0.8.6 是 2019 行）。
+    v0.8.7.1 加了 /cache/diag 诊断 endpoint，阈值放宽到 1250。"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
     with open(path, "r", encoding="utf-8") as f:
         n = sum(1 for _ in f)
-    assert n < 1200, f"main.py 现在 {n} 行，未达到瘦身目标 (<1200)"
-    print(f"✓ test_main_py_slim_under_1200_lines (main.py = {n} 行)")
+    assert n < 1250, f"main.py 现在 {n} 行，未达到瘦身目标 (<1250)"
+    print(f"✓ test_main_py_slim_under_1250_lines (main.py = {n} 行)")
 
 
 if __name__ == "__main__":

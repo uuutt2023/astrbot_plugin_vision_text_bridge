@@ -7,6 +7,32 @@
 
 无新变更。
 
+## [0.8.7.1] - 2026-06-05
+
+### 紧急修复
+- **webui 看得到条目但看不到 base64 缩略图** （v0.8.7 回归 bug）：`_persist` 同步版本里
+  用 `asyncio.get_event_loop().run_until_complete(self._read_image_bytes(url))`，
+  **在 async 上下文里必抛 `RuntimeError("This event loop is already running")`**。
+  同步 fallback 读 `file://` 路径时，如果临时文件已被 AstrBot 清理、/AstrBot 路径权限
+  不够、或任何 FileNotFoundError，异常被 `except Exception` 静默吞掉。
+  **后果**：SQLite 写入了 description，**但 image_b64/mime/dim 都是空**。webui
+  调 `/cache/thumbnail?image_id=...` 返 `has_image=False`，不显示缩略图。
+
+  **修复**：`_persist` 改为 `async def`，**直接 `await self._read_image_bytes(url)`**，
+  丢掉同步 fallback。失败统一走 `try/except Exception` 记 warning（不再静默吞），
+  description 仍写入 SQLite（仅缩略图为空，不影响 webui 文本展示）。
+
+### 新增
+- **新 web API** `/cache/diag` ：返 SQLite 路径、schema 列、总条目数、最近 3 条记录
+  摘要（**含 b64 是否存在、长度、mime、size、w×h**）。**在 webui 看不到数据时用**
+  验证 SQLite 里到底有没有数据。
+- **webui 诊断按钮** ：toolbar 新增 `🔍 诊断` 按钮，点开看 DB 路径/schema/最近 3 条。
+- **新测试** （98 → 101）：
+  - `test_persist_writes_b64_in_async_context` ：验证 v0.8.7.1 修复后 base64 真正写入 SQLite。
+  - `test_persist_handles_read_failure_gracefully` ：读字节失败时 description 仍写入。
+  - `test_api_diag_returns_db_info` ：诊断端点返完整 DB 信息。
+  - `test_main_py_slim_under_1250_lines` ：行数阈值从 1200 放宽到 1250（diag 端点 +30 行）。
+
 ## [0.8.7] - 2026-06-05
 
 ### 重构

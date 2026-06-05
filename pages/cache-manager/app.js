@@ -355,6 +355,41 @@ async function onExport() {
   }
 }
 
+async function onDiag() {
+  // v0.8.7.1 新增: 诊断面板。验证 SQLite 里到底有什么
+  try {
+    const resp = await bridge.apiGet("cache/diag");
+    const data = resp?.data || resp;
+    const body = $("modal-body");
+    let html = "";
+    if (!data.cache_initialized) {
+      html = `<div class="field"><div class="field-label">错误</div>
+        <div class="field-value" style="color: var(--danger);">${escapeHtml(data.hint || "未知")}</div></div>`;
+    } else if (data.error) {
+      html = `<div class="field"><div class="field-label">SQLite 错误</div>
+        <div class="field-value" style="color: var(--danger);">${escapeHtml(data.error)}</div></div>`;
+    } else {
+      html += `<div class="field"><div class="field-label">DB 路径</div>
+        <div class="field-value"><code>${escapeHtml(data.db_path || "")}</code></div></div>`;
+      html += `<div class="field"><div class="field-label">总条目数 / 内存热缓存</div>
+        <div class="field-value">${data.total_entries} 条 / ${data.in_memory_cache_size} 条</div></div>`;
+      html += `<div class="field"><div class="field-label">Schema 列</div>
+        <div class="field-value"><pre>${escapeHtml((data.schema_columns || []).join(", "))}</pre></div></div>`;
+      if (data.recent_3 && data.recent_3.length > 0) {
+        html += `<div class="field"><div class="field-label">最近 ${data.recent_3.length} 条</div>
+          <div class="field-value"><pre>${escapeHtml(JSON.stringify(data.recent_3, null, 2))}</pre></div></div>`;
+      } else {
+        html += `<div class="field"><div class="field-label">最近记录</div>
+          <div class="field-value" style="color: var(--danger);">⚠️ SQLite 表是空的——没数据被写入</div></div>`;
+      }
+    }
+    body.innerHTML = html;
+    $("detail-modal").hidden = false;
+  } catch (e) {
+    showToast("诊断失败: " + (e?.message || e), "error");
+  }
+}
+
 // ----- event binding -----
 
 $("refresh-btn").addEventListener("click", async () => {
@@ -363,6 +398,7 @@ $("refresh-btn").addEventListener("click", async () => {
 });
 $("clear-btn").addEventListener("click", onClear);
 $("export-btn").addEventListener("click", onExport);
+$("diag-btn").addEventListener("click", onDiag);
 
 let searchTimer = null;
 $("search-input").addEventListener("input", (e) => {

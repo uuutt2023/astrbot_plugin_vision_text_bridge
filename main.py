@@ -90,7 +90,7 @@ class MmxResult:
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
-    "0.8.7",
+    "0.8.7.1",
 )
 class VisionTextBridgePlugin(Star):
     """Vision -> Text 桥接。
@@ -485,6 +485,52 @@ class VisionTextBridgePlugin(Star):
                        "width": e.width, "height": e.height,
                        "file_size": e.file_size, "has_image": True})
 
+        async def api_diag():
+            """v0.8.7.1 新增: 诊断 endpoint。
+
+            返 SQLite 路径、条目数、最近 3 条记录摘要、schema。
+            在 webui 看不到数据时调用，验证 SQLite 里到底有没有东西。
+            """
+            if self._caption_cache is None:
+                return ok({"cache_initialized": False,
+                           "hint": "SQLite 缓存未初始化——请看 AstrBot 启动日志里 [vision_text_bridge] 初始化描述缓存"})
+            # 直接查 SQLite 拿原始 schema 和最近 3 条
+            import sqlite3
+            try:
+                conn = sqlite3.connect(self._caption_cache._db_path)
+                conn.row_factory = sqlite3.Row
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()]
+                total = conn.execute("SELECT COUNT(*) FROM image_captions").fetchone()[0]
+                # 最近 3 条
+                recent = []
+                for row in conn.execute(
+                    "SELECT image_id, length(description) AS desc_len, image_b64, "
+                    "mime_type, file_size, width, height, created_at "
+                    "FROM image_captions ORDER BY created_at DESC LIMIT 3"
+                ).fetchall():
+                    recent.append({
+                        "image_id": row["image_id"],
+                        "desc_len": row["desc_len"],
+                        "has_b64": bool(row["image_b64"]),
+                        "b64_len": len(row["image_b64"]) if row["image_b64"] else 0,
+                        "mime_type": row["mime_type"],
+                        "file_size": row["file_size"],
+                        "width": row["width"],
+                        "height": row["height"],
+                        "created_at": row["created_at"],
+                    })
+                conn.close()
+            except Exception as e:
+                return ok({"cache_initialized": True, "error": str(e)})
+            return ok({
+                "cache_initialized": True,
+                "db_path": self._caption_cache._db_path,
+                "schema_columns": cols,
+                "total_entries": total,
+                "in_memory_cache_size": len(self._description_cache),
+                "recent_3": recent,
+            })
+
         for path, fn, methods, desc in [
             ("/cache/stats", api_stats, ["GET"], "Cache stats"),
             ("/cache/list", api_list, ["GET"], "Cache list"),
@@ -493,6 +539,7 @@ class VisionTextBridgePlugin(Star):
             ("/cache/regenerate", api_regenerate, ["POST"], "Regenerate"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
             ("/cache/thumbnail", api_thumbnail, ["GET"], "Thumbnail data URL"),
+            ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)
 
@@ -721,27 +768,40 @@ class VisionTextBridgePlugin(Star):
             logger.info("[vision_text_bridge] 描述预览: %s", self._preview(description, 120))
             if cacheable and cache_key:
                 self._description_cache[cache_key] = description
-                self._persist(cache_key, url, description)
+                # v0.8.7.1: _persist 变 async，直接 await。之前的同步版本
+                # 在 async 上下文里用 `asyncio.get_event_loop().run_until_complete`
+                # 必抛 RuntimeError，fallback 到同步读 file:// 经常被静默吞掉。
+                await self._persist(cache_key, url, description)
             return description
 
-    def _persist(self, image_id: str, url: str, description: str) -> None:
-        """写 SQLite 缓存（带 base64/mime/dim 元信息）。"""
+    async def _persist(self, image_id: str, url: str, description: str) -> None:
+        """写 SQLite 缓存（带 base64/mime/dim 元信息）。
+
+        v0.8.7.1: 改成 async 以便在 event loop 里正常 await ``_read_image_bytes``。
+        老版本用 ``asyncio.get_event_loop().run_until_complete`` 在 async 上下文
+        会抛 ``RuntimeError("This event loop is already running")``，再 fallback
+        到同步读 file:// — 但临时文件可能已被清理、/AstrBot 路径可能没读权限，
+        异常被 except 静默吞掉，导致 SQLite 写入了 description 但 base64 是空。
+        webui 看上去“缓存存在但没有缩略图”。
+        """
         if self._caption_cache is None:
             return
         b64, mime, w, h, size = "", "", 0, 0, 0
         try:
-            data = asyncio.get_event_loop().run_until_complete(self._read_image_bytes(url))
-        except RuntimeError:
-            # 没有运行中的 event loop：同步读（极少路径）
-            data = _read_file_bytes_sync(url[len("file://"):]) if url.lower().startswith("file://") else b""
+            data = await self._read_image_bytes(url)
+            if data:
+                b64 = base64.b64encode(data).decode("ascii")
+                size = len(data)
+                mime, w, h = _sniff_image_meta(data)
         except Exception as e:
+            # 读字节失败 **仅** 影响缩略图（base64/mime/dim），
+            # description 仍正常写入 SQLite。记 warning 不报错。
+            logger.warning(
+                "[vision_text_bridge] 读图字节失败（仅缩略图受影响，description 仍会写）: %s",
+                self._preview(url), exc_info=False,
+            )
             if self._should_log("id_computation"):
-                logger.debug("[vision_text_bridge] 读图字节失败（仅文本缓存受影响）: %s", e)
-            data = b""
-        if data:
-            b64 = base64.b64encode(data).decode("ascii")
-            size = len(data)
-            mime, w, h = _sniff_image_meta(data)
+                logger.debug("[vision_text_bridge] 读字节异常详情: %s", e)
         try:
             self._caption_cache.put(
                 image_id=image_id, url=url, description=description,
