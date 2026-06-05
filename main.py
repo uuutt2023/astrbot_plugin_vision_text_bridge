@@ -463,22 +463,11 @@ class VisionTextBridgePlugin(Star):
             return ok({"exported_at": time.time(), "count": len(entries),
                        "items": [e.to_dict() for e in entries]})
 
-        async def api_thumbnail():
-            """v0.8.7.5: 改 POST。绕开 AstrBot bridge SDK 在带 query string 时
-            将 /api/plugin/ 拼成 /api/plug/ 的路径 bug（返 400 Bad Request）。"""
+        async def _do_thumbnail(image_id: str):
+            """v0.8.7.6: 缩略图核心逻辑（提取后供两个 endpoint 复用）。"""
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
-            # 优先 JSON body（POST），fallback 到 query string（GET）
-            image_id = ""
-            try:
-                body = await self.context.request.json
-                if isinstance(body, dict):
-                    image_id = (body.get("image_id", "") or "").strip()
-            except Exception:
-                pass
-            if not image_id:
-                a = _args()
-                image_id = (a.get("image_id", "") or "").strip()
+            image_id = (image_id or "").strip()
             if not image_id:
                 return err("缺少参数 image_id")
             e = self._caption_cache.get(image_id, with_b64=True)
@@ -494,6 +483,28 @@ class VisionTextBridgePlugin(Star):
                        "data_url": f"data:{data_mime};base64,{e.image_b64}",
                        "width": e.width, "height": e.height,
                        "file_size": e.file_size, "has_image": True})
+
+        async def api_thumbnail(image_id: str = ""):
+            """v0.8.7.6: 路径参数版（/cache/thumbnail/{image_id}）—— GET 无 body 跳过 SDK 400 bug"""
+            # 路径参数从 view_args 取（在 handler 里会有 fallback）
+            req = self.context.request
+            if not image_id and getattr(req, "view_args", None):
+                image_id = (req.view_args.get("image_id") or "").strip()
+            return await _do_thumbnail(image_id)
+
+        async def api_thumbnail_legacy():
+            """v0.8.7.6: 兼容版（/cache/thumbnail）—— 走 query/body"""
+            image_id = ""
+            try:
+                body = await self.context.request.json
+                if isinstance(body, dict):
+                    image_id = (body.get("image_id", "") or "").strip()
+            except Exception:
+                pass
+            if not image_id:
+                a = _args()
+                image_id = (a.get("image_id", "") or "").strip()
+            return await _do_thumbnail(image_id)
 
         async def api_diag():
             """v0.8.7.1 新增: 诊断 endpoint。
@@ -548,7 +559,8 @@ class VisionTextBridgePlugin(Star):
             ("/cache/clear", api_clear, ["POST"], "Clear all"),
             ("/cache/regenerate", api_regenerate, ["POST"], "Regenerate"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
-            ("/cache/thumbnail", api_thumbnail, ["POST", "GET"], "Thumbnail data URL (POST 绕开 AstrBot bridge SDK 路径 bug)"),
+            ("/cache/thumbnail/{image_id}", api_thumbnail, ["GET"], "v0.8.7.6 缩略图：image_id 走路径参数（GET，绕开 SDK POST 400）"),
+            ("/cache/thumbnail", api_thumbnail_legacy, ["GET"], "v0.8.7.6 向后兼容：image_id 走 query/body"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)

@@ -7,6 +7,24 @@
 
 无新变更。
 
+## [0.8.7.6] - 2026-06-05
+
+### 修复
+- **v0.8.7.5 的 POST 修复未生效**：`POST /api/plug/.../cache/thumbnail` 仍然 400
+  （v0.8.7.5 误以为只是 query string 问题，实际上 bridge SDK 的 POST 路径构造本身也有 bug
+  —— 同样会拼成 `/api/plug/` 而不是 `/api/plugin/`）。
+
+  根因：插件 web API 实际挂载在 `/api/plug/<path:subpath>`（不是 `/api/plugin/`），
+  bridge SDK 在 POST 时会把这个前缀进一步截断成 `plug` 并 400。
+
+### 变更
+- **彻底绕开 POST**：缩略图 endpoint 改为 `GET /cache/thumbnail/{image_id}`，image_id 走路径参数。
+  - `main.py`：新增 `api_thumbnail(image_id)`（路径参数版）+ `api_thumbnail_legacy()`（兼容旧调用），
+    共享同一个 `_do_thumbnail()` 内部函数
+  - `app.js`：`ensureThumb()` 和 `onView()` 都改调 `apiGet('cache/thumbnail/<id>')`，去掉 POST
+  - 注册两个路由：`/cache/thumbnail/{image_id}`（GET，新） + `/cache/thumbnail`（GET，兼容）
+- 测试：107 → 108，添加 `test_thumbnail_path_param_endpoint`
+
 ## [0.8.7.5] - 2026-06-05
 
 ### 修复

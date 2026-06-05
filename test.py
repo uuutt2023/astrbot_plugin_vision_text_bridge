@@ -2178,6 +2178,7 @@ def test_thumbnail_endpoint_accepts_post():
                 captured[route] = fn
             class _R:
                 args = {}
+                view_args = {}
                 def __getattr__(self, name):
                     if name == "json":
                         async def _coro():
@@ -2206,6 +2207,52 @@ def test_thumbnail_endpoint_accepts_post():
     finally:
         pathlib.Path(real).unlink(missing_ok=True)
     print("✓ test_thumbnail_endpoint_accepts_post")
+
+
+def test_thumbnail_path_param_endpoint():
+    """v0.8.7.6: 新增 /cache/thumbnail/{image_id}（GET，image_id 走路径参数）。
+    避免 SDK POST 400。"""
+    import asyncio as _aio
+    import tempfile
+    import pathlib
+    real = "/tmp/xx_thumb_path.png"
+    with open(real, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 30)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = new_plugin()
+            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "tp.sqlite3")
+            _aio.run(p._persist("id_y", f"file://{real}", "desc"))
+
+            captured = {}
+            def mock_register(route, fn, methods, desc):
+                captured[route] = (fn, methods)
+            class _R:
+                args = {}
+                view_args = {"image_id": "id_y"}
+            p.context = SimpleNamespace(
+                request=_R(), register_web_api=mock_register,
+            )
+            p._register_web_apis()
+            route_path = f"/{main.PLUGIN_NAME}/cache/thumbnail/{{image_id}}"
+            assert route_path in captured, f"未注册路径参数路由 {route_path}"
+            thumb_fn, methods = captured[route_path]
+            assert methods == ["GET"], f"路径参数路由应用 GET 不用 POST，actual={methods}"
+
+            r = _aio.run(thumb_fn())
+            if isinstance(r, tuple):
+                body, _ = r
+                import json as _json
+                d = _json.loads(body.get_data(as_text=True)) if hasattr(body, "get_data") else body
+            else:
+                d = r
+            assert d.get("ok") is True, f"thumb_fn 返: {d}"
+            assert d["data"]["has_image"] is True
+            assert d["data"]["data_url"].startswith("data:image/png;base64,")
+            assert d["data"]["image_id"] == "id_y"
+    finally:
+        pathlib.Path(real).unlink(missing_ok=True)
+    print("✓ test_thumbnail_path_param_endpoint")
 
 
 def test_sniff_image_meta():
@@ -2391,6 +2438,7 @@ def run_all():
         test_caption_cache_put_warns_on_empty_fields,
         test_describe_one_persists_bare_path_url,
         test_thumbnail_endpoint_accepts_post,
+        test_thumbnail_path_param_endpoint,
     ]
     failed = 0
     for t in tests:
