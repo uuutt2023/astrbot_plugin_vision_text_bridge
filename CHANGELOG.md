@@ -7,6 +7,35 @@
 
 无新变更。
 
+## [0.8.7.5] - 2026-06-05
+
+### 修复
+- **缩略图返回 400 Bad Request** （v0.8.7.4 后表现为 webui 表格不显示缩略图）：
+
+  AstrBot bridge SDK 拼 URL 时处理 query string 有 bug——
+  当 endpoint 路径带参数（`?image_id=...`）时，会把路由模板里的
+  ``/api/plugin/`` 截为 ``/api/plug/``（被 bridge SDK 误处理成
+  endpoint 名一部分）。结果请求落到 AstrBot 错误路由上，返 400。
+
+  例：用户日志里看到的 URL：
+  ```
+  GET /api/plug/astrbot_plugin_vision_text_bridge/cache/thumbnail?image_id=9f5e86f8... 400
+  ```
+  对比成功的 list/stats 请求：
+  ```
+  GET /api/plugin/astrbot_plugin_vision_text_bridge/cache/list OK
+  ```
+
+  **修复**：将 ``/cache/thumbnail`` 同时支持 POST（参数走 JSON body），
+  webui 改用 ``apiPost``。GET 保留兼容。**绕开了 bridge SDK 的 query string bug**。
+
+### 改动
+- ``app.js``：从 ``apiGet("cache/thumbnail", { image_id })`` 改为 ``apiPost("cache/thumbnail", { image_id })``。
+- 后端 ``api_thumbnail`` 先读 JSON body，fallback 到 query string。
+
+### 新增测试
+- ``test_thumbnail_endpoint_accepts_post`` ：验证 POST body 能正确带 image_id 走 thumbnail。
+
 ## [0.8.7.4] - 2026-06-05
 
 ### 紧急修复：真凶

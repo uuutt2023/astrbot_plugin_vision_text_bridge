@@ -385,7 +385,7 @@ async function ensureThumb(imageId, slot) {
     return;
   }
   try {
-    const resp = await apiGet("cache/thumbnail", { image_id: imageId });
+    const resp = await apiPost("cache/thumbnail", { image_id: imageId });
     const data = resp?.data || resp;
     if (data?.has_image && data.data_url) {
       const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
@@ -418,7 +418,7 @@ function renderThumb(slot, thumb) {
 async function onView(imageId) {
   logger.info("ui", `查看缓存详情: ${imageId.slice(0, 12)}`);
   try {
-    const resp = await apiGet("cache/thumbnail", { image_id: imageId });
+    const resp = await apiPost("cache/thumbnail", { image_id: imageId });
     const data = resp?.data || resp;
     const body = $("modal-body");
     let html = "";

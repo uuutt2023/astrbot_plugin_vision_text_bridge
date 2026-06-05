@@ -90,7 +90,7 @@ class MmxResult:
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
-    "0.8.7.4",
+    "0.8.7.5",
 )
 class VisionTextBridgePlugin(Star):
     """Vision -> Text 桥接。
@@ -464,21 +464,31 @@ class VisionTextBridgePlugin(Star):
                        "items": [e.to_dict() for e in entries]})
 
         async def api_thumbnail():
+            """v0.8.7.5: 改 POST。绕开 AstrBot bridge SDK 在带 query string 时
+            将 /api/plugin/ 拼成 /api/plug/ 的路径 bug（返 400 Bad Request）。"""
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
-            a = _args()
-            image_id = (a.get("image_id", "") or "").strip()
+            # 优先 JSON body（POST），fallback 到 query string（GET）
+            image_id = ""
+            try:
+                body = await self.context.request.json
+                if isinstance(body, dict):
+                    image_id = (body.get("image_id", "") or "").strip()
+            except Exception:
+                pass
+            if not image_id:
+                a = _args()
+                image_id = (a.get("image_id", "") or "").strip()
             if not image_id:
                 return err("缺少参数 image_id")
             e = self._caption_cache.get(image_id, with_b64=True)
             if e is None:
                 return err("未找到该 image_id", 404)
-            mime = e.mime_type  # 保留原始 mime（未知/空也照返）
+            mime = e.mime_type
             if not e.image_b64:
                 return ok({"image_id": image_id, "mime_type": mime, "data_url": "",
                            "width": e.width, "height": e.height,
                            "file_size": e.file_size, "has_image": False})
-            # 仅有图二进制时，data URL 需要 mime；未知 mime 退到 image/jpeg
             data_mime = mime or "image/jpeg"
             return ok({"image_id": image_id, "mime_type": data_mime,
                        "data_url": f"data:{data_mime};base64,{e.image_b64}",
@@ -538,7 +548,7 @@ class VisionTextBridgePlugin(Star):
             ("/cache/clear", api_clear, ["POST"], "Clear all"),
             ("/cache/regenerate", api_regenerate, ["POST"], "Regenerate"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
-            ("/cache/thumbnail", api_thumbnail, ["GET"], "Thumbnail data URL"),
+            ("/cache/thumbnail", api_thumbnail, ["POST", "GET"], "Thumbnail data URL (POST 绕开 AstrBot bridge SDK 路径 bug)"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)

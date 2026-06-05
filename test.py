@@ -2159,6 +2159,55 @@ def test_api_cache_thumbnail_no_image():
     print("✓ test_api_cache_thumbnail_no_image")
 
 
+def test_thumbnail_endpoint_accepts_post():
+    """v0.8.7.5: thumbnail 路由接受 POST，绕开 bridge SDK query string 路径 bug。"""
+    import asyncio as _aio
+    import tempfile
+    import pathlib
+    real = "/tmp/xx_thumb_post.png"
+    with open(real, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 30)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = new_plugin()
+            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "tp.sqlite3")
+            _aio.run(p._persist("id_x", f"file://{real}", "desc"))
+
+            captured = {}
+            def mock_register(route, fn, methods, desc):
+                captured[route] = fn
+            class _R:
+                args = {}
+                def __getattr__(self, name):
+                    if name == "json":
+                        async def _coro():
+                            return {"image_id": "id_x"}
+                        return _coro()
+                    raise AttributeError(name)
+            p.context = SimpleNamespace(
+                request=_R(), register_web_api=mock_register,
+            )
+            p._register_web_apis()
+            thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail"]
+
+            # POST 调 (用 json body) - 不走 query string
+            r = _aio.run(thumb_fn())
+            # thumb_fn 返 dict 或 tuple(err)，需要 unpacking
+            if isinstance(r, tuple):
+                body, _ = r
+                # body 可能是 dict 或 coroutine
+                import json as _json
+                d = _json.loads(body.get_data(as_text=True)) if hasattr(body, "get_data") else body
+            else:
+                d = r
+            assert d.get("ok") is True, f"thumb_fn 返: {d}"
+            assert d["data"]["has_image"] is True
+            assert d["data"]["data_url"].startswith("data:image/png;base64,")
+    finally:
+        pathlib.Path(real).unlink(missing_ok=True)
+    print("✓ test_thumbnail_endpoint_accepts_post")
+
+
 def test_sniff_image_meta():
     """v0.8.6: _sniff_image_meta 能识别常见图片格式的 mime/宽高。"""
     p = new_plugin()
@@ -2341,6 +2390,7 @@ def run_all():
         test_webui_index_has_debug_panel,
         test_caption_cache_put_warns_on_empty_fields,
         test_describe_one_persists_bare_path_url,
+        test_thumbnail_endpoint_accepts_post,
     ]
     failed = 0
     for t in tests:
