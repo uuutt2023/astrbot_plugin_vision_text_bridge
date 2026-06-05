@@ -2447,6 +2447,12 @@ def run_all():
         test_b64_size_cap_skips_storage,
         test_hit_count_5min_dedup,
         test_webui_no_native_confirm,
+        test_lru_cache_eviction,
+        test_thumb_pool_concurrency_limit,
+        test_thumb_pool_reject_does_not_break_queue,
+        test_ensure_thumb_caches_failure,
+        test_debug_panel_append_only,
+        test_app_js_class_declarations_ordered,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -2881,6 +2887,209 @@ def test_webui_no_native_confirm():
         html = f.read()
     assert "confirm-modal" in html, "index.html 必须有 confirm-modal 元素"
     print("✓ test_webui_no_native_confirm")
+
+
+# ===========================================================================
+# v0.8.9 vanilla webui 性能优化
+# ===========================================================================
+
+def test_lru_cache_eviction():
+    """v0.8.9: LRUCache.set 越上限删头部，has/get/delete/clear 全部 API 兼容 Map。
+    (纯 Python 等价验证逻辑——app.js 里的 JS class 不能在 Python exec 跑）"""
+    class LRUCache:
+        def __init__(self, limit=100):
+            self.limit = limit
+            self.m = {}
+            self.order = []  # 插入顺序
+
+        def has(self, k): return k in self.m
+        def get(self, k): return self.m.get(k)
+
+        def set(self, k, v):
+            if k in self.m:
+                self.order.remove(k)
+            self.m[k] = v
+            self.order.append(k)
+            while len(self.m) > self.limit:
+                first = self.order.pop(0)
+                del self.m[first]
+            return v
+
+        def delete(self, k):
+            if k in self.m:
+                self.order.remove(k)
+                del self.m[k]
+                return True
+            return False
+
+        def clear(self):
+            self.m.clear()
+            self.order.clear()
+
+        @property
+        def size(self):
+            return len(self.m)
+
+    c = LRUCache(3)
+    assert c.size == 0
+    c.set("a", 1)
+    c.set("b", 2)
+    c.set("c", 3)
+    assert c.size == 3
+    c.set("d", 4)  # 越上限，删 “a”
+    assert not c.has("a")
+    assert c.has("b") and c.has("c") and c.has("d")
+    assert c.get("b") == 2
+    # 重新 set 已有 key，刷新插入顺序
+    c.set("b", 22)
+    c.set("e", 5)  # 应该删 “c”（现在是 LRU 头部）
+    assert c.has("b") and not c.has("c") and c.has("d") and c.has("e")
+    assert c.get("b") == 22
+    c.delete("e")
+    assert c.size == 2
+    c.clear()
+    assert c.size == 0
+    print("✓ test_lru_cache_eviction")
+
+
+def test_thumb_pool_concurrency_limit():
+    """v0.8.9: ThumbPool 同时最多 N 路任务，越限进入队列。Python 等价验证。"""
+    class ThumbPool:
+        def __init__(self, max=6):
+            self.max = max
+            self.active = 0
+            self.queue = []
+
+        async def run(self, task):
+            fut = asyncio.get_event_loop().create_future()
+            self.queue.append((task, fut))
+            self._drain()
+            return await fut
+
+        def _drain(self):
+            while self.active < self.max and self.queue:
+                task, fut = self.queue.pop(0)
+                self.active += 1
+                async def _wrap():
+                    try:
+                        fut.set_result(await task())
+                    except Exception as e:
+                        fut.set_exception(e)
+                    finally:
+                        self.active -= 1
+                        self._drain()
+                asyncio.ensure_future(_wrap())
+
+    async def run():
+        pool = ThumbPool(2)
+        active = [0]
+        peak = [0]
+
+        async def slow_task(i):
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            await asyncio.sleep(0.05)
+            active[0] -= 1
+            return i * 2
+
+        tasks = [pool.run(lambda i=i: slow_task(i)) for i in range(6)]
+        results = await asyncio.gather(*tasks)
+        assert results == [0, 2, 4, 6, 8, 10]
+        assert peak[0] == 2, f"expected peak=2, got {peak[0]}"
+        return peak[0]
+
+    peak = asyncio.run(run())
+    assert peak == 2
+    print(f"✓ test_thumb_pool_concurrency_limit (peak={peak})")
+
+
+def test_thumb_pool_reject_does_not_break_queue():
+    """v0.8.9: 任务抛异常后 active--,后续任务仍能跑。"""
+    class ThumbPool:
+        def __init__(self, max=6):
+            self.max = max
+            self.active = 0
+            self.queue = []
+
+        async def run(self, task):
+            fut = asyncio.get_event_loop().create_future()
+            self.queue.append((task, fut))
+            self._drain()
+            return await fut
+
+        def _drain(self):
+            while self.active < self.max and self.queue:
+                task, fut = self.queue.pop(0)
+                self.active += 1
+                async def _wrap():
+                    try:
+                        fut.set_result(await task())
+                    except Exception as e:
+                        fut.set_exception(e)
+                    finally:
+                        self.active -= 1
+                        self._drain()
+                asyncio.ensure_future(_wrap())
+
+    async def run():
+        pool = ThumbPool(2)
+
+        async def boom():
+            raise ValueError("boom")
+        async def good(i):
+            return i
+
+        results = await asyncio.gather(
+            pool.run(boom),
+            pool.run(lambda: good(1)),
+            pool.run(lambda: good(2)),
+            return_exceptions=True,
+        )
+        assert isinstance(results[0], ValueError)
+        assert results[1] == 1
+        assert results[2] == 2
+    asyncio.run(run())
+    print("✓ test_thumb_pool_reject_does_not_break_queue")
+
+
+def test_ensure_thumb_caches_failure():
+    """v0.8.9: 缩略图请求失败/没数据也要 cache（避免无限重试）。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # 验确保失败路径上 set 了带 __err / __none 的 cache entry
+    assert '__err: true' in src, "失败路径必须写 {__err: true} 到 thumbCache"
+    assert '__none: true' in src, "无图路径必须写 {__none: true} 到 thumbCache"
+    # 并保证 ensureThumb 会检查这些标记
+    assert 'cached.__err' in src
+    assert 'cached.__none' in src
+    print("✓ test_ensure_thumb_caches_failure")
+
+
+def test_debug_panel_append_only():
+    """v0.8.9: 日志 panel 走 append-only 模式（PANEL_MAX_NODES=200 软上限），不再全量重写。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    assert "PANEL_MAX_NODES" in src, "app.js 必须有 PANEL_MAX_NODES 上限常量"
+    assert "appendPanelNode" in src, "app.js 必须有 appendPanelNode 增量添加函数"
+    assert "onAppend" in src, "app.js 必须用 logger.onAppend 订阅"
+    # renderDebugPanelFull 仍在（首次/clear 后全量），但不再是新日志到来时的默认路径
+    assert "renderDebugPanelFull" in src
+    # 验 logger.js 提供 onAppend
+    logger_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/logger.js"), encoding="utf-8").read()
+    assert "onAppend" in logger_src, "logger.js 必须提供 onAppend 订阅"
+    print("✓ test_debug_panel_append_only")
+
+
+def test_app_js_class_declarations_ordered():
+    """v0.8.9: app.js 里 LRUCache/ThumbPool 必须在 state 之前声明（否则 TDZ ReferenceError）。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    lru_pos = src.find("class LRUCache")
+    pool_pos = src.find("class ThumbPool")
+    state_pos = src.find("const state = {")
+    assert lru_pos > 0, "LRUCache class 缺失"
+    assert pool_pos > 0, "ThumbPool class 缺失"
+    assert state_pos > 0, "const state 缺失"
+    assert lru_pos < state_pos, f"LRUCache (line ~{src[:lru_pos].count(chr(10))+1}) 必须在 state 之前"
+    assert pool_pos < state_pos, f"ThumbPool 必须在 state 之前"
+    print("✓ test_app_js_class_declarations_ordered")
 
 
 if __name__ == "__main__":

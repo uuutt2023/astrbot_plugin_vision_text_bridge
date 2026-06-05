@@ -95,6 +95,14 @@ class WebuiLogger {
     return () => w.delete(fn);
   }
 
+  // v0.8.9: 增量模式专用订阅——面板一次性调用只收 entry，不重写 DOM
+  onAppend(fn) {
+    return this.subscribe((event, payload, lg) => {
+      if (event === "__log__") fn(payload, lg);
+      else if (event === "__clear__") fn({ __clear: true }, lg);
+    });
+  }
+
   _emit(event, payload) {
     const w = window[SUBSCRIBE_KEY];
     if (!w) return;

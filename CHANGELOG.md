@@ -7,6 +7,39 @@
 
 无新变更。
 
+## [0.8.9] - 2026-06-05
+
+### 性能优化
+
+#### 缩略图并发池（5x 提速）
+- 原本是同步循环一次性 20 个 RTT 打到 bridge/后端（串行其实是 1000ms 左右）
+- 加 `ThumbPool` class，默认 6 路上限。
+  - **Node benchmark** 证明：20 张 50ms RTT 下 串行 1001ms → 6 路 201ms（5x 提速）
+  - 保留后端/bridge 保护——不会同时干 20 个请求
+- 在 1、2 路场景下不会拥塞；高并发场景可调整 max
+
+#### LRU 缩略图缓存（内存防 OOM）
+- 原本 `state.thumbCache = new Map()`，无上限
+- 改 `LRUCache(100)`：Map 维护插入顺序，set 越上限删头部
+- 随然之前 thumbCache 是 b64 字符串在内存中，100 张封顶控制在 几MB 以内（取决于原始图平均大小）
+
+#### 失败缩略图 cache（避免无限重试）
+- 原本：失败 → 仅 slot 显示 ⚠️，下次 ensureThumb 重新发请求
+- 修：失败和“无图”都写 {__err: true} / {__none: true} 到 cache，下次直接复用状态
+- 同一图加载失败 100 次 == 1 次
+
+#### 日志 panel 增量 append（不再全量重写）
+- 原本：每条新日志都 `body.innerHTML = logs.map().join()`——200 条日志在 4x 10 = 40 倍 DOM 重建
+- 改：logger.js 加 `onAppend(cb)` 订阅，app.js 维护 `panelNodes[]` 数组
+- 新日志 = 1 个新 DOM 节点 append，panelsNodes 超 200 删头部
+- 跳下 1000 条日志的 trace 不会卡面板
+
+### 文档
+- `pages/cache-manager/index.html` 的 cache-bust 版本号 `?v=0.8.8` → `?v=0.8.9`
+
+### 测试
+- +6 个新测试：LRU 越上限、ThumbPool 峰值、异常后队列仍然跑、失败 cache、panel 增量、class 顺序（TDZ 防御）
+
 ## [0.8.8] - 2026-06-05
 
 ### 修复

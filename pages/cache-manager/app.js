@@ -13,6 +13,54 @@ logger.info("init", "bridge.ready() 完成, ctx=", ctx);
 
 const $ = (id) => document.getElementById(id);
 
+// v0.8.9: LRU 缩略图缓存——Map 维护插入顺序，set 越上限删头部
+class LRUCache {
+  constructor(limit = 100) {
+    this.limit = limit;
+    this.m = new Map();
+  }
+  has(k) { return this.m.has(k); }
+  get(k) { return this.m.get(k); }
+  set(k, v) {
+    if (this.m.has(k)) this.m.delete(k);
+    this.m.set(k, v);
+    while (this.m.size > this.limit) {
+      const first = this.m.keys().next().value;
+      this.m.delete(first);
+    }
+    return v;
+  }
+  delete(k) { return this.m.delete(k); }
+  clear() { this.m.clear(); }
+  get size() { return this.m.size; }
+}
+
+// v0.8.9: 缩略图并发池——限制同时发 6 路请求，避免 20 条一起打 backend/bridge
+class ThumbPool {
+  constructor(max = 6) {
+    this.max = max;
+    this.active = 0;
+    this.queue = [];
+  }
+  run(task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject });
+      this._drain();
+    });
+  }
+  _drain() {
+    while (this.active < this.max && this.queue.length > 0) {
+      const { task, resolve, reject } = this.queue.shift();
+      this.active++;
+      task().then(
+        (v) => { this.active--; this._drain(); resolve(v); },
+        (e) => { this.active--; this._drain(); reject(e); },
+      );
+    }
+  }
+}
+const thumbPool = new ThumbPool(6);
+
 const state = {
   limit: 20,
   offset: 0,
@@ -20,46 +68,68 @@ const state = {
   order_by: "created_at_desc",
   total: 0,
   loading: false,
-  thumbCache: new Map(),  // image_id -> { data_url, mime }
+  thumbCache: new LRUCache(100),  // v0.8.9: LRU 上限 100 张防 OOM
   apiStats: { calls: 0, errors: 0, lastLatencyMs: null },
 };
 
 // ----- Debug Panel (v0.8.7.2) -----
 
-function renderDebugPanel() {
+// v0.8.9: 增量 append——不再每次都全量 innerHTML 重写
+const PANEL_MAX_NODES = 200;
+const panelNodes = [];  // 存的 DOM 节点
+
+function appendPanelNode(entry) {
   const body = $("debug-body");
-  const count = $("debug-count");
   if (!body) return;
-  const logs = logger.logs;
-  count.textContent = String(logs.length);
-  body.innerHTML = logs
-    .map((e) => {
-      const ts = escapeHtml(e.ts);
-      const lvl = escapeHtml(e.level.toUpperCase());
-      const tag = escapeHtml(e.tag);
-      const msg = escapeHtml(e.msg);
-      return `<div class="debug-entry lvl-${e.level}">
-        <span class="debug-ts">${ts}</span>
-        <span class="debug-level">${lvl}</span>
-        <span class="debug-tag">[${tag}]</span>
-        <span class="debug-msg">${msg}</span>
-      </div>`;
-    })
-    .join("");
-  // 滚到底
+  const node = document.createElement("div");
+  node.className = `debug-entry lvl-${entry.level}`;
+  const ts = escapeHtml(entry.ts);
+  const lvl = escapeHtml(entry.level.toUpperCase());
+  const tag = escapeHtml(entry.tag);
+  const msg = escapeHtml(entry.msg);
+  node.innerHTML = `<span class="debug-ts">${ts}</span>
+    <span class="debug-level">${lvl}</span>
+    <span class="debug-tag">[${tag}]</span>
+    <span class="debug-msg">${msg}</span>`;
+  body.appendChild(node);
+  panelNodes.push(node);
+  while (panelNodes.length > PANEL_MAX_NODES) {
+    const old = panelNodes.shift();
+    old.remove();
+  }
   body.scrollTop = body.scrollHeight;
+}
+
+function syncPanelCount() {
+  const count = $("debug-count");
+  if (count) count.textContent = String(logger.logs.length);
+}
+
+function renderDebugPanelFull() {
+  // 全量重写——只在首次初始化/隐藏后面板重新打开/clear 复位 时调
+  const body = $("debug-body");
+  if (!body) return;
+  body.innerHTML = "";
+  panelNodes.length = 0;
+  for (const e of logger.logs) appendPanelNode(e);
+  syncPanelCount();
 }
 
 function initDebugPanel() {
   // 同步初始级别到 select
   const sel = $("debug-level");
   if (sel) sel.value = logger.levelName;
-  // 订阅日志
-  logger.subscribe((event) => {
-    if (event === "__level__" || event === "__log__" || event === "__clear__") {
-      renderDebugPanel();
+  // 订阅——增量模式，每条新日志只 append 一个 DOM 节点
+  logger.onAppend((entry) => {
+    if (entry.__clear) {
+      renderDebugPanelFull();
+      return;
     }
+    appendPanelNode(entry);
+    syncPanelCount();
   });
+  // 首次渲染（以现有 logs 为准）
+  renderDebugPanelFull();
   // 按钮
   $("debug-clear")?.addEventListener("click", () => {
     logger.clear();
@@ -73,7 +143,7 @@ function initDebugPanel() {
   $("debug-show")?.addEventListener("click", () => {
     $("debug-panel").hidden = false;
     $("debug-show").hidden = true;
-    renderDebugPanel();
+    renderDebugPanelFull();
     logger.debug("debug-panel", "面板显示");
   });
   $("debug-copy")?.addEventListener("click", async () => {
@@ -371,14 +441,10 @@ function renderList(items) {
     })
     .join("");
 
-  // 懒加载缩略图
-  let thumbCount = 0;
-  tbody.querySelectorAll(".thumb-slot").forEach((slot) => {
-    const id = slot.dataset.id;
-    ensureThumb(id, slot);
-    thumbCount += 1;
-  });
-  logger.debug("render", `开始懒加载 ${thumbCount} 张缩略图`);
+  // 懒加载缩略图（v0.8.9: 走并发池 6 路，不再一次性 20 个打 bridge）
+  const slots = Array.from(tbody.querySelectorAll(".thumb-slot"));
+  slots.forEach((slot) => ensureThumb(slot.dataset.id, slot));
+  logger.debug("render", `已提交 ${slots.length} 张缩略图到并发池（上限 6）`);
 
   // 操作按钮
   tbody.querySelectorAll("button[data-action]").forEach((btn) => {
@@ -410,27 +476,38 @@ function renderList(items) {
 async function ensureThumb(imageId, slot) {
   if (!imageId || !slot) return;
   if (state.thumbCache.has(imageId)) {
-    logger.debug("thumb", `命中缩略图缓存: ${imageId.slice(0, 12)}`);
-    renderThumb(slot, state.thumbCache.get(imageId));
+    const cached = state.thumbCache.get(imageId);
+    if (cached.__err) {
+      slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
+    } else if (cached.__none) {
+      slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+    } else {
+      logger.debug("thumb", `命中缩略图缓存: ${imageId.slice(0, 12)}`);
+      renderThumb(slot, cached);
+    }
     return;
   }
-  try {
-    // v0.8.7.6: 改走 GET + 路径参数（避开 SDK POST 400 bug）
-    const resp = await apiGet(`cache/thumbnail/${encodeURIComponent(imageId)}`);
-    const data = resp?.data || resp;
-    if (data?.has_image && data.data_url) {
-      const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
-      state.thumbCache.set(imageId, thumb);
-      renderThumb(slot, thumb);
-      logger.debug("thumb", `加载缩略图成功: ${imageId.slice(0, 12)}`, { mime: thumb.mime, w: thumb.w, h: thumb.h });
-    } else {
-      slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
-      logger.debug("thumb", `无缩略图（v0.8.5 之前数据）: ${imageId.slice(0, 12)}`);
+  // v0.8.9: 走并发池（默认 6 路）避免一次性 20 个 RTT 堆 bridge
+  return thumbPool.run(async () => {
+    try {
+      const resp = await apiGet(`cache/thumbnail/${encodeURIComponent(imageId)}`);
+      const data = resp?.data || resp;
+      if (data?.has_image && data.data_url) {
+        const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
+        state.thumbCache.set(imageId, thumb);
+        renderThumb(slot, thumb);
+        logger.debug("thumb", `加载缩略图成功: ${imageId.slice(0, 12)}`, { mime: thumb.mime, w: thumb.w, h: thumb.h });
+      } else {
+        state.thumbCache.set(imageId, { __none: true });  // 失败也 cache 避免重试
+        slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+        logger.debug("thumb", `无缩略图（v0.8.5 之前数据）: ${imageId.slice(0, 12)}`);
+      }
+    } catch (e) {
+      state.thumbCache.set(imageId, { __err: true });  // 失败也 cache 避免无限重试
+      slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
+      logger.warn("thumb", `加载缩略图失败: ${imageId.slice(0, 12)}`, e);
     }
-  } catch (e) {
-    slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
-    logger.warn("thumb", `加载缩略图失败: ${imageId.slice(0, 12)}`, e);
-  }
+  });
 }
 
 function renderThumb(slot, thumb) {
