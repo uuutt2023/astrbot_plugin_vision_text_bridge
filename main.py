@@ -559,8 +559,8 @@ class VisionTextBridgePlugin(Star):
             ("/cache/clear", api_clear, ["POST"], "Clear all"),
             ("/cache/regenerate", api_regenerate, ["POST"], "Regenerate"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
-            ("/cache/thumbnail/{image_id}", api_thumbnail, ["GET"], "v0.8.7.6 缩略图：image_id 走路径参数（GET，绕开 SDK POST 400）"),
-            ("/cache/thumbnail", api_thumbnail_legacy, ["GET"], "v0.8.7.6 向后兼容：image_id 走 query/body"),
+            ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "v0.8.7.8 缩略图：image_id 走路径参数（GET，werkzeug 语法）"),
+            ("/cache/thumbnail", api_thumbnail_legacy, ["GET"], "v0.8.7.8 向后兼容：image_id 走 query/body"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)

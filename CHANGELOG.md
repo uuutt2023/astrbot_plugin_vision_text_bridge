@@ -7,6 +7,14 @@
 
 无新变更。
 
+## [0.8.7.8] - 2026-06-05
+
+### 修复
+- **v0.8.7.6/7 路径参数语法错误**：我用了 FastAPI 风格的 `{image_id}` 但 AstrBot 路由匹配是 **werkzeug**，只认 **`<image_id>`** 尖括号语法。
+  - 症状：webui 调 `GET /cache/thumbnail/<id>` 返 404 "未找到该路由"
+  - 修复：`main.py` 路由改为 `<image_id>`
+  - 测试：补上用 `werkzeug.routing.Map` 实际跑 match 的验证（v0.8.7.7 之前测试只验证“注册成功”，没验证“能 match 上”，漏掉了）
+
 ## [0.8.7.7] - 2026-06-05
 
 ### 修复

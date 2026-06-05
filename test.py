@@ -2210,8 +2210,9 @@ def test_thumbnail_endpoint_accepts_post():
 
 
 def test_thumbnail_path_param_endpoint():
-    """v0.8.7.6: 新增 /cache/thumbnail/{image_id}（GET，image_id 走路径参数）。
-    避免 SDK POST 400。"""
+    """v0.8.7.6+: /cache/thumbnail/<image_id>（GET，image_id 走路径参数）。
+    v0.8.7.8 修复：必须用 werkzeug 尖括号语法 <image_id>，不是 FastAPI 花括号 {image_id}。
+    验证：路由注册后，用 werkzeug Map 实际匹配一次请求路径，证 AstrBot server 能 match 上。"""
     import asyncio as _aio
     import tempfile
     import pathlib
@@ -2229,17 +2230,27 @@ def test_thumbnail_path_param_endpoint():
                 captured[route] = (fn, methods)
             class _R:
                 args = {}
-                view_args = {"image_id": "id_y"}
+                view_args = {}
             p.context = SimpleNamespace(
                 request=_R(), register_web_api=mock_register,
             )
             p._register_web_apis()
-            route_path = f"/{main.PLUGIN_NAME}/cache/thumbnail/{{image_id}}"
-            assert route_path in captured, f"未注册路径参数路由 {route_path}"
+
+            # 必须是 werkzeug 尖括号语法，不是花括号！
+            route_path = f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"
+            assert route_path in captured, f"未注册 werkzeug 路径参数路由，expected={route_path} in {list(captured)}"
             thumb_fn, methods = captured[route_path]
             assert methods == ["GET"], f"路径参数路由应用 GET 不用 POST，actual={methods}"
 
-            r = _aio.run(thumb_fn())
+            # 验证 1：模拟 AstrBot server 的 werkzeug Map 匹配（这是 v0.8.7.8 之前漏掉的）
+            from werkzeug.routing import Map, Rule
+            url_map = Map([Rule(route_path, endpoint="plugin_api", methods=methods)])
+            request_path = f"/{main.PLUGIN_NAME}/cache/thumbnail/id_y"
+            endpoint, path_values = url_map.bind("").match(request_path, method="GET")
+            assert path_values.get("image_id") == "id_y", f"werkzeug match 失败: {path_values}"
+
+            # 验证 2：调 handler (image_id 由 path param 传入)
+            r = _aio.run(thumb_fn(image_id="id_y"))
             if isinstance(r, tuple):
                 body, _ = r
                 import json as _json
@@ -2250,6 +2261,10 @@ def test_thumbnail_path_param_endpoint():
             assert d["data"]["has_image"] is True
             assert d["data"]["data_url"].startswith("data:image/png;base64,")
             assert d["data"]["image_id"] == "id_y"
+
+            # 验证 3：错误地使用花括号语法不应该出现
+            fastapi_path = f"/{main.PLUGIN_NAME}/cache/thumbnail/{{image_id}}"
+            assert fastapi_path not in captured, f"误用 FastAPI 花括号语法: {fastapi_path}"
     finally:
         pathlib.Path(real).unlink(missing_ok=True)
     print("✓ test_thumbnail_path_param_endpoint")
