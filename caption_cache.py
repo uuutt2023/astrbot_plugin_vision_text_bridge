@@ -63,12 +63,6 @@ class CaptionEntry:
         # 列表 API 不返 base64(太大);以独立接口 /cache/thumbnail/<image_id> 取缩略图
         return d
 
-    def to_dict_with_b64(self) -> dict:
-        """返回带 base64 的完整字典(仅必要时候用,如单条查看)。"""
-        d = self.to_dict()
-        d["image_b64"] = self.image_b64
-        return d
-
 
 @dataclass
 class CacheStats:
@@ -175,14 +169,6 @@ class CaptionCache:
     # ------------------------------------------------------------------ key utils
 
     @staticmethod
-    def normalize_key(url_or_path: str) -> str:
-        """规范化图片 key(v0.8.6 仍然保留,作为辅助接口)。"""
-        raw = (url_or_path or "").strip()
-        if not raw:
-            return ""
-        return raw
-
-    @staticmethod
     def make_id_from_url(url_or_path: str) -> str:
         """从 URL/path 生成 image_id(v0.8.6 退化的 key 生成,
         实际推荐用 make_id_from_bytes 拿 md5)。"""
@@ -196,7 +182,7 @@ class CaptionCache:
     # ------------------------------------------------------------------ CRUD
 
     def get(self, image_id: str, with_b64: bool = False) -> CaptionEntry | None:
-        """根据 image_id 查询一条记录,命中后增加 hit_count。
+        """根据 image_id 查询一条记录,命中后增加 hit_count（上次 hit 5 分钟内不重复加）。
 
         Args:
             image_id: 图片唯一标识
@@ -211,13 +197,18 @@ class CaptionCache:
             if row is None:
                 return None
             now = time.time()
-            conn.execute(
-                "UPDATE image_captions SET hit_count = hit_count + 1, last_hit_at = ? "
-                "WHERE image_id = ?",
-                (now, image_id),
-            )
-            conn.commit()
-            return self._row_to_entry(row, hit_count_delta=1, last_hit_at=now, with_b64=with_b64)
+            last_hit = row["last_hit_at"] or 0
+            # 去重：5 分钟内的连续 hit 不计（避免 webui 详情页点 10 次就 10）
+            if now - last_hit >= 300:
+                conn.execute(
+                    "UPDATE image_captions SET hit_count = hit_count + 1, last_hit_at = ? "
+                    "WHERE image_id = ?",
+                    (now, image_id),
+                )
+                conn.commit()
+                return self._row_to_entry(row, hit_count_delta=1, last_hit_at=now, with_b64=with_b64)
+            # 5 分钟内重复 hit：不增计数，但更新内存返回值里的 last_hit_at 反映最近查询
+            return self._row_to_entry(row, last_hit_at=now, with_b64=with_b64)
 
     def put(
         self,

@@ -7,6 +7,31 @@
 
 无新变更。
 
+## [0.8.8] - 2026-06-05
+
+### 修复
+- **缩略图删除按钮实际不工作**：`window.confirm()` 在 sandboxed iframe 里被禁，控制台报 `Ignored call to 'confirm()'. The document is sandboxed, and the 'allow-modals' keyword is not set.`，用户点删除不弹窗。
+  - 修：index.html 加 `#confirm-modal`，app.js 加 `customConfirm()` 包装 Promise，自建确认 modal（Esc/点背景取消，点确定提交）。
+  - 涉及位置：删除单条缓存、清空全部缓存。
+- **@register 装饰器版本脱节**：硬编码 `"0.8.7.5"`，metadata.yaml 已经 0.8.7.10。提升插件列表里看到的版本不对。
+  - 修：`_read_plugin_version()` 从 metadata.yaml 读 `version` 字段，赋给模块级 `PLUGIN_VERSION`，@register 装饰器引用它。
+
+### 改进
+- **SQLite 大图吞磁盘**：之前 1 张 6.5MB PNG 编码后存 ~9MB base64 直接写进 DB，重负载用户很快 OOM。
+  - 加配置 `max_b64_size_kb`（默认 2048 KB = 2MB），超过上限的图**不**存 b64，但 description 仍存。webui 缩略图区显示 📦 占位。
+  - 0 表示不限制（不推荐）。
+- **hit_count 防刷**：webui 用户点详情页 10 次同一个条目，hit_count 就 +10——这统计意义不大。
+  - 修：`CaptionCache.get()` 加 5 分钟去重窗口，同一条 5 分钟内重复 get 不递增。
+
+### 清理
+- **死代码删除**：
+  - `caption_cache.CaptionCache.to_dict_with_b64`（全文 0 refs）
+  - `caption_cache.CaptionCache.normalize_key`（全文 0 refs）
+  - `main.VisionTextBridgePlugin.api_thumbnail_legacy`（webui 全走路径参数，legacy 再没人用）
+
+### 文档
+- `pages/cache-manager/index.html` 的 cache-bust 版本号 `?v=0.8.7.6` → `?v=0.8.8`
+
 ## [0.8.7.10] - 2026-06-05
 
 ### 修复

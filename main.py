@@ -65,6 +65,21 @@ PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
 DEFAULT_PRIORITY = 100
 
 
+def _read_plugin_version() -> str:
+    """从 metadata.yaml 读版本号（避免 @register 装饰器硬编码跟 metadata.yaml 脱节）。"""
+    try:
+        import yaml  # AstrBot 依赖 PyYAML
+        meta_path = Path(__file__).resolve().parent / "metadata.yaml"
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return str(data.get("version", "0.0.0"))
+    except Exception:
+        return "0.0.0"
+
+
+PLUGIN_VERSION = _read_plugin_version()
+
+
 def _read_file_bytes_sync(path: str) -> bytes:
     """供 asyncio.to_thread 调用的同步读文件。"""
     with open(path, "rb") as f:
@@ -90,7 +105,7 @@ class MmxResult:
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
-    "0.8.7.5",
+    PLUGIN_VERSION,
 )
 class VisionTextBridgePlugin(Star):
     """Vision -> Text 桥接。
@@ -485,25 +500,11 @@ class VisionTextBridgePlugin(Star):
                        "file_size": e.file_size, "has_image": True})
 
         async def api_thumbnail(image_id: str = ""):
-            """v0.8.7.10: 路径参数版（/cache/thumbnail/<image_id>）。
+            """路径参数版（/cache/thumbnail/<image_id>）。
             注意：**绝对不能**读 self.context.request（Context 对象没有 request 属性，
             读了就 AttributeError）。路径参数 image_id 已经是 kwarg 了，直接用。
             """
             # image_id 已是 kwarg，不需要再去 context.request 里取 view_args
-            return await _do_thumbnail(image_id)
-
-        async def api_thumbnail_legacy():
-            """v0.8.7.6: 兼容版（/cache/thumbnail）—— 走 query/body"""
-            image_id = ""
-            try:
-                body = await self.context.request.json
-                if isinstance(body, dict):
-                    image_id = (body.get("image_id", "") or "").strip()
-            except Exception:
-                pass
-            if not image_id:
-                a = _args()
-                image_id = (a.get("image_id", "") or "").strip()
             return await _do_thumbnail(image_id)
 
         async def api_diag():
@@ -559,8 +560,7 @@ class VisionTextBridgePlugin(Star):
             ("/cache/clear", api_clear, ["POST"], "Clear all"),
             ("/cache/regenerate", api_regenerate, ["POST"], "Regenerate"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
-            ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "v0.8.7.8 缩略图：image_id 走路径参数（GET，werkzeug 语法）"),
-            ("/cache/thumbnail", api_thumbnail_legacy, ["GET"], "v0.8.7.8 向后兼容：image_id 走 query/body"),
+            ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "缩略图：image_id 走路径参数（GET）"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)
@@ -812,9 +812,19 @@ class VisionTextBridgePlugin(Star):
         try:
             data = await self._read_image_bytes(url)
             if data:
-                b64 = base64.b64encode(data).decode("ascii")
                 size = len(data)
                 mime, w, h = _sniff_image_meta(data)
+                # v0.8.8: 大图跳过 b64 存储（避免 6.5MB base64 吞磁盘）
+                max_b64_kb = int(self.config.get("max_b64_size_kb", 2048) or 2048)
+                if max_b64_kb > 0 and size <= max_b64_kb * 1024:
+                    b64 = base64.b64encode(data).decode("ascii")
+                else:
+                    b64 = ""  # description 仍写，只是 webui 缩略图为 📦 占位
+                    if self._should_log("cache_trace"):
+                        logger.info(
+                            "[vision_text_bridge] 跳过 b64 存储: size=%dB > %dKB",
+                            size, max_b64_kb,
+                        )
         except Exception as e:
             # 读字节失败 **仅** 影响缩略图（base64/mime/dim），
             # description 仍正常写入 SQLite。记 warning 不报错。

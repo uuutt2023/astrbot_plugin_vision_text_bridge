@@ -1089,9 +1089,16 @@ def test_caption_cache_basic_crud():
         assert entry is not None
         assert entry.description == "一只猫"
         assert entry.hit_count == 1
-        # 再 get 一次，hit_count 递增
+        # v0.8.8: 5 分钟内连续 hit 去重（防 webui 详情页点 10 次就 hit_count=10）
         entry2 = cache.get("https://x.com/a.jpg")
-        assert entry2.hit_count == 2
+        assert entry2.hit_count == 1  # 去重后还是 1
+        # 手动调成 6 分钟前，命中后递增
+        import sqlite3 as _sq
+        with _sq.connect(str(Path(tmp) / "test.sqlite3") + "_db" if False else str(cache._db_path)) as _c:
+            _c.execute("UPDATE image_captions SET last_hit_at = ? WHERE image_id = ?", (entry2.last_hit_at - 360, "https://x.com/a.jpg"))
+            _c.commit()
+        entry3 = cache.get("https://x.com/a.jpg")
+        assert entry3.hit_count == 2  # 超过去重窗口才递增
         # delete
         assert cache.delete("https://x.com/a.jpg") is True
         assert cache.count() == 0
@@ -1264,7 +1271,8 @@ def test_caption_cache_stats():
         cache.get("a")
         s2 = cache.stats()
         assert s2.total == 1
-        assert s2.total_hits == 2
+        # v0.8.8: 5 分钟内 hit 去重 → 2 次连续 get 只 +1
+        assert s2.total_hits == 1
         assert s2.oldest_at is not None
         assert s2.newest_at is not None
     print("✓ test_caption_cache_stats")
@@ -2089,13 +2097,14 @@ def test_api_cache_thumbnail_returns_data_url():
             def __init__(self, args): self.args = args
 
         p.context = SimpleNamespace(
-            request=_R({"image_id": "id1"}),
+            request=_R({}),
             register_web_api=mock_register,
         )
         p._register_web_apis()
-        thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail"]
+        # v0.8.7.8: 改用路径参数路由，image_id 走 kwarg
+        thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"]
 
-        result = _aio.run(thumb_fn())
+        result = _aio.run(thumb_fn(image_id="id1"))
         # 验证返 ok 且 data_url 是 data:image/png;base64,...
         assert isinstance(result, dict)
         assert result.get("ok") is True
@@ -2109,20 +2118,15 @@ def test_api_cache_thumbnail_returns_data_url():
         assert d["file_size"] == len(fake)
 
         # 错误的 image_id
-        p.context.request = _R({"image_id": "nonexistent"})
-        r2 = _aio.run(thumb_fn())
+        r2 = _aio.run(thumb_fn(image_id="nonexistent"))
         # err() 返 (jsonify, status_code)
         assert isinstance(r2, tuple)
         assert r2[1] == 404
 
-        # 缺 image_id
-        p.context.request = _R({})
-        r3 = _aio.run(thumb_fn())
-        # 单个 err()返 (jsonify, 400) -- 但这里 status_code 不一定是 400 因为是默认参数
-        # 实际 err()第二位置 == 400
+        # 缺 image_id → 默认空字符串，返 400
+        r3 = _aio.run(thumb_fn(image_id=""))
         if isinstance(r3, tuple):
             r3 = r3[0]
-        # jsonify 之后可能调用过，但 get_json/get('error') 看 'error' 字段
         assert r3["error"] == "缺少参数 image_id"
 
     print("✓ test_api_cache_thumbnail_returns_data_url")
@@ -2145,12 +2149,13 @@ def test_api_cache_thumbnail_no_image():
             def __init__(self, args): self.args = args
 
         p.context = SimpleNamespace(
-            request=_R({"image_id": "id2"}),
+            request=_R({}),
             register_web_api=mock_register,
         )
         p._register_web_apis()
-        thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail"]
-        result = _aio.run(thumb_fn())
+        # v0.8.7.8: 改用路径参数路由
+        thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"]
+        result = _aio.run(thumb_fn(image_id="id2"))
         assert result.get("ok") is True
         d = result["data"]
         assert d["has_image"] is False
@@ -2159,19 +2164,19 @@ def test_api_cache_thumbnail_no_image():
     print("✓ test_api_cache_thumbnail_no_image")
 
 
-def test_thumbnail_endpoint_accepts_post():
-    """v0.8.7.5: thumbnail 路由接受 POST，绕开 bridge SDK query string 路径 bug。"""
+def test_thumbnail_endpoint_accepts_get():
+    """v0.8.8: thumbnail 路由纯 GET + 路径参数，image_id 走 kwarg（不再有 POST/query/body 复杂逻辑）。"""
     import asyncio as _aio
     import tempfile
     import pathlib
-    real = "/tmp/xx_thumb_post.png"
+    real = "/tmp/xx_thumb_get.png"
     with open(real, "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 30)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             p = new_plugin()
-            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "tp.sqlite3")
-            _aio.run(p._persist("id_x", f"file://{real}", "desc"))
+            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "tg.sqlite3")
+            _aio.run(p._persist("id_y", f"file://{real}", "desc"))
 
             captured = {}
             def mock_register(route, fn, methods, desc):
@@ -2180,25 +2185,18 @@ def test_thumbnail_endpoint_accepts_post():
                 args = {}
                 view_args = {}
                 def __getattr__(self, name):
-                    if name == "json":
-                        async def _coro():
-                            return {"image_id": "id_x"}
-                        return _coro()
                     raise AttributeError(name)
             p.context = SimpleNamespace(
                 request=_R(), register_web_api=mock_register,
             )
             p._register_web_apis()
-            thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail"]
+            thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"]
 
-            # POST 调 (用 json body) - 不走 query string
-            r = _aio.run(thumb_fn())
-            # thumb_fn 返 dict 或 tuple(err)，需要 unpacking
+            # v0.8.8: 直接 image_id="id_y" 走 kwarg
+            r = _aio.run(thumb_fn(image_id="id_y"))
             if isinstance(r, tuple):
                 body, _ = r
-                # body 可能是 dict 或 coroutine
-                import json as _json
-                d = _json.loads(body.get_data(as_text=True)) if hasattr(body, "get_data") else body
+                d = body if isinstance(body, dict) else {}
             else:
                 d = r
             assert d.get("ok") is True, f"thumb_fn 返: {d}"
@@ -2206,7 +2204,7 @@ def test_thumbnail_endpoint_accepts_post():
             assert d["data"]["data_url"].startswith("data:image/png;base64,")
     finally:
         pathlib.Path(real).unlink(missing_ok=True)
-    print("✓ test_thumbnail_endpoint_accepts_post")
+    print("✓ test_thumbnail_endpoint_accepts_get")
 
 
 def test_thumbnail_path_param_endpoint():
@@ -2444,6 +2442,11 @@ def run_all():
         test_mmx_result_dataclass,
         test_helper_module_level_functions_exist,
         test_main_py_slim_under_1300_lines,
+        test_register_version_sync,
+        test_caption_cache_dead_code_removed,
+        test_b64_size_cap_skips_storage,
+        test_hit_count_5min_dedup,
+        test_webui_no_native_confirm,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -2452,7 +2455,7 @@ def run_all():
         test_webui_index_has_debug_panel,
         test_caption_cache_put_warns_on_empty_fields,
         test_describe_one_persists_bare_path_url,
-        test_thumbnail_endpoint_accepts_post,
+        test_thumbnail_endpoint_accepts_get,
         test_thumbnail_path_param_endpoint,
     ]
     failed = 0
@@ -2779,6 +2782,105 @@ def test_main_py_slim_under_1300_lines():
         n = sum(1 for _ in f)
     assert n < 1300, f"main.py 现在 {n} 行，未达到瘦身目标 (<1300)"
     print(f"✓ test_main_py_slim_under_1250_lines (main.py = {n} 行)")
+
+
+def test_register_version_sync():
+    """v0.8.8: @register 装饰器版本号必须跟 metadata.yaml 一致，不能脱节。"""
+    import re
+    main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+    with open(main_path, "r", encoding="utf-8") as f:
+        src = f.read()
+    # 提取 metadata.yaml 的 version
+    meta_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml")
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta_text = f.read()
+    m_meta = re.search(r"^version:\s*([\d.]+)\s*$", meta_text, re.MULTILINE)
+    assert m_meta, "metadata.yaml 缺少 version 字段"
+    meta_version = m_meta.group(1)
+    # PLUGIN_VERSION 必须等于 metadata.yaml 的 version（不是 "0.0.0" fallback）
+    m_pv = re.search(r"^PLUGIN_VERSION\s*=\s*[\"']?[\w.]+", src, re.MULTILINE)
+    assert m_pv, "main.py 缺少 PLUGIN_VERSION 定义"
+    # @register 调用必须引用 PLUGIN_VERSION，不可以写死字面量
+    m_reg = re.search(r"@register\([\s\S]{0,800}?PLUGIN_VERSION", src)
+    assert m_reg, "@register 装饰器必须引用 PLUGIN_VERSION，不能写死字面量"
+    print(f"✓ test_register_version_sync (metadata={meta_version}, PLUGIN_VERSION 动态)")
+
+
+def test_caption_cache_dead_code_removed():
+    """v0.8.8: caption_cache.py 死代码清理（to_dict_with_b64 / normalize_key）。"""
+    from caption_cache import CaptionCache
+    cap = CaptionCache.__dict__
+    assert "to_dict_with_b64" not in cap, "to_dict_with_b64 是死代码，已删"
+    assert "normalize_key" not in cap, "normalize_key 是死代码，已删"
+    # 跑下 存活代码还能用
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as tmp:
+        c = CaptionCache(pathlib.Path(tmp) / "x.sqlite3")
+        c.put("k", "https://a.com", "猫")
+        e = c.get("k")
+        assert e.description == "猫"
+    print("✓ test_caption_cache_dead_code_removed")
+
+
+def test_b64_size_cap_skips_storage():
+    """v0.8.8: 超过 max_b64_size_kb 的图不存 base64（description 仍存）。"""
+    import asyncio, tempfile, pathlib
+    from PIL import Image
+    import io, base64
+    p = new_plugin()
+    p.config = dict(p.config) if isinstance(p.config, dict) else {}
+    p.config["max_b64_size_kb"] = 1  # 1KB 上限
+    with tempfile.TemporaryDirectory() as tmp:
+        p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "cap.sqlite3")
+        # 生成 ~50KB 的 PNG
+        img = Image.new("RGB", (400, 400), color="red")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        big = buf.getvalue()
+        assert len(big) > 1024
+        png_path = pathlib.Path(tmp) / "big.png"
+        png_path.write_bytes(big)
+        url = f"file://{png_path}"
+        asyncio.run(p._persist("big_id", url, "一只大红线"))
+        entry = p._caption_cache.get("big_id", with_b64=True)
+        assert entry is not None
+        assert entry.description == "一只大红线"
+        assert entry.image_b64 == "", f"超大图不该存 b64，实际长度={len(entry.image_b64)}"
+    print("✓ test_b64_size_cap_skips_storage")
+
+
+def test_hit_count_5min_dedup():
+    """v0.8.8: 5 分钟内重复 get 不递增 hit_count。"""
+    import tempfile, pathlib, sqlite3
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(pathlib.Path(tmp) / "h.sqlite3")
+        cache.put("k", "https://a", "猫")
+        assert cache.get("k").hit_count == 1
+        assert cache.get("k").hit_count == 1  # 5 分钟内去重
+        # 手改 last_hit_at 到 6 分钟前，下次 get 应该 +1
+        with sqlite3.connect(cache._db_path) as c:
+            c.execute("UPDATE image_captions SET last_hit_at = last_hit_at - 360 WHERE image_id = 'k'")
+            c.commit()
+        assert cache.get("k").hit_count == 2
+    print("✓ test_hit_count_5min_dedup")
+
+
+def test_webui_no_native_confirm():
+    """v0.8.8: webui 不再用 window.confirm（sandboxed iframe 禁用），改用自建 modal。"""
+    import re
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js")
+    with open(path, "r", encoding="utf-8") as f:
+        src = f.read()
+    assert "customConfirm" in src, "app.js 必须有 customConfirm 函数"
+    # 全文不应该出现裸的 window.confirm( 或 confirm(
+    bad = re.findall(r"[^a-zA-Z_]confirm\(", src)
+    assert not bad, f"app.js 还有裸 confirm() 调用: {bad}"
+    # index.html 必须有 confirm-modal
+    hpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html")
+    with open(hpath, "r", encoding="utf-8") as f:
+        html = f.read()
+    assert "confirm-modal" in html, "index.html 必须有 confirm-modal 元素"
+    print("✓ test_webui_no_native_confirm")
 
 
 if __name__ == "__main__":

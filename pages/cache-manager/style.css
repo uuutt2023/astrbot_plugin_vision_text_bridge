@@ -853,3 +853,24 @@ main {
 .debug-fab[hidden] {
     display: none !important;
 }
+
+/* 自建 confirm modal（v0.8.8 替代 window.confirm） */
+.confirm-card {
+    max-width: 460px;
+}
+.confirm-card .modal-body p {
+    margin: 0;
+    color: var(--text-sub);
+    line-height: 1.6;
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+.confirm-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    padding: 0 24px 20px;
+}
+.confirm-actions .btn {
+    min-width: 88px;
+}

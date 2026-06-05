@@ -199,6 +199,36 @@ function showToast(message, type = "success", duration = 2400) {
   }, duration);
 }
 
+// v0.8.8: 自建 confirm（window.confirm 在 sandboxed iframe 里被禁用）
+function customConfirm(message, title = "⚠️ 确认操作") {
+  return new Promise((resolve) => {
+    const modal = $("confirm-modal");
+    const titleEl = $("confirm-title");
+    const msgEl = $("confirm-message");
+    const okBtn = $("confirm-ok");
+    const cancelBtn = $("confirm-cancel");
+    titleEl.textContent = title;
+    msgEl.textContent = message;
+    modal.hidden = false;
+    const cleanup = (val) => {
+      modal.hidden = true;
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      modal.removeEventListener("click", onMask);
+      document.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onMask = (e) => { if (e.target === modal) cleanup(false); };
+    const onKey = (e) => { if (e.key === "Escape") cleanup(false); };
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    modal.addEventListener("click", onMask);
+    document.addEventListener("keydown", onKey);
+  });
+}
+
 function fmtTime(ts) {
   if (!ts || ts <= 0) return "-";
   const d = new Date(ts * 1000);
@@ -484,7 +514,7 @@ document.addEventListener("keydown", (e) => {
 
 async function onDelete(id) {
   logger.info("ui", `请求删除: ${id.slice(0, 12)}`);
-  if (!confirm("删除缓存条目?\n" + id)) {
+  if (!await customConfirm(`删除缓存条目?\n${id}`)) {
     logger.debug("ui", "删除被取消");
     return;
   }
@@ -532,7 +562,7 @@ async function onRegenerate(id) {
 
 async function onClear() {
   logger.info("ui", "请求清空全部缓存");
-  if (!confirm("确定要清空所有缓存条目吗？此操作不可撤销。")) {
+  if (!await customConfirm("确定要清空所有缓存条目吗？此操作不可撤销。", "🗑️ 清空确认")) {
     logger.debug("ui", "清空被取消");
     return;
   }
