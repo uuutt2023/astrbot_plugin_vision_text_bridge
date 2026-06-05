@@ -7,6 +7,15 @@
 
 无新变更。
 
+## [0.8.7.10] - 2026-06-05
+
+### 修复
+- **v0.8.7.9 500 真因**：`api_thumbnail` 读了 `self.context.request` 触发 `AttributeError("'Context' object has no attribute 'request'")`。
+  - 其他 handler（api_list 等）`body = await self.context.request.json` 外面包了 `try/except Exception` 静默吞掉了这个错误。
+  - 我 v0.8.7.6 加的路径参数 fallback 中却直接读 `req = self.context.request`，该行本身报 AttributeError。
+  - 修复：完全删掉对 `self.context.request` 的依赖——路径参数 `image_id` 已经是 kwarg，根本不需要看 view_args。
+  - 为什么之前一直没发现：v0.8.7.5 之前的 `api_thumbnail` 走 legacy 路径（带 try/except），从来没人触发过这个裸读。
+
 ## [0.8.7.9] - 2026-06-05
 
 ### 诊断

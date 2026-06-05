@@ -485,18 +485,12 @@ class VisionTextBridgePlugin(Star):
                        "file_size": e.file_size, "has_image": True})
 
         async def api_thumbnail(image_id: str = ""):
-            """v0.8.7.8: 路径参数版（/cache/thumbnail/<image_id>）—— GET 无 body 跳过 SDK 400 bug"""
-            # 路径参数从 view_args 取（在 handler 里会有 fallback）
-            try:
-                req = self.context.request
-                if not image_id and getattr(req, "view_args", None):
-                    image_id = (req.view_args.get("image_id") or "").strip()
-                return await _do_thumbnail(image_id)
-            except Exception as _e:
-                import traceback as _tb
-                _tb.print_exc()
-                logger.exception("[vision_text_bridge] api_thumbnail 崩溃: image_id=%r err=%r", image_id, _e)
-                return err(f"handler 异常: {_e!r}", 500)
+            """v0.8.7.10: 路径参数版（/cache/thumbnail/<image_id>）。
+            注意：**绝对不能**读 self.context.request（Context 对象没有 request 属性，
+            读了就 AttributeError）。路径参数 image_id 已经是 kwarg 了，直接用。
+            """
+            # image_id 已是 kwarg，不需要再去 context.request 里取 view_args
+            return await _do_thumbnail(image_id)
 
         async def api_thumbnail_legacy():
             """v0.8.7.6: 兼容版（/cache/thumbnail）—— 走 query/body"""
