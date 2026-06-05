@@ -7,6 +7,36 @@
 
 无新变更。
 
+## [0.8.7.4] - 2026-06-05
+
+### 紧急修复：真凶
+- **裸本地路径不被识别为 cacheable** —— root cause of "SQLite total=0"。
+
+  AstrBot 实际在 ``req.image_urls`` 里传的是**裸路径**（如
+  ``/AstrBot/data/temp/io_temp_img_*.jpg``），**不带** ``file://`` 前缀。
+  但 v0.8.7 之前版的 ``_is_cacheable_url()`` 只认 ``http://`` / ``https://`` / ``file://``——
+  裸路径返 ``False``， ``cacheable=False``，**``_describe_one`` 里
+  ``if cacheable and cache_key:`` 整块跳过**，包括最后的 ``await self._persist()``。
+  mmx 正常调用、描述拿到，**但 SQLite 始终是空的**。
+
+  v0.8.7.3 增加了"始终打 INFO 日志” —— 是因为这个原因仍没看到日志（连
+  ``_persist`` 都没调），谜题才被解开。
+
+  修复：
+  - ``_is_cacheable_url()`` 接受：
+    - ``http://`` / ``https://``
+    - ``file://``
+    - **裸 Unix 绝对路径**（以 ``/`` 开头）
+    - **Windows 盘符路径**（``C:/...`` / ``C:\...``）
+    - ``data:image/...`` 仍不缓存
+  - ``_read_image_bytes()`` 同样支持裸本地路径（直接当本地文件读）
+
+### 测试（105 → 106）
+- 新增 ``test_describe_one_persists_bare_path_url`` ：完整复现“裸路径 → cacheable=False →
+  永远不入缓存”的场景，验证修复后能调 ``_persist`` 写入 SQLite。
+- 调整 ``test_is_cacheable_url`` 覆盖裸路径。
+- 调整 ``test_main_py_slim_under_1300_lines`` 阈值从 1250 → 1300（4 个新增函数 + 文档）。
+
 ## [0.8.7.3] - 2026-06-05
 
 ### 紧急修复

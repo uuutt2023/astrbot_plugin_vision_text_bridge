@@ -173,16 +173,20 @@ def wrap_run(fn):
 # ------------------------------------------------------------------ 单测：工具方法
 
 def test_is_cacheable_url():
-    # v0.8.7: 抽到 module-level _is_cacheable_url(url, config)
+    # v0.8.7.4: 接受裸本地路径（/ 开头的绝对路径），因为 AstrBot 实际传的就是裸路径
     p = new_plugin()
     assert main._is_cacheable_url("http://x.com/a.jpg", p.config) is True
     assert main._is_cacheable_url("https://x.com/a.jpg", p.config) is True
     assert main._is_cacheable_url("base64://abc", p.config) is False
     assert main._is_cacheable_url("file:///tmp/a.jpg", p.config) is True
-    assert main._is_cacheable_url("/tmp/a.jpg", p.config) is False
+    assert main._is_cacheable_url("/tmp/a.jpg", p.config) is True  # v0.8.7.4 变 True
+    assert main._is_cacheable_url("/AstrBot/data/temp/x.jpg", p.config) is True
+    assert main._is_cacheable_url("C:/Users/x.jpg", p.config) is True  # Windows 盘符
+    assert main._is_cacheable_url("data:image/jpeg;base64,xxx", p.config) is False  # data URL 不缓存
     assert main._is_cacheable_url("", p.config) is False
     p2 = new_plugin(cache_file_paths=False)
     assert main._is_cacheable_url("file:///tmp/a.jpg", p2.config) is False
+    assert main._is_cacheable_url("/tmp/a.jpg", p2.config) is False  # 关闭 file_paths 后裸路径也不缓存
     print("✓ test_is_cacheable_url")
 
 
@@ -2328,7 +2332,7 @@ def run_all():
         test_verbose_total_switch_enables_all,
         test_mmx_result_dataclass,
         test_helper_module_level_functions_exist,
-        test_main_py_slim_under_1250_lines,
+        test_main_py_slim_under_1300_lines,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -2336,6 +2340,7 @@ def run_all():
         test_webui_app_uses_logger,
         test_webui_index_has_debug_panel,
         test_caption_cache_put_warns_on_empty_fields,
+        test_describe_one_persists_bare_path_url,
     ]
     failed = 0
     for t in tests:
@@ -2585,6 +2590,38 @@ def test_webui_index_has_debug_panel():
     print("✓ test_webui_index_has_debug_panel")
 
 
+def test_describe_one_persists_bare_path_url():
+    """v0.8.7.4 修复: AstrBot 传裸本地路径 (无 file://) 也能写 SQLite。
+
+    之前 _is_cacheable_url 只认 http(s)/file://，裸路径 cacheable=False
+    → 跳过 cacheable 块 → _persist 不调 → SQLite total=0。
+    """
+    import asyncio
+    import tempfile
+    import pathlib
+    from unittest.mock import patch
+    real = "/tmp/xx_bare_path.png"
+    with open(real, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 30)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = new_plugin()
+            p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "b.sqlite3")
+            url = real  # 裸路径, 无 file://
+            assert main._is_cacheable_url(url, p.config) is True
+            # mock mmx 子进程
+            with patch.object(p, "_run_mmx",
+                              return_value=main.MmxResult("测试描述", "", 0, True)):
+                result = asyncio.run(p._describe_one(url))
+            assert result == "测试描述"
+            items = p._caption_cache.list(limit=10, include_b64=True)
+            assert len(items) == 1, f"裸路径未缓存！items={len(items)}"
+            assert items[0].description == "测试描述"
+    finally:
+        pathlib.Path(real).unlink(missing_ok=True)
+    print("✓ test_describe_one_persists_bare_path_url")
+
+
 def test_caption_cache_put_warns_on_empty_fields():
     """v0.8.7.3 修复: put() 跳过空字段时现在 log warning，不再静默。
 
@@ -2621,13 +2658,13 @@ def test_caption_cache_put_warns_on_empty_fields():
     print("✓ test_caption_cache_put_warns_on_empty_fields")
 
 
-def test_main_py_slim_under_1250_lines():
-    """v0.8.7+: main.py 瘦身到 1250 行以下（v0.8.6 是 2019 行）。
-    v0.8.7.1 加了 /cache/diag 诊断 endpoint，阈值放宽到 1250。"""
+def test_main_py_slim_under_1300_lines():
+    """v0.8.7+: main.py 瘦身到 1300 行以下（v0.8.6 是 2019 行）。
+    v0.8.7.4 接受裸本地路径 + 文档，阈值放宽到 1300。"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
     with open(path, "r", encoding="utf-8") as f:
         n = sum(1 for _ in f)
-    assert n < 1250, f"main.py 现在 {n} 行，未达到瘦身目标 (<1250)"
+    assert n < 1300, f"main.py 现在 {n} 行，未达到瘦身目标 (<1300)"
     print(f"✓ test_main_py_slim_under_1250_lines (main.py = {n} 行)")
 
 

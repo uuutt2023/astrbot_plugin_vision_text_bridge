@@ -90,7 +90,7 @@ class MmxResult:
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
-    "0.8.7.3",
+    "0.8.7.4",
 )
 class VisionTextBridgePlugin(Star):
     """Vision -> Text 桥接。
@@ -1071,6 +1071,7 @@ class VisionTextBridgePlugin(Star):
         return CaptionCache.make_id_from_bytes(data)
 
     async def _read_image_bytes(self, url):
+        """v0.8.7.4: 支持裸本地路径（除 http(s)/file:// 之外，以 / 开头的绝对路径）。"""
         lo = url.lower()
         if lo.startswith("file://"):
             path = unquote(url[len("file://"):])
@@ -1083,6 +1084,9 @@ class VisionTextBridgePlugin(Star):
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     r.raise_for_status()
                     return await r.read()
+        # v0.8.7.4: 裸本地路径
+        if lo.startswith("/") or (len(lo) >= 2 and lo[1] == ":"):
+            return await asyncio.to_thread(_read_file_bytes_sync, url)
         raise ValueError(f"unsupported scheme: {url[:50]}")
 
 
@@ -1225,9 +1229,30 @@ def _sniff_image_meta(data: bytes):
 
 
 def _is_cacheable_url(url: str, config) -> bool:
+    """v0.8.7.4: 接受裸本地路径 (如 /AstrBot/data/temp/io_temp_img_*.jpg)。
+
+    v0.8.7.3 及之前只认 http:// / https:// / file://，但实际场景中
+    AstrBot 直接传裸路径 (无 scheme)。那种情况下 cacheable=False →
+    ``_describe_one`` 里 ``if cacheable and cache_key`` 跳过所有缓存
+    逻辑，包括最后的 ``_persist`` 写 SQLite。webui 看上去"总是空"。
+
+    现在识别的 scheme：
+      - http://, https://
+      - file://
+      - 以 / 开头（Unix 绝对路径）
+      - Windows 盘符开头 C:\\ 或 C:/
+      - data:image/... （不入缓存，base64 重复太多）
+    """
+    if not url:
+        return False
     lo = url.lower()
     if lo.startswith("http://") or lo.startswith("https://"):
         return True
     if lo.startswith("file://"):
+        return bool(config.get("cache_file_paths", True))
+    if lo.startswith("data:image/"):
+        return False
+    # 裸本地路径: Unix 绝对路径 或 Windows 盘符
+    if lo.startswith("/") or (len(lo) >= 2 and lo[1] == ":"):
         return bool(config.get("cache_file_paths", True))
     return False
