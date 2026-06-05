@@ -7,6 +7,29 @@
 
 无新变更。
 
+## [0.8.7.2] - 2026-06-05
+
+### 新增
+- **Webui 控制台日志系统**（独立模块 `pages/cache-manager/logger.js`） ：
+  - **4 个级别** ：debug / info / warn / error，默认 info。URL 加 `?debug=1` 直接切到 debug。
+  - **双输出** ：浏览器控制台（带颜色） + 浮动 on-screen 面板（右下角，glassmorphism 风格）。
+  - **API 包装** ：`app.js` 里的 `bridge.apiGet`/`apiPost` 调用**全部走 `apiGet`/`apiPost` 包装**，自动打 log 记录 endpoint / 参数 / 耗时 / 返数据摘要。
+  - **用户操作全部记 log** ：点击按钮、搜索、排序、翻页、缩略图加载、modal 打开/关闭、快捷键。
+  - **级别持久化** ：设置存 localStorage (`vtb_webui_log_level`)，刷新后保留。
+  - **面板控制** ：
+    - 5 个按钮：级别下拉、复制全部到剪贴板、下载日志文件、清空、隐藏面板。
+    - 隐藏后面板变右上角 🐞 浮动按镙，点了重新打开。
+  - **最近 200 条环形缓冲** 防止内存泄露。
+
+### 改动
+- **app.js 重写** 以接入 logger：所有 `bridge.apiGet`/`apiPost` 都包装为 `apiGet`/`apiPost`函数，**业务代码不再直接调 bridge**。
+- 调试不用再打开浏览器 DevTools console —— 面板上直接看。
+
+### 新增测试（101 → 104）
+- `test_webui_logger_module_exists` ：验证 logger.js 语法 + 4 个级别方法。
+- `test_webui_app_uses_logger` ：验证 app.js 全面接入 logger，**业务代码不直接调 bridge.apiGet/apiPost**。
+- `test_webui_index_has_debug_panel` ：验证 index.html 包含 debug panel 所有关键 DOM id。
+
 ## [0.8.7.1] - 2026-06-05
 
 ### 紧急修复

@@ -121,6 +121,32 @@
 
   <div id="toast" class="toast"></div>
 
+  <!-- Debug Panel (v0.8.7.2): 浮动控制台日志面板 -->
+  <div id="debug-panel" class="debug-panel" hidden>
+    <div class="debug-header">
+      <div class="debug-title">
+        <span class="debug-icon">🐞</span>
+        <span>控制台日志</span>
+        <span class="debug-count" id="debug-count">0</span>
+      </div>
+      <div class="debug-controls">
+        <select id="debug-level" title="日志级别" class="debug-select">
+          <option value="debug">debug</option>
+          <option value="info" selected>info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+          <option value="off">off</option>
+        </select>
+        <button class="icon-btn" id="debug-copy" title="复制全部日志到剪贴板">📋</button>
+        <button class="icon-btn" id="debug-download" title="下载日志文件">⬇️</button>
+        <button class="icon-btn" id="debug-clear" title="清空日志">🗑️</button>
+        <button class="icon-btn" id="debug-toggle" title="隐藏面板">✕</button>
+      </div>
+    </div>
+    <div class="debug-body" id="debug-body"></div>
+  </div>
+  <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
+
   <script type="module" src="./app.js"></script>
 </body>
 </html>

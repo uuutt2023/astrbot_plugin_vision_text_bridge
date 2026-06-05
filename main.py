@@ -90,7 +90,7 @@ class MmxResult:
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
-    "0.8.7.1",
+    "0.8.7.2",
 )
 class VisionTextBridgePlugin(Star):
     """Vision -> Text 桥接。

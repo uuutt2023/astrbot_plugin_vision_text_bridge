@@ -2332,6 +2332,9 @@ def run_all():
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
+        test_webui_logger_module_exists,
+        test_webui_app_uses_logger,
+        test_webui_index_has_debug_panel,
     ]
     failed = 0
     for t in tests:
@@ -2511,6 +2514,74 @@ def test_api_diag_returns_db_info():
     finally:
         pathlib.Path(real).unlink(missing_ok=True)
     print("✓ test_api_diag_returns_db_info")
+
+
+def test_webui_logger_module_exists():
+    """v0.8.7.2: webui logger 模块存在且语法正确。"""
+    import subprocess
+    result = subprocess.run(["node", "--check", "pages/cache-manager/logger.js"],
+                            capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
+    assert result.returncode == 0, f"logger.js 语法错: {result.stderr}"
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "pages/cache-manager/logger.js"), encoding="utf-8") as f:
+        content = f.read()
+    assert "export default logger" in content
+    assert "class WebuiLogger" in content
+    assert "_log" in content
+    for lvl in ["debug", "info", "warn", "error"]:
+        assert f"{lvl}(" in content, f"logger.js 未实现 {lvl}()"
+    print("✓ test_webui_logger_module_exists")
+
+
+def test_webui_app_uses_logger():
+    """v0.8.7.2: app.js 全面接入 logger（4 个级别都有调用 + API 包装）。"""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "pages/cache-manager/app.js"), encoding="utf-8") as f:
+        content = f.read()
+    assert 'import logger from "./logger.js"' in content
+    for lvl in ["debug", "info", "warn", "error"]:
+        assert f"logger.{lvl}(" in content, f"app.js 未调 logger.{lvl}"
+    assert "async function apiGet" in content
+    assert "async function apiPost" in content
+    # 业务代码不应直接调 bridge.apiGet/apiPost（必须走包装）
+    # 允许 logger.js / 注释中提及
+    import re
+    # 找出 import 之后的所有 bridge.apiGet/apiPost 调用
+    after_import = content.split("import logger")[1]
+    # 但包装函数本身（apiGet/apiPost）当然会调 bridge.apiGet/apiPost——排除这两个函数体
+    # 简化：只检查不在 async function apiGet/apiPost 内部
+    lines = after_import.split("\n")
+    in_api_wrapper = False
+    depth = 0
+    bad = []
+    for i, line in enumerate(lines):
+        if re.match(r"\s*async function api(Get|Post)\b", line):
+            in_api_wrapper = True
+            depth = 0
+        if in_api_wrapper:
+            depth += line.count("{") - line.count("}")
+            if depth <= 0 and "{" in line:
+                in_api_wrapper = False
+            continue
+        if re.search(r"\bbridge\.(apiGet|apiPost)\(", line):
+            bad.append(line.strip())
+    assert len(bad) == 0, f"app.js 业务代码中不应直接调 bridge.apiGet/apiPost，剩 {len(bad)} 处: {bad}"
+    print("✓ test_webui_app_uses_logger")
+
+
+def test_webui_index_has_debug_panel():
+    """v0.8.7.2: index.html 包含 debug panel 元素。"""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "pages/cache-manager/index.html"), encoding="utf-8") as f:
+        content = f.read()
+    assert 'id="debug-panel"' in content
+    assert 'id="debug-level"' in content
+    assert 'id="debug-body"' in content
+    assert 'id="debug-clear"' in content
+    assert 'id="debug-show"' in content
+    assert 'id="debug-copy"' in content
+    assert 'id="debug-download"' in content
+    print("✓ test_webui_index_has_debug_panel")
 
 
 def test_main_py_slim_under_1250_lines():
