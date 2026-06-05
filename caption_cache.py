@@ -239,6 +239,13 @@ class CaptionCache:
         - 额外字段:image_b64 (base64)、mime_type、file_size、width、height
         """
         if not image_id or not description:
+            # v0.8.7.3: 之前静默 return 掩盖了"为何 SQLite total=0"的问题。
+            # 现在打 warning。
+            import logging
+            logging.getLogger("astrbot_plugin_vision_text_bridge").warning(
+                "[caption_cache] put() 被调用但 image_id=%r description_len=%d，**未写入**。",
+                image_id, len(description) if description else 0,
+            )
             return
         with self._lock, self._connect() as conn:
             now = time.time()

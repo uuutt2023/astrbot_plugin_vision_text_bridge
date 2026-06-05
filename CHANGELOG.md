@@ -7,6 +7,32 @@
 
 无新变更。
 
+## [0.8.7.3] - 2026-06-05
+
+### 紧急修复
+- **“SQLite total=0” 诊断问题**：用户反馈 mmx 返回描述后 webui 看不到缓存。
+  debug 后发现 plugin 代码可能从缓存的"静默跳过”掩盖问题。
+
+#### 修改
+- **`caption_cache.put()`** 跳过空字段时**不再静默** 记 warning：
+  ```
+  [caption_cache] put() 被调用但 image_id=None description_len=0，**未写入**。
+  ```
+  原因可能是调用方传错参数、_compute_image_cache_key 返空、或 description 末行制表。
+  之前” total 一直 0” 就是这个原因，现在会明确打 warning。
+- **`_persist` 始终打 INFO 日志**（不依赖 verbose 配置）：
+  ```
+  [vision_text_bridge] 写 SQLite 缓存成功: id=xxxxxxxxxxxxxxxx, url=..., desc_len=1158, b64=12345B, mime=image/jpeg, size=67890
+  ```
+  失败也有 warning：
+  ```
+  [vision_text_bridge] 写 SQLite 缓存失败: ...
+  ```
+  **重要**：能直接看到 SQLite 是否写了。
+
+#### 新增测试
+- `test_caption_cache_put_warns_on_empty_fields` ：验证 put() 跳过空字段时打 warning。
+
 ## [0.8.7.2] - 2026-06-05
 
 ### 新增

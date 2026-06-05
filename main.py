@@ -90,7 +90,7 @@ class MmxResult:
     "astrbot_plugin_vision_text_bridge",
     "Mavis",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
-    "0.8.7.2",
+    "0.8.7.3",
 )
 class VisionTextBridgePlugin(Star):
     """Vision -> Text 桥接。
@@ -803,13 +803,18 @@ class VisionTextBridgePlugin(Star):
             if self._should_log("id_computation"):
                 logger.debug("[vision_text_bridge] 读字节异常详情: %s", e)
         try:
+            # v0.8.7.3: 无论如何都记录一次，put 是否真写了。
             self._caption_cache.put(
                 image_id=image_id, url=url, description=description,
                 image_b64=b64, mime_type=mime, file_size=size, width=w, height=h,
             )
-            if self._should_log("cache_trace"):
-                logger.info("[vision_text_bridge] 写 SQLite 缓存: id=%s, size=%d, mime=%s, dim=%dx%d",
-                            image_id[:16], size, mime, w, h)
+            # **重要：始终 log 持久化结果** （不依赖 verbose 配置） 。
+            # 用户反馈 "webui 看不到缓存" 场景：都是这里没日志。
+            logger.info(
+                "[vision_text_bridge] 写 SQLite 缓存成功: id=%s, url=%s, "
+                "desc_len=%d, b64=%dB, mime=%s, size=%d",
+                image_id[:16], self._preview(url, 60), len(description), len(b64), mime, size,
+            )
         except Exception as e:
             logger.warning("[vision_text_bridge] 写 SQLite 缓存失败: %s", e)
 

@@ -2335,6 +2335,7 @@ def run_all():
         test_webui_logger_module_exists,
         test_webui_app_uses_logger,
         test_webui_index_has_debug_panel,
+        test_caption_cache_put_warns_on_empty_fields,
     ]
     failed = 0
     for t in tests:
@@ -2582,6 +2583,42 @@ def test_webui_index_has_debug_panel():
     assert 'id="debug-copy"' in content
     assert 'id="debug-download"' in content
     print("✓ test_webui_index_has_debug_panel")
+
+
+def test_caption_cache_put_warns_on_empty_fields():
+    """v0.8.7.3 修复: put() 跳过空字段时现在 log warning，不再静默。
+
+    之前静默 return 隐藏了 "为何 SQLite total=0" 的根因 (image_id 或 description 为空)。
+    """
+    import logging
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "warn.sqlite3")
+        # 捕获 logging
+        captured = []
+        h = logging.Handler()
+        h.emit = lambda r: captured.append(r)
+        logging.getLogger("astrbot_plugin_vision_text_bridge").addHandler(h)
+        logging.getLogger("astrbot_plugin_vision_text_bridge").setLevel(logging.WARNING)
+        try:
+            cache.put("", "url", "description")  # 空 image_id
+            assert cache.count() == 0
+            cache.put("id", "url", "")  # 空 description
+            assert cache.count() == 0
+            cache.put(None, "url", "d")  # None image_id
+            assert cache.count() == 0
+            # 3 次静默调 → 3 条 warning
+            warns = [r for r in captured if r.levelno >= logging.WARNING]
+            assert len(warns) >= 3, f"期望 ≥3 条 warning，实际 {len(warns)}"
+        finally:
+            logging.getLogger("astrbot_plugin_vision_text_bridge").removeHandler(h)
+    # 有效调一次仍能写
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = main.CaptionCache(Path(tmp) / "ok.sqlite3")
+        cache.put("valid_id", "url", "valid desc")
+        assert cache.count() == 1
+    print("✓ test_caption_cache_put_warns_on_empty_fields")
 
 
 def test_main_py_slim_under_1250_lines():
