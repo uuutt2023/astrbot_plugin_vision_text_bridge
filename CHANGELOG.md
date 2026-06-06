@@ -7,6 +7,39 @@
 
 无新变更。
 
+## [0.8.11] - 2026-06-06
+
+### Bug 修复
+- **webui 右上角 DB 路径永远 "loading…"**：`app.js loadStats()` 只更新了 `stat-dbsize`，从来没碰 `db-path-badge`。现在加 `dbBadge.textContent = "DB: caption_cache.sqlite3"`（full path 在 `title` 里）。主要这个 bug 是从 v0.8.6 首次加 webui 就一直存在——右上的 badge 完全是装饰品。
+
+### 新增
+- **内存热缓存 TTL + LRU**：之前是裸 `dict[str, str]`，永远不不过期也不淘汰。现在是新加的 `_MemoryCache(ttl, max_size)` 类：
+  - 默认 TTL 300 秒（5 分钟）—可配置 `memory_cache_ttl_seconds`
+  - 默认 LRU 上限 500 条—可配置 `memory_cache_max_size`
+  - `get()` 过期懒删除、访问会刷新插入顺序
+  - 越上限 `put` 淘汰最久未访问项
+  - `__getitem__/__setitem__` 兼容老 `cache[k] = v` 语法
+- **SQLite 缓存自动过期清理**：新加 `CaptionCache.clean_expired(max_age_days)`。
+  - 判定依据：有 `last_hit_at` 用 `last_hit_at`、没被 get 过的用 `created_at`
+  - 启动时自动调一次；后台 task 默认每小时跑一次（间隔可配）
+  - webui 工具栏多了 **🧹 清理过期** 按钮，调用 `POST /cache/clean_expired`
+- **后台清理 task** `_clean_loop(ttl_days, interval_h)`：在 `initialize()` 里用 `asyncio.create_task` 启动；`terminate()` 取消。
+
+### 配置
+| 配置项 | 默认 | 作用 |
+|---|---|---|
+| `memory_cache_ttl_seconds` | 300 | 内存缓存过期（0=不过期） |
+| `memory_cache_max_size` | 500 | 内存缓存 LRU 上限（0=不限制，不推荐） |
+| `sqlite_cache_ttl_days` | 7 | SQLite 超期天数（0=不过期） |
+| `sqlite_clean_interval_hours` | 1 | 后台清理间隔（0=仅启动时清一次） |
+
+### 测试
+- +12 个新测试：_MemoryCache 基础/TTL过期/LRU淘汰/TTL=0/dict 语法糖、clean_expired 删老/留新/用 last_hit_at/0天no-op、webui DB badge、clean_expired 路由注册/TTL=0 返 400
+
+### 踏过的坑
+- Python `dict` 重复赋同 key **不**会刷新插入顺序—LRU 必须 `pop` + `set` 。get 路径里 “重新设值刷新” 不生效。修在 `_MemoryCache.get()` 里。
+- `werkzeug` 未装导致 `test_thumbnail_path_param_endpoint` 挂—`pip install werkzeug` 修了。
+
 ## [0.8.10] - 2026-06-06
 
 ### 性能优化

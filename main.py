@@ -72,6 +72,75 @@ _RE_MD_LIST = re.compile(r"^\*\s+", re.MULTILINE)
 _RE_BLANK_LINES = re.compile(r"\n{3,}")
 
 
+class _MemoryCache:
+    """v0.8.11: 内存热缓存——带 TTL + LRU size 上限。
+
+    - 防御资源泄露：之前是裸 dict，永远不会过期也不会被淘汰
+    - 过期处理：get() 检查 ``expire_at``（同 _sibling_cache.CaptionCache 5 分钟去重窗口一致）
+    - LRU 淘汰：set 越上限删最久未访问项
+    - 本类是单线程使用（asyncio 事件循环），不需要锁
+    """
+
+    __slots__ = ("_m", "_max_size", "_ttl")
+
+    def __init__(self, ttl_seconds: int, max_size: int):
+        # dict 是有序的（Python 3.7+），插入/更新顺序即为 LRU 顺序
+        self._m: dict[str, tuple[str, float]] = {}
+        self._max_size = max(1, int(max_size))
+        self._ttl = max(0, int(ttl_seconds))
+
+    def get(self, key: str) -> str | None:
+        """取并刷新 LRU 顺序；过期或不存在返 None。"""
+        v = self._m.get(key)
+        if v is None:
+            return None
+        text, expire_at = v
+        if self._ttl > 0 and time.time() >= expire_at:
+            # 过期，懒删除
+            self._m.pop(key, None)
+            return None
+        # 刷新 LRU：pop + set（Python dict 重赋值同 key **不**会动插入顺序）
+        if self._max_size > 0:
+            self._m.pop(key, None)
+            self._m[key] = v
+        return text
+
+    def put(self, key: str, value: str) -> None:
+        if self._max_size <= 0:
+            return
+        if key in self._m:
+            self._m.pop(key, None)
+        expire = time.time() + self._ttl if self._ttl > 0 else float("inf")
+        self._m[key] = (value, expire)
+        # 越上限——从头开始删（最久未访问）
+        while len(self._m) > self._max_size:
+            oldest = next(iter(self._m))
+            self._m.pop(oldest, None)
+
+    def pop(self, key: str) -> str | None:
+        v = self._m.pop(key, None)
+        return v[0] if v else None
+
+    def clear(self) -> None:
+        self._m.clear()
+
+    def __len__(self) -> int:
+        return len(self._m)
+
+    def __contains__(self, key: str) -> bool:
+        return self.get(key) is not None
+
+    # 字典语法糖——允许 ``cache[key] = v`` / ``cache[key]`` 老用法
+    def __setitem__(self, key: str, value: str) -> None:
+        self.put(key, value)
+
+    def __getitem__(self, key: str) -> str:
+        v = self.get(key)
+        if v is None:
+            raise KeyError(key)
+        return v
+
+
 def _read_plugin_version() -> str:
     """从 metadata.yaml 读版本号（避免 @register 装饰器硬编码跟 metadata.yaml 脱节）。"""
     try:
@@ -133,7 +202,12 @@ class VisionTextBridgePlugin(Star):
         self.mmx_path = (self.config.get("mmx_path") or "").strip() or shutil.which("mmx") or shutil.which("mmx.cmd")
         self.npm_path = shutil.which("npm") or shutil.which("npm.cmd")
         self._caption_cache: CaptionCache | None = None
-        self._description_cache: dict[str, str] = {}
+        # v0.8.11: 内存热缓存改为 _MemoryCache——带 TTL + LRU size 上限
+        # ttl_seconds=0 表示不过期，max_size=0 表示不限制；默认值在配置里调
+        self._description_cache: _MemoryCache = _MemoryCache(
+            ttl_seconds=int(self.config.get("memory_cache_ttl_seconds", 300) or 300),
+            max_size=int(self.config.get("memory_cache_max_size", 500) or 500),
+        )
         self._vision_semaphore: asyncio.Semaphore | None = None
         self._configured_priority: int = self._resolve_priority()
         self._priority_locked_warning_emitted = False
@@ -212,6 +286,22 @@ class VisionTextBridgePlugin(Star):
         except Exception as exc:
             logger.exception("[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc)
             self._caption_cache = None
+
+        # 1.5 v0.8.11: 启动 SQLite 过期清理后台 task
+        if self._caption_cache is not None:
+            try:
+                ttl_days = int(self.config.get("sqlite_cache_ttl_days", 7) or 0)
+                interval_h = int(self.config.get("sqlite_clean_interval_hours", 1) or 0)
+                # 启动时先清一次（不管 interval）
+                if ttl_days > 0:
+                    deleted = self._caption_cache.clean_expired(ttl_days)
+                    if deleted > 0:
+                        logger.info("[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
+                if interval_h > 0 and ttl_days > 0:
+                    self._clean_task = asyncio.create_task(self._clean_loop(ttl_days, interval_h))
+                    logger.info("[vision_text_bridge] 已启动过期清理后台任务: TTL=%d天, 间隔=%d小时", ttl_days, interval_h)
+            except Exception as exc:
+                logger.exception("[vision_text_bridge] 启动过期清理 task 失败: %s", exc)
 
         # 2. web API
         try:
@@ -514,6 +604,31 @@ class VisionTextBridgePlugin(Star):
             # image_id 已是 kwarg，不需要再去 context.request 里取 view_args
             return await _do_thumbnail(image_id)
 
+        async def api_clean_expired():
+            """v0.8.11: 手动触发过期清理（返回删除条数）。"""
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            ttl_days = int(self.config.get("sqlite_cache_ttl_days", 7) or 0)
+            if ttl_days <= 0:
+                return err("sqlite_cache_ttl_days=0，未启用过期清理", 400)
+            try:
+                deleted = self._caption_cache.clean_expired(ttl_days)
+                # 同时清一下内存热缓存过期项
+                mem_size_before = len(self._description_cache)
+                # 访问一下触发内部 lazy expire；现在 _MemoryCache get 才会 expire
+                # 但 LRU 全部 key 都需要访问，开销不必要；为了一致，遍历 purge
+                expired_keys = [
+                    k for k, (_, exp) in getattr(self._description_cache, "_m", {}).items()
+                    if self._description_cache._ttl > 0 and time.time() >= exp
+                ]
+                for k in expired_keys:
+                    self._description_cache.pop(k)
+                purged_mem = mem_size_before - len(self._description_cache)
+                logger.info("[vision_text_bridge] 手动清理过期: SQLite=%d条, 内存=%d条", deleted, purged_mem)
+                return ok({"deleted_sqlite": deleted, "purged_memory": purged_mem, "ttl_days": ttl_days})
+            except Exception as e:
+                return err(f"清理失败: {e}", 500)
+
         async def api_diag():
             """v0.8.7.1 新增: 诊断 endpoint。
 
@@ -569,13 +684,38 @@ class VisionTextBridgePlugin(Star):
             ("/cache/export", api_export, ["GET"], "Export JSON"),
             ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "缩略图：image_id 走路径参数（GET）"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
+            ("/cache/clean_expired", api_clean_expired, ["POST"], "v0.8.11 手动清理过期缓存"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)
 
     async def terminate(self) -> None:
+        if getattr(self, "_clean_task", None) is not None:
+            self._clean_task.cancel()
+            try:
+                await self._clean_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._clean_task = None
         self._description_cache.clear()
         self._caption_cache = None
         logger.info("[vision_text_bridge] 插件已卸载，缓存已清理")
+
+    async def _clean_loop(self, ttl_days: int, interval_h: int) -> None:
+        """v0.8.11: 定期清理过期 SQLite 缓存的后台 task。"""
+        interval_s = interval_h * 3600
+        try:
+            while True:
+                await asyncio.sleep(interval_s)
+                if self._caption_cache is None:
+                    break
+                try:
+                    deleted = self._caption_cache.clean_expired(ttl_days)
+                    if deleted > 0 and self._should_log("cache_trace"):
+                        logger.info("[vision_text_bridge] 后台清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
+                except Exception as e:
+                    logger.warning("[vision_text_bridge] 后台清理失败: %s", e)
+        except asyncio.CancelledError:
+            pass  # terminate() 取消时正常退出
 
     # =========================================================================
     # 主钩子: bridge_vision_to_text

@@ -78,6 +78,30 @@
     "hint": "默认开。关闭后会保留 mmx 的原始 markdown 输出。**实测**：典型响应 520 字符→380 字符，省 25-30% token。",
     "default": true
   },
+  "memory_cache_ttl_seconds": {
+    "description": "内存热缓存有效期（秒）",
+    "type": "int",
+    "hint": "超过这个时间未被访问的图片描述会自动从内存中清除（不删 SQLite）。0 = 不过期。建议 300（5 分钟）。",
+    "default": 300
+  },
+  "memory_cache_max_size": {
+    "description": "内存热缓存最大条数（LRU 淘汰）",
+    "type": "int",
+    "hint": "超过这个条数会淘汰最久未访问的项。0 = 不限制（不推荐，会 OOM）。",
+    "default": 500
+  },
+  "sqlite_cache_ttl_days": {
+    "description": "SQLite 缓存有效期（天）",
+    "type": "int",
+    "hint": "超过这个天数未被访问的 SQLite 缓存会被自动清理。判定依据：last_hit_at / created_at。0 = 不过期。**推荐 7 天**。",
+    "default": 7
+  },
+  "sqlite_clean_interval_hours": {
+    "description": "SQLite 过期清理任务间隔（小时）",
+    "type": "int",
+    "hint": "后台多久跑一次 clean_expired。0 = 启动时清理一次，关闭后台任务。",
+    "default": 1
+  },
   "include_history": {
     "description": "处理历史对话中的图片",
     "type": "bool",

@@ -381,3 +381,36 @@ class CaptionCache:
         with self._lock, self._connect() as conn:
             conn.execute("VACUUM")
             conn.commit()
+
+    def clean_expired(self, max_age_days: int) -> int:
+        """v0.8.11: 清理超期未命中的条目。
+
+        语义: ``last_hit_at`` 早于 ``now - max_age_days`` 的条目视为冷数据，删掉。
+        刚 put 还没被 get 过的条目用 ``created_at`` 代替 ``last_hit_at`` 判断
+        （刚 put 的话 ``last_hit_at=0``，会被误判为过期——这是 bug，不能用 last_hit_at）。
+
+        Args:
+            max_age_days: 最大保留天数。<=0 不清理。
+
+        Returns:
+            删掉的条数。
+        """
+        if max_age_days <= 0:
+            return 0
+        # ``last_hit_at IS NULL OR last_hit_at < 0`` 意味着从未被 get——以 created_at 为准
+        cutoff = time.time() - max_age_days * 86400
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM image_captions "
+                "WHERE (last_hit_at IS NULL OR last_hit_at = 0) "
+                "  AND created_at < ?",
+                (cutoff,),
+            )
+            deleted_unhit = cur.rowcount
+            cur = conn.execute(
+                "DELETE FROM image_captions WHERE last_hit_at > 0 AND last_hit_at < ?",
+                (cutoff,),
+            )
+            deleted_hit = cur.rowcount
+            conn.commit()
+        return deleted_unhit + deleted_hit

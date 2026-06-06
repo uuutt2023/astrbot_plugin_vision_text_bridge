@@ -352,6 +352,13 @@ async function loadStats() {
     $("stat-hits").textContent = data.total_hits ?? 0;
     $("stat-dbsize").textContent = fmtSize(data.db_size_bytes);
     $("stat-memcache").textContent = data.in_memory_cache_size ?? 0;
+    // v0.8.11: 同步设置右上角 DB 路径 badge（以前是写死的 "loading…"，现在拿到实际路径）
+    const dbBadge = $("db-path-badge");
+    if (dbBadge && data.db_path) {
+      const tail = data.db_path.split(/[/\\]/).pop() || data.db_path;
+      dbBadge.textContent = `DB: ${tail}`;
+      dbBadge.title = data.db_path;
+    }
     logger.info("data", "loadStats 完成", { total: data.total, hits: data.total_hits, dbsize: data.db_size_bytes });
   } catch (e) {
     logger.error("data", "loadStats 失败", e);
@@ -656,6 +663,32 @@ async function onClear() {
   }
 }
 
+async function onCleanExpired() {
+  logger.info("ui", "请求清理过期缓存");
+  if (!await customConfirm("清理所有超期未命中的缓存条目?\n（SQLite + 内存热缓存）", "🧹 清理过期")) {
+    logger.debug("ui", "清理被取消");
+    return;
+  }
+  try {
+    const resp = await apiPost("cache/clean_expired", {});
+    if (resp?.ok !== false) {
+      const data = resp?.data || resp;
+      const sql = data?.deleted_sqlite ?? 0;
+      const mem = data?.purged_memory ?? 0;
+      logger.info("ui", `清理完成: SQLite=${sql}条, 内存=${mem}条 (TTL=${data?.ttl_days}天)`);
+      showToast(`清理完成: SQLite ${sql} 条 + 内存 ${mem} 条过期`);
+      state.thumbCache.clear();
+      await Promise.all([loadStats(), loadList()]);
+    } else {
+      logger.warn("ui", `清理失败: ${resp?.error || "未知"}`);
+      showToast("清理失败: " + (resp?.error || "未知"), "error");
+    }
+  } catch (e) {
+    logger.error("ui", "清理异常", e);
+    showToast("清理失败: " + (e?.message || e), "error");
+  }
+}
+
 async function onExport() {
   logger.info("ui", "导出 JSON");
   try {
@@ -724,6 +757,7 @@ $("refresh-btn").addEventListener("click", async () => {
   await Promise.all([loadStats(), loadList()]);
 });
 $("clear-btn").addEventListener("click", onClear);
+$("clean-expired-btn")?.addEventListener("click", onCleanExpired);
 $("export-btn").addEventListener("click", onExport);
 $("diag-btn").addEventListener("click", onDiag);
 

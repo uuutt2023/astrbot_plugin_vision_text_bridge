@@ -2461,6 +2461,18 @@ def run_all():
         test_strip_mmx_content_real_world_savings,
         test_strip_mmx_content_fallback_on_non_json,
         test_strip_mmx_disabled_returns_raw,
+        test_memory_cache_basic,
+        test_memory_cache_ttl_expiration,
+        test_memory_cache_lru_eviction,
+        test_memory_cache_ttl_zero_means_never_expire,
+        test_memory_cache_dict_syntax_compat,
+        test_clean_expired_removes_old_entries,
+        test_clean_expired_keeps_recent_entries,
+        test_clean_expired_uses_last_hit_at_when_present,
+        test_clean_expired_zero_days_is_noop,
+        test_webui_db_badge_text_in_app_js,
+        test_clean_expired_endpoint_registered,
+        test_clean_expired_endpoint_disabled_when_ttl_zero,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -2794,8 +2806,8 @@ def test_main_py_slim_under_1300_lines():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
     with open(path, "r", encoding="utf-8") as f:
         n = sum(1 for _ in f)
-    # v0.8.10 加了 mmx markdown 清理功能，阈值放宽到 1350
-    assert n < 1350, f"main.py 现在 {n} 行，未达到瘦身目标 (<1350)"
+    # v0.8.11 加了 _MemoryCache / clean_expired / _clean_loop，阈值放宽到 1500
+    assert n < 1500, f"main.py 现在 {n} 行，未达到瘦身目标 (<1500)"
     print(f"✓ test_main_py_slim_under_1300_lines (main.py = {n} 行)")
 
 
@@ -3195,6 +3207,256 @@ def test_strip_mmx_disabled_returns_raw():
     assert out == raw.strip(), f"关闭后应返回原 stdout, 实际: {out!r}"
     assert "**保留加粗**" in out  # 加粗被保留
     print("✓ test_strip_mmx_disabled_returns_raw")
+
+
+# ===========================================================================
+# v0.8.11 内存热缓存 TTL + LRU
+# ===========================================================================
+
+def test_memory_cache_basic():
+    """v0.8.11: _MemoryCache 基础 put/get/pop/clear/__len__/__contains__。"""
+    import time
+    mc = main._MemoryCache(ttl_seconds=60, max_size=10)
+    mc.put("a", "1")
+    mc.put("b", "2")
+    assert len(mc) == 2
+    assert "a" in mc
+    assert mc.get("a") == "1"
+    assert mc.get("b") == "2"
+    assert mc.get("nonexistent") is None
+    assert "nonexistent" not in mc
+    assert mc.pop("a") == "1"
+    assert "a" not in mc
+    mc.clear()
+    assert len(mc) == 0
+    print("✓ test_memory_cache_basic")
+
+
+def test_memory_cache_ttl_expiration():
+    """v0.8.11: 超 TTL 的 get 返回 None 并懒删除。"""
+    import time
+    mc = main._MemoryCache(ttl_seconds=1, max_size=10)
+    mc.put("a", "1")
+    assert mc.get("a") == "1"
+    time.sleep(1.1)
+    assert mc.get("a") is None
+    assert "a" not in mc
+    assert len(mc) == 0
+    print("✓ test_memory_cache_ttl_expiration")
+
+
+def test_memory_cache_lru_eviction():
+    """v0.8.11: 超 max_size 淘汰最久未访问项。"""
+    mc = main._MemoryCache(ttl_seconds=60, max_size=3)
+    mc.put("a", "1")
+    mc.put("b", "2")
+    mc.put("c", "3")
+    # 此时插入顺序是 a → b → c。访问 a 刷新顺序为 b → c → a
+    assert mc.get("a") == "1"
+    # 再 put d，越上限——应该删 b（最久未访问）
+    mc.put("d", "4")
+    assert "a" in mc, "a 被访问过，刷新了顺序，不应被删"
+    assert "b" not in mc, "b 未被访问，应被淘汰"
+    assert "c" in mc
+    assert "d" in mc
+    assert len(mc) == 3
+    print("✓ test_memory_cache_lru_eviction")
+
+
+def test_memory_cache_ttl_zero_means_never_expire():
+    """v0.8.11: ttl=0 表示不过期。"""
+    mc = main._MemoryCache(ttl_seconds=0, max_size=10)
+    mc.put("a", "1")
+    import time
+    time.sleep(0.1)
+    assert mc.get("a") == "1"  # 不过期
+    print("✓ test_memory_cache_ttl_zero_means_never_expire")
+
+
+def test_memory_cache_dict_syntax_compat():
+    """v0.8.11: __setitem__/__getitem__ 兼容老 cache[k]=v 语法。"""
+    mc = main._MemoryCache(ttl_seconds=60, max_size=10)
+    mc["a"] = "1"
+    assert mc["a"] == "1"
+    assert "a" in mc
+    try:
+        _ = mc["nope"]
+        assert False, "应抛 KeyError"
+    except KeyError:
+        pass
+    print("✓ test_memory_cache_dict_syntax_compat")
+
+
+# ===========================================================================
+# v0.8.11 SQLite clean_expired
+# ===========================================================================
+
+def test_clean_expired_removes_old_entries():
+    """v0.8.11: clean_expired 删除超期未命中的条目。"""
+    import tempfile, pathlib, sqlite3, time
+    with tempfile.TemporaryDirectory() as tmp:
+        cap = main.CaptionCache(pathlib.Path(tmp) / "exp.sqlite3")
+        cap.put("k1", "https://a.com/1", "猫")
+        cap.put("k2", "https://a.com/2", "狗")
+        # 手改 created_at 到 8 天前
+        with sqlite3.connect(cap._db_path) as c:
+            c.execute("UPDATE image_captions SET created_at = ? WHERE image_id IN ('k1','k2')", (time.time() - 8*86400,))
+            c.commit()
+        # 清理 7 天前的
+        deleted = cap.clean_expired(max_age_days=7)
+        assert deleted == 2, f"应删 2 条，实际 {deleted}"
+        assert cap.count() == 0
+    print("✓ test_clean_expired_removes_old_entries")
+
+
+def test_clean_expired_keeps_recent_entries():
+    """v0.8.11: clean_expired 不删未过期条目。"""
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as tmp:
+        cap = main.CaptionCache(pathlib.Path(tmp) / "keep.sqlite3")
+        cap.put("k1", "https://a.com/1", "猫")
+        cap.put("k2", "https://a.com/2", "狗")
+        # 清理 7 天前的（实际都刚 put）
+        deleted = cap.clean_expired(max_age_days=7)
+        assert deleted == 0
+        assert cap.count() == 2
+    print("✓ test_clean_expired_keeps_recent_entries")
+
+
+def test_clean_expired_uses_last_hit_at_when_present():
+    """v0.8.11: 有 last_hit_at 的条目以 last_hit_at 为准（不是 created_at）。"""
+    import tempfile, pathlib, sqlite3, time
+    with tempfile.TemporaryDirectory() as tmp:
+        cap = main.CaptionCache(pathlib.Path(tmp) / "hit.sqlite3")
+        cap.put("k1", "https://a.com/1", "猫")
+        cap.get("k1")  # 产生 last_hit_at
+        # 手改 created_at 到 100 天前，last_hit_at 是刚刚（现在）
+        with sqlite3.connect(cap._db_path) as c:
+            c.execute("UPDATE image_captions SET created_at = ? WHERE image_id = 'k1'", (time.time() - 100*86400,))
+            c.commit()
+        # 清理 7 天前的：last_hit_at 刚刚，没过期
+        deleted = cap.clean_expired(max_age_days=7)
+        assert deleted == 0, f"刚被 hit 的不该被删，实际删了 {deleted}"
+        assert cap.count() == 1
+        # 再手改 last_hit_at 到 30 天前
+        with sqlite3.connect(cap._db_path) as c:
+            c.execute("UPDATE image_captions SET last_hit_at = ? WHERE image_id = 'k1'", (time.time() - 30*86400,))
+            c.commit()
+        deleted = cap.clean_expired(max_age_days=7)
+        assert deleted == 1, f"30 天前 hit 的应被删，实际删了 {deleted}"
+    print("✓ test_clean_expired_uses_last_hit_at_when_present")
+
+
+def test_clean_expired_zero_days_is_noop():
+    """v0.8.11: max_age_days<=0 跳过清理。"""
+    import tempfile, pathlib, sqlite3, time
+    with tempfile.TemporaryDirectory() as tmp:
+        cap = main.CaptionCache(pathlib.Path(tmp) / "zero.sqlite3")
+        cap.put("k1", "https://a.com/1", "猫")
+        with sqlite3.connect(cap._db_path) as c:
+            c.execute("UPDATE image_captions SET created_at = ? WHERE image_id = 'k1'", (time.time() - 100*86400,))
+            c.commit()
+        assert cap.clean_expired(0) == 0
+        assert cap.clean_expired(-1) == 0
+        assert cap.count() == 1
+    print("✓ test_clean_expired_zero_days_is_noop")
+
+
+# ===========================================================================
+# v0.8.11 webui DB badge + clean_expired 路由
+# ===========================================================================
+
+def test_webui_db_badge_text_in_app_js():
+    """v0.8.11: app.js loadStats() 必须更新 db-path-badge textContent。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    assert "db-path-badge" in src, "app.js 必须引用 db-path-badge"
+    # 验证赋值逻辑
+    assert 'dbBadge.textContent' in src, "app.js 必须给 dbBadge 赋 textContent"
+    print("✓ test_webui_db_badge_text_in_app_js")
+
+
+def test_clean_expired_endpoint_registered():
+    """v0.8.11: /cache/clean_expired 路由必须注册。"""
+    import asyncio, tempfile, pathlib
+    p = new_plugin()
+    # 保持 DB 在 cleanup 前可用——在 TemporaryDirectory 里走 cache 实例
+    tmpdir = tempfile.mkdtemp()
+    db_path = pathlib.Path(tmpdir) / "c.sqlite3"
+    p._caption_cache = main.CaptionCache(db_path)
+    captured = {}
+
+    def mock_register(route, fn, methods, desc):
+        captured[route] = fn
+
+    class _R:
+        def __getattr__(self, name):
+            raise AttributeError(name)
+    p.context = SimpleNamespace(
+        request=_R(), register_web_api=mock_register,
+    )
+    p._register_web_apis()
+    key = f"/{main.PLUGIN_NAME}/cache/clean_expired"
+    assert key in captured, f"缺少路由: {key}"
+    fn = captured[key]
+    r = asyncio.run(fn())
+    if isinstance(r, tuple):
+        body, status = r
+        assert status == 200, f"应返 200, 实际 {status}: {body}"
+        if hasattr(body, "get_json"):
+            d = body.get_json()
+        elif hasattr(body, "get_data"):
+            import json as _json
+            d = _json.loads(body.get_data(as_text=True))
+        else:
+            d = body
+    else:
+        d = r
+    assert d.get("ok") is True, f"clean_expired 应返 ok, 实际: {d}"
+    assert "deleted_sqlite" in d.get("data", {}), f"data 缺 deleted_sqlite: {d}"
+    assert "purged_memory" in d.get("data", {}), f"data 缺 purged_memory: {d}"
+    assert "ttl_days" in d.get("data", {}), f"data 缺 ttl_days: {d}"
+    # cleanup
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    print("✓ test_clean_expired_endpoint_registered")
+
+
+def test_clean_expired_endpoint_disabled_when_ttl_zero():
+    """v0.8.11: sqlite_cache_ttl_days=0 时 /cache/clean_expired 返 400。"""
+    import tempfile, pathlib, shutil
+    p = new_plugin()
+    p.config = dict(p.config)
+    p.config["sqlite_cache_ttl_days"] = 0
+    tmpdir = tempfile.mkdtemp()
+    p._caption_cache = main.CaptionCache(pathlib.Path(tmpdir) / "c.sqlite3")
+    captured = {}
+
+    def mock_register(route, fn, methods, desc):
+        captured[route] = fn
+
+    class _R:
+        def __getattr__(self, name):
+            raise AttributeError(name)
+    p.context = SimpleNamespace(
+        request=_R(), register_web_api=mock_register,
+    )
+    p._register_web_apis()
+    import asyncio
+    fn = captured[f"/{main.PLUGIN_NAME}/cache/clean_expired"]
+    r = asyncio.run(fn())
+    # tuple (jsonify, status_code) 或 dict（api_clean_expired 走 err() 返 tuple (json, 400))
+    if isinstance(r, tuple):
+        body, status = r
+        assert status == 400
+        if hasattr(body, "get_data"):
+            import json as _json
+            d = _json.loads(body.get_data(as_text=True))
+        else:
+            d = body
+    else:
+        d = r
+    assert "未启用过期清理" in d.get("error", "")
+    print("✓ test_clean_expired_endpoint_disabled_when_ttl_zero")
 
 
 if __name__ == "__main__":

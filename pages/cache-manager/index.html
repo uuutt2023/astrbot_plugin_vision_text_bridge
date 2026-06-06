@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.9" />
+  <link rel="stylesheet" href="./style.css?v=0.8.11" />
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -72,6 +72,7 @@
       </select>
       <button class="btn primary" id="refresh-btn" title="刷新 (R)">🔄 刷新</button>
       <button class="btn" id="export-btn">⬇️ 导出 JSON</button>
+      <button class="btn" id="clean-expired-btn" title="v0.8.11 清理超期未命中条目（SQLite + 内存热缓存）">🧹 清理过期</button>
       <button class="btn" id="diag-btn" title="v0.8.7.1 诊断：查看 SQLite 路径/schema/最近 3 条">🔍 诊断</button>
       <button class="btn danger" id="clear-btn">🗑️ 清空全部</button>
     </section>
@@ -166,6 +167,6 @@
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
 
-  <script type="module" src="./app.js?v=0.8.9"></script>
+  <script type="module" src="./app.js?v=0.8.11" />
 </body>
 </html>
