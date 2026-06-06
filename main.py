@@ -58,7 +58,6 @@ def _load_sibling_module(name: str):
 _sibling_cache = _load_sibling_module("caption_cache")
 CaptionCache = _sibling_cache.CaptionCache
 CaptionEntry = _sibling_cache.CaptionEntry
-CacheStats = _sibling_cache.CacheStats
 
 PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
 # AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
@@ -153,6 +152,24 @@ def _read_plugin_version() -> str:
         return "0.0.0"
 
 
+# v0.8.17: 配置读取 helper——原模式 ``int(self.config.get(k, d) or d)`` 重复 15+ 次
+def _cfg_int(config, key: str, default: int) -> int:
+    v = config.get(key, default)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cfg_str(config, key: str, default: str) -> str:
+    v = config.get(key, default)
+    if v is None:
+        return default
+    return str(v)
+
+
 PLUGIN_VERSION = _read_plugin_version()
 
 
@@ -205,8 +222,8 @@ class VisionTextBridgePlugin(Star):
         # v0.8.11: 内存热缓存改为 _MemoryCache——带 TTL + LRU size 上限
         # ttl_seconds=0 表示不过期，max_size=0 表示不限制；默认值在配置里调
         self._description_cache: _MemoryCache = _MemoryCache(
-            ttl_seconds=int(self.config.get("memory_cache_ttl_seconds", 300) or 300),
-            max_size=int(self.config.get("memory_cache_max_size", 500) or 500),
+            ttl_seconds=_cfg_int(self.config, "memory_cache_ttl_seconds", 300),
+            max_size=_cfg_int(self.config, "memory_cache_max_size", 500),
         )
         self._vision_semaphore: asyncio.Semaphore | None = None
         self._configured_priority: int = self._resolve_priority()
@@ -271,7 +288,7 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ lifecycle
 
     async def initialize(self) -> None:
-        max_concurrent = max(1, int(self.config.get("max_concurrent_vision", 3) or 1))
+        max_concurrent = max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
 
         # 1. SQLite 缓存
@@ -290,8 +307,8 @@ class VisionTextBridgePlugin(Star):
         # 1.5 v0.8.11: 启动 SQLite 过期清理后台 task
         if self._caption_cache is not None:
             try:
-                ttl_days = int(self.config.get("sqlite_cache_ttl_days", 7) or 0)
-                interval_h = int(self.config.get("sqlite_clean_interval_hours", 1) or 0)
+                ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
+                interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
                 # 启动时先清一次（不管 interval）
                 if ttl_days > 0:
                     deleted = self._caption_cache.clean_expired(ttl_days)
@@ -514,11 +531,11 @@ class VisionTextBridgePlugin(Star):
             # v0.8.12: 额外加状态参数——webui 状态栏需要
             s["memory_cache_ttl_seconds"] = int(self.config.get("memory_cache_ttl_seconds", 300) or 0)
             s["memory_cache_max_size"] = int(self.config.get("memory_cache_max_size", 500) or 0)
-            s["sqlite_cache_ttl_days"] = int(self.config.get("sqlite_cache_ttl_days", 7) or 0)
-            s["sqlite_clean_interval_hours"] = int(self.config.get("sqlite_clean_interval_hours", 1) or 0)
+            s["sqlite_cache_ttl_days"] = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
+            s["sqlite_clean_interval_hours"] = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
             # 下次后台清理预计时间（UTC 戳）——用上记的 last_clean_time + interval
             last = getattr(self, "_last_clean_at", 0.0) or 0.0
-            interval_h = int(self.config.get("sqlite_clean_interval_hours", 1) or 0)
+            interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
             if interval_h > 0 and last > 0:
                 s["next_clean_at"] = last + interval_h * 3600
             else:
@@ -634,7 +651,7 @@ class VisionTextBridgePlugin(Star):
             """v0.8.11: 手动触发过期清理（返回删除条数）。"""
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
-            ttl_days = int(self.config.get("sqlite_cache_ttl_days", 7) or 0)
+            ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
             if ttl_days <= 0:
                 return err("sqlite_cache_ttl_days=0，未启用过期清理", 400)
             try:
@@ -760,7 +777,7 @@ class VisionTextBridgePlugin(Star):
             return
         if self._vision_semaphore is None:
             self._vision_semaphore = asyncio.Semaphore(
-                max(1, int(self.config.get("max_concurrent_vision", 3) or 1))
+                max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
             )
 
         # === 0) v0.8.13: 预先过滤待注入的工具集（chat_plus 之后才 merge）===
@@ -860,9 +877,9 @@ class VisionTextBridgePlugin(Star):
         # === v0.8.13: 链末兜底删 func_tool（chat_plus priority=-1 跑过之后）===
         # 即使主钩子 priority=100 没清干净，链末 priority=-10000 还能在最后扫一次
         try:
-            mode = str(self.config.get("tool_filter_mode", "off") or "off").lower()
+            mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
             if mode != "off":
-                names_raw = str(self.config.get("tool_filter_names", "") or "")
+                names_raw = _cfg_str(self.config, "tool_filter_names", "")
                 names = [n.strip() for n in names_raw.split(",") if n.strip()]
                 if names:
                     ft = getattr(req, "func_tool", None)
@@ -950,7 +967,7 @@ class VisionTextBridgePlugin(Star):
                 return entry.description
 
         # 3) 调 mmx
-        timeout = max(5, int(self.config.get("command_timeout", 60) or 60))
+        timeout = max(5, _cfg_int(self.config, "command_timeout", 60))
         vision_prompt = (
             self.config.get("vision_prompt", "")
             or "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
@@ -1019,7 +1036,7 @@ class VisionTextBridgePlugin(Star):
                 size = len(data)
                 mime, w, h = _sniff_image_meta(data)
                 # v0.8.8: 大图跳过 b64 存储（避免 6.5MB base64 吞磁盘）
-                max_b64_kb = int(self.config.get("max_b64_size_kb", 2048) or 2048)
+                max_b64_kb = _cfg_int(self.config, "max_b64_size_kb", 2048)
                 if max_b64_kb > 0 and size <= max_b64_kb * 1024:
                     b64 = base64.b64encode(data).decode("ascii")
                 else:
@@ -1094,11 +1111,10 @@ class VisionTextBridgePlugin(Star):
         """
         if not self.config.get("inject_system_prompt_guidance", True):
             return
-        import re as _re
         captions = []
         for p in (req.extra_user_content_parts or []):
             text = p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "") or ""
-            if text and _re.search(r"\[Image\s+\d+\s+描述\]", text):
+            if text and re.search(r"\[Image\s+\d+\s+描述\]", text):
                 captions.append(text)
         if not captions:
             return
@@ -1260,7 +1276,7 @@ class VisionTextBridgePlugin(Star):
     # 工具
     # =========================================================================
     def _truncate(self, text: str) -> str:
-        max_len = int(self.config.get("max_description_length", 800) or 0)
+        max_len = _cfg_int(self.config, "max_description_length", 800)
         if max_len <= 0 or len(text) <= max_len:
             return text
         return text[:max_len] + "…"
@@ -1304,14 +1320,14 @@ class VisionTextBridgePlugin(Star):
         我们 priority=100 先跑，把 set 里不想保留的工具删掉，chat_plus merge 进去的
         就是干净版。
         """
-        mode = str(self.config.get("tool_filter_mode", "off") or "off").lower()
+        mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
         if mode == "off":
             return
-        names_raw = str(self.config.get("tool_filter_names", "") or "")
+        names_raw = _cfg_str(self.config, "tool_filter_names", "")
         names = [n.strip() for n in names_raw.split(",") if n.strip()]
         if not names:
             return
-        extra_key = str(self.config.get("tool_filter_extra_key", "_group_chat_plus_func_tool") or "").strip()
+        extra_key = _cfg_str(self.config, "tool_filter_extra_key", "_group_chat_plus_func_tool").strip()
         # 1) 清 event.get_extra(extra_key) 里的待合并 tool set
         if extra_key:
             try:

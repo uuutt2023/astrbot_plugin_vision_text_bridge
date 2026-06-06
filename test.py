@@ -112,22 +112,49 @@ def new_plugin(**overrides):
     p._vision_semaphore = asyncio.Semaphore(2)
     # 手动设置 _configured_priority（代替 __init__ 中的赋值）
     p._configured_priority = p._resolve_priority()
+    p._priority_locked_warning_emitted = False
     # 默认 None，让 _describe_one 在 SQLite 缓存表走 None 路径
     p._caption_cache = None
     # v0.8.7: 主钩子快照字段。__init__ 里会设，这里用 __new__ 创建的实例也要设
     p._pending_urls = None
     p._pending_parts = None
     p._pending_contexts = None
-    p._priority_locked_warning_emitted = False
-    # 注入一个 mock context，让 _register_web_apis 不报错
+    # 注入一个 mock context，让 _register_web_apis / initialize 不报错
     p.context = SimpleNamespace(
-        request=SimpleNamespace(
-            args={},
-            json=None,
-        ),
+        request=SimpleNamespace(args={}, json=None),
         register_web_api=lambda *a, **k: None,
     )
     return p
+
+
+# v0.8.17: mock context helper——以住 12 个测试手写 ``class _R`` + ``mock_register`` 现在抽取出来
+class _MockContext:
+    """模拟 AstrBot Context 对象——``request`` 上的任意属性返 AttributeError（抹掉 self.context.request.* 误读）。"""
+
+    def __init__(self, args: dict | None = None, json_body: dict | None = None):
+        self.args = args or {}
+        self._json_body = json_body
+
+    def __getattr__(self, name):
+        if name == "json":
+            async def _coro():
+                return self._json_body
+            return _coro()
+        raise AttributeError(name)
+
+
+def make_capturing_context(register_fn) -> SimpleNamespace:
+    """建一个 mock context，其 ``register_web_api`` 调 ``register_fn(route, fn, methods, desc)``。
+    返回 SimpleNamespace + register_fn 包装。
+    """
+    from types import SimpleNamespace
+    captured = {}
+
+    def mock_register(route, fn, methods, desc):
+        captured[route] = fn
+
+    ctx = SimpleNamespace(request=_MockContext(), register_web_api=mock_register)
+    return ctx, captured
 
 
 class FakeReq:
@@ -2296,10 +2323,11 @@ def test_sniff_image_meta():
 
 def test_sibling_modules_loaded():
     """main.py 启动时应能动态加载同级 caption_cache.py（v0.8.6 起 chat_archive_link.py 已删除）。"""
-    # 验证 import main 后这些类已绑定
+    # v0.8.17: CacheStats 改为 _sibling_cache.CacheStats 内部用，main.py 不再 re-export
+    import caption_cache as _cc  # noqa
     assert hasattr(main, "CaptionCache")
     assert hasattr(main, "CaptionEntry")
-    assert hasattr(main, "CacheStats")
+    assert hasattr(_cc, "CacheStats")  # 在 caption_cache 模块里
     # 验证它们指向实际类（不是 None）
     assert main.CaptionCache.__name__ == "CaptionCache"
     print("✓ test_sibling_modules_loaded")
@@ -2490,6 +2518,10 @@ def run_all():
         test_strip_residual_base64_clears_func_tool,
         test_webui_waits_for_bridge_in_app_js,
         test_index_html_injects_bridge_sdk,
+        test_cfg_int_helper_exists,
+        test_cfg_str_helper_exists,
+        test_app_js_no_dead_fmtDim,
+        test_caption_cache_datetime_top_level,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -3809,6 +3841,56 @@ def test_index_html_injects_bridge_sdk():
     code_only = re.sub(r"<!--[\s\S]*?-->", "", h)  # 去掉注释
     assert "use-credentials" not in code_only, "v0.8.15 踩坑：crossOrigin='use-credentials' + page origin=null 撞 CORS wildcard"
     print("✓ test_index_html_injects_bridge_sdk")
+
+
+# ===========================================================================
+# v0.8.17 代码瘦身 helper
+# ===========================================================================
+
+def test_cfg_int_helper_exists():
+    """v0.8.17: main._cfg_int 抽出来统一 int config 读取。"""
+    p = new_plugin()
+    p.config = {"foo": "42", "bar": 0, "baz": None, "qux": "abc", "missing": None}
+    assert main._cfg_int(p.config, "foo", 0) == 42
+    assert main._cfg_int(p.config, "bar", 99) == 0
+    assert main._cfg_int(p.config, "baz", 7) == 7
+    assert main._cfg_int(p.config, "qux", 0) == 0  # 非法转 int 返 default
+    assert main._cfg_int(p.config, "missing", 5) == 5
+    print("✓ test_cfg_int_helper_exists")
+
+
+def test_cfg_str_helper_exists():
+    """v0.8.17: main._cfg_str 抽出来统一 str config 读取。"""
+    p = new_plugin()
+    p.config = {"foo": "bar", "baz": None, "num": 42}
+    assert main._cfg_str(p.config, "foo", "x") == "bar"
+    assert main._cfg_str(p.config, "baz", "x") == "x"
+    assert main._cfg_str(p.config, "num", "x") == "42"  # 非 str 强制 str
+    print("✓ test_cfg_str_helper_exists")
+
+
+def test_app_js_no_dead_fmtDim():
+    """v0.8.17: app.js 死代码清理——fmtDim 未被引用，删。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # 允许出现在注释 / 字面量字符串里，但不允许是函数定义
+    import re
+    m = re.search(r"function\s+fmtDim\s*\(", src)
+    assert not m, "app.js fmtDim 函数定义还在——死代码"
+    print("✓ test_app_js_no_dead_fmtDim")
+
+
+def test_caption_cache_datetime_top_level():
+    """v0.8.17: caption_cache.datetime 提到模块顶部，不再方法内 import。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "caption_cache.py"), encoding="utf-8").read()
+    assert "import datetime\n" in src or "import datetime as" in src, "caption_cache 顶部必须 import datetime"
+    # 验证方法内没有再 import datetime as _dt
+    import re
+    for m in re.finditer(r"import datetime as _dt", src):
+        # 找到行号
+        line_no = src[:m.start()].count("\n") + 1
+        # 顶部 import 之后的 都不应有这个 as 别名
+        assert line_no > 30, f"caption_cache.py:{line_no} 还在方法内 import datetime as _dt"
+    print("✓ test_caption_cache_datetime_top_level")
 
 
 if __name__ == "__main__":

@@ -394,11 +394,6 @@ function fmtSize(bytes) {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-function fmtDim(w, h) {
-  if (!w || !h) return "—";
-  return `${w}×${h}`;
-}
-
 function escapeHtml(s) {
   if (s == null) return "";
   return String(s)

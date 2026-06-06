@@ -20,7 +20,9 @@ caption_cache
 
 from __future__ import annotations
 
+import datetime
 import hashlib
+import logging
 import os
 import sqlite3
 import threading
@@ -28,6 +30,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+_log = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
 
 @dataclass
@@ -230,10 +234,9 @@ class CaptionCache:
         - 额外字段:image_b64 (base64)、mime_type、file_size、width、height
         """
         if not image_id or not description:
-            # v0.8.7.3: 之前静默 return 掩盖了"为何 SQLite total=0"的问题。
+            # v0.8.7.3: 之前静默 return 掩盖了“为何 SQLite total=0”的问题。
             # 现在打 warning。
-            import logging
-            logging.getLogger("astrbot_plugin_vision_text_bridge").warning(
+            _log.warning(
                 "[caption_cache] put() 被调用但 image_id=%r description_len=%d，**未写入**。",
                 image_id, len(description) if description else 0,
             )
@@ -422,10 +425,9 @@ class CaptionCache:
         缺天补 0（让 webui 画连续的 30 天柱状图）。
         """
         # 算 window 起点（UTC 0 点）
-        import datetime as _dt
-        now = _dt.datetime.utcnow()
-        start_of_today = _dt.datetime(now.year, now.month, now.day)
-        start_ts = (start_of_today - _dt.timedelta(days=days - 1)).timestamp()
+        now = datetime.datetime.utcnow()
+        start_of_today = datetime.datetime(now.year, now.month, now.day)
+        start_ts = (start_of_today - datetime.timedelta(days=days - 1)).timestamp()
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS d, "
@@ -440,6 +442,6 @@ class CaptionCache:
         counts = {r["d"]: r["c"] for r in rows}
         out = []
         for i in range(days - 1, -1, -1):
-            day = (start_of_today - _dt.timedelta(days=i)).strftime("%Y-%m-%d")
+            day = (start_of_today - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
             out.append({"date": day, "count": counts.get(day, 0)})
         return out

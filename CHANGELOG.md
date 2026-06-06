@@ -7,6 +7,43 @@
 
 无新变更。
 
+## [0.8.17] - 2026-06-07
+
+### 瘦身 + 审查
+
+#### main.py 瘦身
+- 新增 ``_cfg_int(config, key, default)`` 和 ``_cfg_str(config, key, default)`` helper，替换 15+ 处 ``int(self.config.get(k, d) or d)`` 重复模式——读起来短 5x、逻辑统一
+- 删 ``CaptionEntry`` / ``CacheStats`` re-export——只 ``CaptionCache`` 被 main.py 实际用，其余 2 个在 main.py 里不被直接引用
+- 抽出 ``import datetime as _dt`` 到 caption_cache.py 模块顶部，不再函数内 import（v0.8.12 加的 daily_buckets 在里面）
+- 抽 ``import re as _re`` 到 main.py 模块顶部，_inject_guidance 重复 import 去重
+
+#### caption_cache.py 瘦身
+- 顶部 import ``logging`` + 设 _log 变量（不在 put() 函数内 import）
+- datetime 提到模块顶部，daily_buckets 里的 ``_dt.datetime`` 改为 ``datetime.datetime``
+
+#### test.py 瘦身
+- 新增 ``_MockContext`` class（模拟 AstrBot Context，任何属性返 AttributeError）
+- 新增 ``make_capturing_context(register_fn)`` helper，返 ``(ctx, captured)`` 一行搞定以前的 5 行 mock 模板
+- ``new_plugin()`` 末尾统一注入 mock context（以前 6+ 个测试都要重写）
+- 12 个 ``class _R`` + ``mock_register`` 重复块标记为“已知重复”但在 helper 上不接——行为差异太大（有些要 ``args`` 有些要 ``json_body``），免得抓 bug
+
+#### app.js 死代码
+- 删 ``function fmtDim()``——0 个调用点
+
+### 测试
+- +4 个新测试：_cfg_int / _cfg_str / fmtDim 死代码 / datetime 顶部 import
+- 1 个测试改：CacheStats 不在 main.py 里
+- **总计 159/159**（+4, 0 红绿变化）
+
+### 统计
+| 文件 | v0.8.16 | v0.8.17 | 变化 |
+|---|---|---|---|
+| main.py | 1650 | 1648 | -2 |
+| caption_cache.py | 445 | 447 | +2 (import) |
+| test.py | 3815 | 3897 | +82 (helper) |
+| app.js | 1067 | 1062 | -5 (fmtDim) |
+| 总计 | 8300 | 8395 | +95 (主要是 test helper 抽出) |
+
 ## [0.8.16] - 2026-06-06
 
 ### Bug 修复——v0.8.15 CORS 拦截
