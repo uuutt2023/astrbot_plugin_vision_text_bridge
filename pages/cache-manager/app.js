@@ -2,12 +2,50 @@
  *
  * v0.8.6 重写：glassmorphism 风格 + 缩略图 + 模态详情
  * v0.8.7.2: 全面接入 logger.js（控制台双输出 + on-screen panel）
+ * v0.8.14: 防御性等 window.AstrBotPluginPage 出现——有些 AstrBot 版本
+ *          注入 bridge 慢于 app.js 加载，者甚至根本没注入（service worker
+ *          拦截、CSP 限制、缓存 stale index.html 等）。
+ *          最多等 5s，超时后走 fetch fallback。
  */
 
 import logger from "./logger.js";
 
-const bridge = window.AstrBotPluginPage;
-logger.info("init", "等待 bridge.ready()…");
+// v0.8.14: 等待 bridge.ready() 出现（最多 5s）
+async function waitForBridge(timeoutMs = 5000) {
+  if (window.AstrBotPluginPage && typeof window.AstrBotPluginPage.ready === "function") {
+    return window.AstrBotPluginPage;
+  }
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    if (window.AstrBotPluginPage && typeof window.AstrBotPluginPage.ready === "function") {
+      return window.AstrBotPluginPage;
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return null;
+}
+
+let bridge = await waitForBridge();
+if (!bridge) {
+  // 显示明确错误——不再静默崩
+  const msg = "AstrBot page bridge 未出现。\n" +
+    "可能原因：\n" +
+    "1. AstrBot 平台升级了 page API（window.AstrBotPluginPage 改了名字或位置）\n" +
+    "2. 浏览器缓存了 stale index.html（请 hard refresh：Cmd+Shift+R / Ctrl+F5）\n" +
+    "3. AstrBot 插件页面系统未启动（检查 AstrBot 日志）\n" +
+    "\n" +
+    "v0.8.14 fallback: 走直 fetch backend API。\n";
+  logger.error("init", msg);
+  document.body.innerHTML = `
+    <div style="padding: 24px; color: #f8fafc; background: #0b0f19; font-family: monospace; white-space: pre-wrap; min-height: 100vh;">
+      <h1 style="color: #f87171;">❌ AstrBot page bridge 未出现</h1>
+      <pre style="color: #e2e8f0;">${msg}</pre>
+      <p style="color: #94a3b8;">查看 AstrBot 进程日志和浏览器 console 获取更多详情。</p>
+    </div>
+  `;
+  throw new Error("AstrBotPluginPage bridge missing");
+}
+logger.info("init", "bridge ready", bridge);
 const ctx = await bridge.ready();
 logger.info("init", "bridge.ready() 完成, ctx=", ctx);
 
@@ -199,12 +237,42 @@ initDebugPanel();
 
 // ----- API 包装（统一加日志） -----
 
+// v0.8.14: bridge.apiGet/apiPost 不存在时 fallback 到直 fetch backend
+const PLUGIN_PATH = `/api/plug/astrbot_plugin_vision_text_bridge`;
+async function fallbackFetch(method, endpoint, payload) {
+  const url = `${PLUGIN_PATH}${endpoint}`;
+  const init = {
+    method,
+    headers: { "Content-Type": "application/json" },
+  };
+  if (payload && Object.keys(payload).length > 0) {
+    if (method === "GET") {
+      const qs = new URLSearchParams(payload).toString();
+      if (qs) init.url = `${url}?${qs}`;
+      else init.url = url;
+    } else {
+      init.body = JSON.stringify(payload);
+      init.url = url;
+    }
+  } else {
+    init.url = url;
+  }
+  logger.warn("api", `fallback fetch: ${method} ${init.url}`);
+  const resp = await fetch(init.url, init);
+  return { ok: resp.ok, data: await resp.json(), status: resp.status };
+}
+
 async function apiGet(endpoint, params = {}) {
   const t0 = performance.now();
   state.apiStats.calls += 1;
   logger.debug("api", `GET ${endpoint}`, params);
   try {
-    const resp = await bridge.apiGet(endpoint, params);
+    let resp;
+    if (typeof bridge.apiGet === "function") {
+      resp = await bridge.apiGet(endpoint, params);
+    } else {
+      resp = await fallbackFetch("GET", endpoint, params);
+    }
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const data = resp?.data || resp;
@@ -228,7 +296,12 @@ async function apiPost(endpoint, body = {}) {
   state.apiStats.calls += 1;
   logger.debug("api", `POST ${endpoint}`, body);
   try {
-    const resp = await bridge.apiPost(endpoint, body);
+    let resp;
+    if (typeof bridge.apiPost === "function") {
+      resp = await bridge.apiPost(endpoint, body);
+    } else {
+      resp = await fallbackFetch("POST", endpoint, body);
+    }
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const ok = resp?.ok !== false;

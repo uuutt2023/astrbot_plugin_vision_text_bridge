@@ -2488,6 +2488,7 @@ def run_all():
         test_tool_filter_handles_none_container,
         test_tool_filter_in_event_via_extra_key,
         test_strip_residual_base64_clears_func_tool,
+        test_webui_waits_for_bridge_in_app_js,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -3770,6 +3771,24 @@ def test_strip_residual_base64_clears_func_tool():
     assert "pixiv_random" not in kept
     assert "keep" in kept
     print("✓ test_strip_residual_base64_clears_func_tool")
+
+
+# ===========================================================================
+# v0.8.14 webui bridge 防御性 fallback
+# ===========================================================================
+
+def test_webui_waits_for_bridge_in_app_js():
+    """v0.8.14: app.js 顶层必须有 waitForBridge() 而不是直接读 window.AstrBotPluginPage。"""
+    import re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    assert "waitForBridge" in src, "app.js 必须有 waitForBridge()"
+    # 旧的 "const bridge = window.AstrBotPluginPage;" 顶层裸读不应该再存在
+    bad = re.search(r"^const bridge = window\.AstrBotPluginPage;?\s*$", src, re.MULTILINE)
+    assert not bad, "app.js 顶层不应该再裸读 window.AstrBotPluginPage"
+    # 验证有 fallback 路径
+    assert "fallbackFetch" in src, "app.js 必须有 fallbackFetch() 直 fetch backend"
+    assert "/api/plug/astrbot_plugin_vision_text_bridge" in src, "app.js 必须有正确的 PLUGIN_PATH"
+    print("✓ test_webui_waits_for_bridge_in_app_js")
 
 
 if __name__ == "__main__":

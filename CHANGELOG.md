@@ -7,6 +7,19 @@
 
 无新变更。
 
+## [0.8.14] - 2026-06-06
+
+### Bug 修复
+- **webui 加载卡在 ``app.js:11`` 报错 ``Cannot read properties of undefined (reading 'ready')``**。
+  原因：v0.8.6 起一直写的是 ``const bridge = window.AstrBotPluginPage; await bridge.ready();``，没考虑 bridge 还没注入的情况。
+  修复：
+  1. 新加 ``waitForBridge(timeoutMs=5000)``：每 50ms 轮询 ``window.AstrBotPluginPage``，最多等 5s
+  2. 超时后不再静默崩——重写 ``document.body.innerHTML`` 为明确错误页面，列出 3 个可能原因（platform 升级 / stale index.html / AstrBot 页面系统未启动）
+  3. ``apiGet``/``apiPost`` 运行时加 fallback：如果 ``bridge.apiGet/apiPost`` 不存在（理论上不会，但防御），走 ``fallbackFetch`` 直接打 ``/api/plug/astrbot_plugin_vision_text_bridge/...`` backend
+
+### 测试
+- +1 个新测试：``test_webui_waits_for_bridge_in_app_js`` —— regex 验证 `waitForBridge`/`fallbackFetch`/`PLUGIN_PATH` 存在，旧的顶层裸读不再出现
+
 ## [0.8.13] - 2026-06-06
 
 ### 新增：工具过滤器（可选干扰 chat_plus 工具注入）
