@@ -763,6 +763,16 @@ class VisionTextBridgePlugin(Star):
                 max(1, int(self.config.get("max_concurrent_vision", 3) or 1))
             )
 
+        # === 0) v0.8.13: 预先过滤待注入的工具集（chat_plus 之后才 merge）===
+        # chat_plus 会在 priority=-1 从 event.get_extra() 取待注入的 tool set 合并到 req.func_tool
+        # 我们 priority=100 先跑，把待合并的工具集里不该要的提前删掉
+        # 这样 chat_plus merge 进去的就是干净版
+        try:
+            self._filter_tools_in_event(event, req)
+        except Exception as e:
+            if self._should_log("hook_trace"):
+                logger.debug("[vision_text_bridge] 工具过滤跳过：%s", e)
+
         # === 1) 快照三类图片来源，**先清空** 防 AstrBot 切 fallback provider ===
         saved_urls = list(req.image_urls or [])
         saved_parts = list(req.extra_user_content_parts or []) if req.extra_user_content_parts else []
@@ -846,6 +856,23 @@ class VisionTextBridgePlugin(Star):
                 logger.info("[vision_text_bridge] 链末兜底: 删 %d 个 %s 残留", removed, tag)
         except Exception as e:
             logger.exception("[vision_text_bridge] 链末兜底异常: %s", e)
+
+        # === v0.8.13: 链末兜底删 func_tool（chat_plus priority=-1 跑过之后）===
+        # 即使主钩子 priority=100 没清干净，链末 priority=-10000 还能在最后扫一次
+        try:
+            mode = str(self.config.get("tool_filter_mode", "off") or "off").lower()
+            if mode != "off":
+                names_raw = str(self.config.get("tool_filter_names", "") or "")
+                names = [n.strip() for n in names_raw.split(",") if n.strip()]
+                if names:
+                    ft = getattr(req, "func_tool", None)
+                    if ft is not None:
+                        n2 = _filter_disabled_tools(ft, mode, names)
+                        if n2 and self._should_log("hook_trace"):
+                            logger.info("[vision_text_bridge] 链末兜底: 从 req.func_tool 移除 %d 个工具", n2)
+        except Exception:
+            if self._should_log("hook_trace"):
+                logger.debug("[vision_text_bridge] 链末兜底跳过 func_tool", exc_info=True)
 
     # =========================================================================
     # 内部: 处理请求
@@ -1269,6 +1296,42 @@ class VisionTextBridgePlugin(Star):
             s = self._redact_text(s)
         return s if len(s) <= limit else s[:limit] + "…"
 
+    # v0.8.13: 在主钩子入口过滤工具
+    def _filter_tools_in_event(self, event, req) -> None:
+        """提前清 ``event.get_extra(extra_key)`` 里的待合并 tool set。
+
+        场景：chat_plus priority=-1 会从这个 key 拿 tool set 合并到 ``req.func_tool``。
+        我们 priority=100 先跑，把 set 里不想保留的工具删掉，chat_plus merge 进去的
+        就是干净版。
+        """
+        mode = str(self.config.get("tool_filter_mode", "off") or "off").lower()
+        if mode == "off":
+            return
+        names_raw = str(self.config.get("tool_filter_names", "") or "")
+        names = [n.strip() for n in names_raw.split(",") if n.strip()]
+        if not names:
+            return
+        extra_key = str(self.config.get("tool_filter_extra_key", "_group_chat_plus_func_tool") or "").strip()
+        # 1) 清 event.get_extra(extra_key) 里的待合并 tool set
+        if extra_key:
+            try:
+                plugin_tool_set = event.get_extra(extra_key, None)
+            except Exception:
+                plugin_tool_set = None
+            if plugin_tool_set is not None:
+                n = _filter_disabled_tools(plugin_tool_set, mode, names)
+                if n and self._should_log("hook_trace"):
+                    logger.info("[vision_text_bridge] 从 %s 移除了 %d 个工具（mode=%s）", extra_key, n, mode)
+        # 2) 同步清 req.func_tool 里已注册的工具（防御性：其它插件可能直接 push）
+        try:
+            ft = getattr(req, "func_tool", None)
+        except Exception:
+            ft = None
+        if ft is not None:
+            n = _filter_disabled_tools(ft, mode, names)
+            if n and self._should_log("hook_trace"):
+                logger.info("[vision_text_bridge] 从 req.func_tool 移除了 %d 个工具（mode=%s）", n, mode)
+
     def _redact(self, args):
         if not self.config.get("redact_sensitive", True):
             return args
@@ -1408,6 +1471,85 @@ def _strip_image_urls(req, only_data_url: bool) -> int:
                     continue
                 kept.append(x)
             content[:] = kept
+    return removed
+
+
+# v0.8.13: 工具集名称匹配（支持 ``*`` 通配符，如 ``archive_*``）
+def _match_tool_name(name: str, patterns: list[str]) -> bool:
+    if not name or not patterns:
+        return False
+    for p in patterns:
+        if not p:
+            continue
+        if p == name:
+            return True
+        if p.endswith("*") and name.startswith(p[:-1]):
+            return True
+        if p.startswith("*") and name.endswith(p[1:]):
+            return True
+        if "*" in p and _glob_match(name, p):
+            return True
+    return False
+
+
+def _glob_match(name: str, pattern: str) -> bool:
+    """极简 glob 匹配（只支持 ``*``）。"""
+    import fnmatch as _fn
+    return _fn.fnmatchcase(name, pattern)
+
+
+# v0.8.13: 从 tool_container 里删/保留名字在 patterns 里的工具
+# 兼容多种 tool container 接口：
+#   1) ``.tools`` list（chat_plus 的 ToolSet 风格）——走 list.remove
+#   2) ``.func_list`` list（FunctionToolManager 风格）——走 list.remove
+#   3) ``.remove_func(name)`` 方法
+# 返回：实际被改动的条数
+def _filter_disabled_tools(tool_container, mode: str, names: list[str]) -> int:
+    if tool_container is None or mode == "off" or not names:
+        return 0
+    removed = 0
+    # 先收集所有 name -> 工具对象 的映射
+    items: list[tuple[str, object]] = []  # [(name, tool_obj)]
+    if hasattr(tool_container, "tools") and isinstance(tool_container.tools, list):
+        for t in tool_container.tools:
+            n = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+            if n:
+                items.append((n, t))
+    if hasattr(tool_container, "func_list") and isinstance(tool_container.func_list, list):
+        for t in tool_container.func_list:
+            n = getattr(t, "name", None)
+            if n:
+                items.append((n, t))
+    # 判定保留集合
+    if mode == "blacklist":
+        keep = lambda n: not _match_tool_name(n, names)
+    elif mode == "whitelist":
+        keep = lambda n: _match_tool_name(n, names)
+    else:
+        return 0
+    for n, _t in items:
+        if keep(n):
+            continue
+        did_remove = False
+        # 逐个容器接口删
+        if hasattr(tool_container, "remove_func"):
+            try:
+                tool_container.remove_func(n)
+                did_remove = True
+            except Exception:
+                pass
+        if hasattr(tool_container, "tools") and isinstance(tool_container.tools, list):
+            before = len(tool_container.tools)
+            tool_container.tools[:] = [t for t in tool_container.tools if (getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)) != n]
+            if len(tool_container.tools) < before:
+                did_remove = True
+        if hasattr(tool_container, "func_list") and isinstance(tool_container.func_list, list):
+            before = len(tool_container.func_list)
+            tool_container.func_list[:] = [t for t in tool_container.func_list if getattr(t, "name", None) != n]
+            if len(tool_container.func_list) < before:
+                did_remove = True
+        if did_remove:
+            removed += 1
     return removed
 
 

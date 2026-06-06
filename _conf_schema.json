@@ -102,6 +102,24 @@
     "hint": "后台多久跑一次 clean_expired。0 = 启动时清理一次，关闭后台任务。",
     "default": 1
   },
+  "tool_filter_mode": {
+    "description": "工具过滤器模式（v0.8.13 干扰 chat_plus 工具注入）",
+    "type": "string",
+    "hint": "off = 不动；whitelist = 只保留列表里的工具；blacklist = 删除列表里的工具。**默认 off**。",
+    "default": "off"
+  },
+  "tool_filter_names": {
+    "description": "工具过滤名单（逗号分隔）",
+    "type": "string",
+    "hint": "配合 tool_filter_mode 使用。支持通配符 ``*``（如 ``archive_*``、``pixiv_*``、``angel_*``）。例：``call_maid,set_user_nickname,archive_*,pixiv_*,angel_*,astrbot_execute_shell,astrbot_execute_python,astrbot_file_*,astrbot_grep_tool,future_task,send_message_to_user``。",
+    "default": ""
+  },
+  "tool_filter_extra_key": {
+    "description": "要从 event.get_extra() 取的待注入工具集 key（chat_plus 内部 key）",
+    "type": "string",
+    "hint": "v0.8.13 默认清 chat_plus 写入的 ``_group_chat_plus_func_tool``。如果不是改他可以换 key 或留空。",
+    "default": "_group_chat_plus_func_tool"
+  },
   "include_history": {
     "description": "处理历史对话中的图片",
     "type": "bool",

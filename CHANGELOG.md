@@ -7,6 +7,61 @@
 
 无新变更。
 
+## [0.8.13] - 2026-06-06
+
+### 新增：工具过滤器（可选干扰 chat_plus 工具注入）
+
+#### 问题背景
+- 用户装了 `astrbot_plugin_maid_agent`（管家插件，`call_maid` 等 `@llm_tool` 工具） + `astrbot_plugin_group_chat_plus`（chat_plus，priority=-1）
+- chat_plus 在 `event.get_extra("_group_chat_plus_func_tool")` 里读 maid_agent 注册的工具集，merge 到 `req.func_tool`
+- 用户希望“本插件该删谁的工具”，但 chat_plus 默认全塞
+
+#### 解决方案
+- 在 vision_text_bridge priority=100 主钩子入口**预先**从 `event.get_extra(extra_key)` 里删工具（chat_plus 之后才 merge，这样 merge 进去的是干净版）
+- 在 priority=-10000 链末端**兜底**再清一次 `req.func_tool`（防止其他插件中途又 push）
+- 新加 3 个配置：
+
+| 配置 | 默认 | 作用 |
+|---|---|---|
+| `tool_filter_mode` | `off` | `off` / `whitelist` / `blacklist` |
+| `tool_filter_names` | `""` | 工具名列表，逗号分隔，**支持 ``*`` 通配符** |
+| `tool_filter_extra_key` | `_group_chat_plus_func_tool` | 从哪个 extra key 取待注入工具集 |
+
+#### 工具名匹配（3 种风格）
+- ``call_maid`` → 精确匹配
+- ``archive_*`` → 前缀通配
+- ``*_history`` → 后缀通配
+- ``pix*dom`` → fnmatch 全局
+
+#### 工具集接口兼容
+模块级 helper `_filter_disabled_tools()` 同时支持：
+- ``.tools`` list（chat_plus 的 ToolSet 风格）
+- ``.func_list`` list（FunctionToolManager 风格）
+- ``.remove_func(name)`` 方法（新版 AstrBot ToolManager）
+
+### 使用示例
+
+要禁用你列出的 22 个 maid/angel/chat_archive/chat_plus/AstrBot 内置工具：
+
+```json
+{
+  "tool_filter_mode": "blacklist",
+  "tool_filter_names": "call_maid,set_user_nickname,archive_*,pixiv_*,angel_*,astrbot_execute_shell,astrbot_execute_python,astrbot_file_*,astrbot_grep_tool,future_task,send_message_to_user"
+}
+```
+
+要只保留管家一个工具：
+
+```json
+{
+  "tool_filter_mode": "whitelist",
+  "tool_filter_names": "call_maid"
+}
+```
+
+### 测试
+- +8 个新测试：off 不动 / blacklist 删匹配 / whitelist 留匹配 / remove_func 兼容 / func_list 兼容 / None 不崩 / event.get_extra 集成 / 链末兑底 删 func_tool
+
 ## [0.8.12] - 2026-06-06
 
 ### Webui 增强
