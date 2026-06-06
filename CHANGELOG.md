@@ -7,6 +7,42 @@
 
 无新变更。
 
+## [0.8.15] - 2026-06-06
+
+### Bug 修复——**AstrBotPluginPage 注入失败真因**
+
+#### 问题
+v0.8.6 起一直写 ``const bridge = window.AstrBotPluginPage;``。报错：
+``Cannot read properties of undefined (reading 'ready')``。
+
+#### 诊断
+查 AstrBot 平台源码 ``astrbot/dashboard/plugin_page_bridge.js`` line 201：
+```js
+window.AstrBotPluginPage = { ready, apiGet, apiPost, ... }
+```
+bridge SDK 是 IIFE，加载后才会设这个全局变量。AstrBot 平台 **在 iframe 加载时不会自动 inject 这个 bridge.js** ——需要插件自己的 HTML 主动引入。
+
+#### 修复
+``index.html`` 现在在 ``<head>`` 里主动 inject：
+```html
+<script>
+(function injectBridgeSdk() {
+  const token = new URLSearchParams(location.search).get('asset_token');
+  const sdk = document.createElement('script');
+  sdk.src = '/api/plugin/page/bridge-sdk.js' + (token ? '?asset_token=' + encodeURIComponent(token) : '');
+  sdk.async = false;  // 同步加载，app.js 必须等它先
+  document.head.appendChild(sdk);
+})();
+</script>
+```
+
+- asset_token 从 URL 提取（AstrBot 平台 iframe 加载时会在 query 上加）
+- ``async = false`` 保证执行顺序在 app.js 之前
+- 加载失败时 console.warn，但 app.js 仍然能跑 fallbackFetch 路径
+
+#### 测试
+- +1 个新测试：``test_index_html_injects_bridge_sdk`` —— regex 验证 SDK URL 出现且在 app.js script 之前
+
 ## [0.8.14] - 2026-06-06
 
 ### Bug 修复

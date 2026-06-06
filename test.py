@@ -2489,6 +2489,7 @@ def run_all():
         test_tool_filter_in_event_via_extra_key,
         test_strip_residual_base64_clears_func_tool,
         test_webui_waits_for_bridge_in_app_js,
+        test_index_html_injects_bridge_sdk,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -3789,6 +3790,20 @@ def test_webui_waits_for_bridge_in_app_js():
     assert "fallbackFetch" in src, "app.js 必须有 fallbackFetch() 直 fetch backend"
     assert "/api/plug/astrbot_plugin_vision_text_bridge" in src, "app.js 必须有正确的 PLUGIN_PATH"
     print("✓ test_webui_waits_for_bridge_in_app_js")
+
+
+def test_index_html_injects_bridge_sdk():
+    """v0.8.15: index.html 必须主动 inject /api/plugin/page/bridge-sdk.js，不依赖平台注入。"""
+    h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
+    assert "/api/plugin/page/bridge-sdk.js" in h, "index.html 必须主动 inject bridge-sdk.js"
+    # 验证在 app.js script 标签之前（顺序很重要——bridge 必须先）
+    sdk_pos = h.find("/api/plugin/page/bridge-sdk.js")
+    appjs_pos = h.find("app.js?")
+    assert sdk_pos > 0 and appjs_pos > 0, "bridge-sdk.js 和 app.js script 标签都要存在"
+    assert sdk_pos < appjs_pos, "bridge-sdk.js script 必须在 app.js script 之前（保证同步加载顺序）"
+    # 验证 asset_token 从 URL 提取
+    assert "asset_token" in h, "必须从 URL 提取 asset_token 传给 bridge-sdk.js"
+    print("✓ test_index_html_injects_bridge_sdk")
 
 
 if __name__ == "__main__":
