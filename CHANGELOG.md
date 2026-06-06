@@ -7,6 +7,25 @@
 
 无新变更。
 
+## [0.8.16] - 2026-06-06
+
+### Bug 修复——v0.8.15 CORS 拦截
+- 错误：
+  ```
+  Access to script at 'http://1.12.221.36:6185/api/plugin/page/bridge-sdk.js?asset_token=...' 
+  from origin 'null' has been blocked by CORS policy: 
+  The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' 
+  when the request's credentials mode is 'include'.
+  ```
+- 真因：v0.8.15 加了 ``crossOrigin='use-credentials'``，但 AstrBot 平台 page iframe 加载时
+  origin 是 null（data: URL 或 sandboxed）。CORS 规范：**wildcard ``*`` + credentials mode include
+  不允许共存**。
+- 修复：去掉 ``crossOrigin`` 属性。干净的 ``<script src>`` 默认就是 ``no-cors`` + ``anonymous``，
+  不发 cookie、不会抬 CORS。asset_token 走 URL 鉴权。
+
+### 测试
+- 1 个测试改为检代码里（排除注释）是否包含 ``use-credentials``
+
 ## [0.8.15] - 2026-06-06
 
 ### Bug 修复——**AstrBotPluginPage 注入失败真因**

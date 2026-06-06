@@ -3803,6 +3803,11 @@ def test_index_html_injects_bridge_sdk():
     assert sdk_pos < appjs_pos, "bridge-sdk.js script 必须在 app.js script 之前（保证同步加载顺序）"
     # 验证 asset_token 从 URL 提取
     assert "asset_token" in h, "必须从 URL 提取 asset_token 传给 bridge-sdk.js"
+    # v0.8.16: 不能再用 crossOrigin='use-credentials'（v0.8.15 踩坑 + page origin=null 撞 CORS）
+    # 验代码里（不是注释）没有 use-credentials
+    import re
+    code_only = re.sub(r"<!--[\s\S]*?-->", "", h)  # 去掉注释
+    assert "use-credentials" not in code_only, "v0.8.15 踩坑：crossOrigin='use-credentials' + page origin=null 撞 CORS wildcard"
     print("✓ test_index_html_injects_bridge_sdk")
 
 
