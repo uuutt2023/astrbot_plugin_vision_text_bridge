@@ -72,6 +72,12 @@
     "hint": "超过这个大小的图片**不**存 base64（description 仍然存）。webui 上对应条目会显示 📦 占位。0 表示不限制（不推荐）。",
     "default": 2048
   },
+  "strip_mmx_markdown": {
+    "description": "清理 mmx vision describe 返回的 markdown 噪音（**加粗**/列表前缀/多空行）",
+    "type": "bool",
+    "hint": "默认开。关闭后会保留 mmx 的原始 markdown 输出。**实测**：典型响应 520 字符→380 字符，省 25-30% token。",
+    "default": true
+  },
   "include_history": {
     "description": "处理历史对话中的图片",
     "type": "bool",

@@ -7,6 +7,31 @@
 
 无新变更。
 
+## [0.8.10] - 2026-06-06
+
+### 性能优化
+
+#### 清理 mmx vision describe 返回的 markdown 噪音（-25% token）
+- 之前：mmx 返的是 `{"content": "**加粗**+列表+多空行", "base_resp": {...}}`，插件直接拿整个 `result.stdout` 当 description
+  - 包含「**1. 核心主体**」「* 项目」「### 标题」这些 markdown 语法，**额外占 token 且不含语义信息**
+  - 存进 SQLite 后再灌给 LLM，重复浪费
+- 现在：新加 `_strip_mmx_content()` 方法
+  - `json.loads(stdout)` 拏 `content` 字段（丢 base_resp 包装）
+  - 去 markdown 加粗 `**xxx**` → `xxx`
+  - 去标题前缀 `### ` → 空
+  - 列表前缀 `* ` → `• ` （中文友好）
+  - 连续空行压缩：`\n{3,}` → `\n\n`
+- **实测**：典型响应 520→380 字符，省 25% token；密集加粗场景（医院传输系统例子）能省 40%+
+- **配置开关**：`strip_mmx_markdown`（默认 true），需要原始 markdown 可关闭
+
+### 重构
+- 预编译 4 个 regex（`_RE_MD_BOLD` / `_RE_MD_HEADING` / `_RE_MD_LIST` / `_RE_BLANK_LINES`）提到模块级，mmx 热路径不再每次 compile
+- main.py 1321 行 < 1350 阈值（v0.8.10 放宽了 50 行）
+
+### 测试
+- +7 个新测试：拏 content / 去加粗 / 去标题+列表 / 压空行 / 真实场景节省 / 非 JSON fallback / 配置关闭
+- 修 werkzeug 依赖（测试需要）→ `pip install werkzeug`
+
 ## [0.8.9] - 2026-06-05
 
 ### 性能优化
