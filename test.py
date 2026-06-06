@@ -2473,6 +2473,13 @@ def run_all():
         test_webui_db_badge_text_in_app_js,
         test_clean_expired_endpoint_registered,
         test_clean_expired_endpoint_disabled_when_ttl_zero,
+        test_daily_buckets_basic,
+        test_daily_buckets_old_entries,
+        test_api_stats_returns_status_fields,
+        test_api_stats_timeline_endpoint,
+        test_webui_status_bar_and_timeline_in_html,
+        test_webui_auto_refresh_and_timeline_in_app_js,
+        test_last_clean_at_recorded,
         test_persist_writes_b64_in_async_context,
         test_persist_handles_read_failure_gracefully,
         test_api_diag_returns_db_info,
@@ -3457,6 +3464,158 @@ def test_clean_expired_endpoint_disabled_when_ttl_zero():
         d = r
     assert "未启用过期清理" in d.get("error", "")
     print("✓ test_clean_expired_endpoint_disabled_when_ttl_zero")
+
+
+# ===========================================================================
+# v0.8.12 统计 + 状态栏 + 按天柱状图
+# ===========================================================================
+
+def test_daily_buckets_basic():
+    """v0.8.12: daily_buckets 返回 30 天×每天条数。"""
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as tmp:
+        cap = main.CaptionCache(pathlib.Path(tmp) / "b.sqlite3")
+        cap.put("k1", "https://a.com/1", "猫")
+        cap.put("k2", "https://a.com/2", "狗")
+        buckets = cap.daily_buckets(days=30)
+        assert len(buckets) == 30, f"应返 30 天，实际 {len(buckets)}"
+        # 今天应该有 2 条
+        today = buckets[-1]
+        assert today["count"] == 2
+        # 前几天应为 0（缺天补 0）
+        for b in buckets[:-1]:
+            assert b["count"] == 0
+    print("✓ test_daily_buckets_basic")
+
+
+def test_daily_buckets_old_entries():
+    """v0.8.12: 创建于 60 天前的条目不进 30 天窗口。"""
+    import tempfile, pathlib, sqlite3, time
+    with tempfile.TemporaryDirectory() as tmp:
+        cap = main.CaptionCache(pathlib.Path(tmp) / "old.sqlite3")
+        cap.put("k1", "https://a.com/1", "猫")
+        # 手改 created_at 到 60 天前
+        with sqlite3.connect(cap._db_path) as c:
+            c.execute("UPDATE image_captions SET created_at = ? WHERE image_id = 'k1'", (time.time() - 60 * 86400,))
+            c.commit()
+        buckets = cap.daily_buckets(days=30)
+        total = sum(b["count"] for b in buckets)
+        assert total == 0, f"60 天前的条目不应出现在 30 天窗口内，实际 total={total}"
+    print("✓ test_daily_buckets_old_entries")
+
+
+def test_api_stats_returns_status_fields():
+    """v0.8.12: api_stats 返回状态栏需要的所有字段。"""
+    import asyncio, tempfile, pathlib, shutil
+    p = new_plugin()
+    tmpdir = tempfile.mkdtemp()
+    p._caption_cache = main.CaptionCache(pathlib.Path(tmpdir) / "s.sqlite3")
+    captured = {}
+    def mock_register(route, fn, methods, desc):
+        captured[route] = fn
+    class _R:
+        def __getattr__(self, name): raise AttributeError(name)
+    p.context = SimpleNamespace(request=_R(), register_web_api=mock_register)
+    p._register_web_apis()
+    fn = captured[f"/{main.PLUGIN_NAME}/cache/stats"]
+    r = asyncio.run(fn())
+    if isinstance(r, tuple):
+        body = r[0]
+        if hasattr(body, "get_json"):
+            d = body.get_json()
+        elif hasattr(body, "get_data"):
+            import json as _json
+            d = _json.loads(body.get_data(as_text=True))
+        else:
+            d = body
+    else:
+        d = r
+    data = d.get("data", {})
+    for k in ("memory_cache_ttl_seconds", "memory_cache_max_size", "sqlite_cache_ttl_days",
+              "sqlite_clean_interval_hours", "next_clean_at"):
+        assert k in data, f"api_stats 缺 {k}: {data}"
+    print(f"✓ test_api_stats_returns_status_fields (ttl={data['memory_cache_ttl_seconds']}s, max={data['memory_cache_max_size']}, sql_ttl={data['sqlite_cache_ttl_days']}d)")
+
+
+def test_api_stats_timeline_endpoint():
+    """v0.8.12: /cache/stats/timeline 返回 30 天桶。"""
+    import asyncio
+    import tempfile, pathlib
+    tmpdir = tempfile.mkdtemp()
+    p = new_plugin()
+    p._caption_cache = main.CaptionCache(pathlib.Path(tmpdir) / "tl.sqlite3")
+    p._caption_cache.put("k1", "https://a.com/1", "猫")
+    captured = {}
+    def mock_register(route, fn, methods, desc):
+        captured[route] = fn
+    class _R:
+        args = {}
+        def __getattr__(self, name): raise AttributeError(name)
+    p.context = SimpleNamespace(request=_R(), register_web_api=mock_register)
+    p._register_web_apis()
+    fn = captured[f"/{main.PLUGIN_NAME}/cache/stats/timeline"]
+    r = asyncio.run(fn())
+    if isinstance(r, tuple):
+        body = r[0]
+        if hasattr(body, "get_json"):
+            d = body.get_json()
+        elif hasattr(body, "get_data"):
+            import json as _json
+            d = _json.loads(body.get_data(as_text=True))
+        else:
+            d = body
+    else:
+        d = r
+    data = d.get("data", {})
+    assert data.get("days") == 30, f"应返 days=30, 实际 {data.get('days')}"
+    assert len(data.get("buckets", [])) == 30
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    print("✓ test_api_stats_timeline_endpoint")
+
+
+def test_webui_status_bar_and_timeline_in_html():
+    """v0.8.12: index.html 必须有 status-bar / timeline-svg / auto-refresh-toggle 元素。"""
+    h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
+    for sel in ("status-bar", "status-mem-ttl", "status-mem-max", "status-sql-ttl",
+                "status-next-clean", "timeline-svg", "auto-refresh-toggle"):
+        assert sel in h, f"index.html 缺 #{sel}"
+    print("✓ test_webui_status_bar_and_timeline_in_html")
+
+
+def test_webui_auto_refresh_and_timeline_in_app_js():
+    """v0.8.12: app.js 必须实现 auto-refresh toggle + loadTimeline + drawTimeline。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    for fn in ("setAutoRefresh", "loadTimeline", "drawTimeline", "renderStatusBar"):
+        assert fn in src, f"app.js 缺函数 {fn}"
+    assert "auto-refresh-toggle" in src, "app.js 缺 auto-refresh-toggle 事件绑定"
+    assert "cache/stats/timeline" in src, "app.js 缺 cache/stats/timeline endpoint 调用"
+    print("✓ test_webui_auto_refresh_and_timeline_in_app_js")
+
+
+def test_last_clean_at_recorded():
+    """v0.8.12: clean_expired 后 _last_clean_at 会被记录（供 webui 算下次清理）。"""
+    import asyncio, tempfile, pathlib, shutil, time
+    p = new_plugin()
+    p.config = dict(p.config)
+    p.config["sqlite_cache_ttl_days"] = 7
+    tmpdir = tempfile.mkdtemp()
+    p._caption_cache = main.CaptionCache(pathlib.Path(tmpdir) / "c.sqlite3")
+    captured = {}
+    def mock_register(route, fn, methods, desc):
+        captured[route] = fn
+    class _R:
+        def __getattr__(self, name): raise AttributeError(name)
+    p.context = SimpleNamespace(request=_R(), register_web_api=mock_register)
+    p._register_web_apis()
+    fn = captured[f"/{main.PLUGIN_NAME}/cache/clean_expired"]
+    before = time.time()
+    asyncio.run(fn())
+    after = time.time()
+    last = getattr(p, "_last_clean_at", 0)
+    assert before - 1 <= last <= after + 1, f"_last_clean_at={last} 应在 [{before}, {after}] 之间"
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    print("✓ test_last_clean_at_recorded")
 
 
 if __name__ == "__main__":

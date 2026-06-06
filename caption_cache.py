@@ -414,3 +414,32 @@ class CaptionCache:
             deleted_hit = cur.rowcount
             conn.commit()
         return deleted_unhit + deleted_hit
+
+    def daily_buckets(self, days: int = 30) -> list[dict]:
+        """v0.8.12: 按天统计缓存创建量，返回 ``[{date: 'YYYY-MM-DD', count: N}, ...]``。
+
+        用 ``strftime('%Y-%m-%d', created_at, 'unixepoch')`` 按天分组，
+        缺天补 0（让 webui 画连续的 30 天柱状图）。
+        """
+        # 算 window 起点（UTC 0 点）
+        import datetime as _dt
+        now = _dt.datetime.utcnow()
+        start_of_today = _dt.datetime(now.year, now.month, now.day)
+        start_ts = (start_of_today - _dt.timedelta(days=days - 1)).timestamp()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT strftime('%Y-%m-%d', created_at, 'unixepoch') AS d, "
+                "       COUNT(*) AS c "
+                "FROM image_captions "
+                "WHERE created_at >= ? "
+                "GROUP BY d "
+                "ORDER BY d",
+                (start_ts,),
+            ).fetchall()
+        # 缺天补 0
+        counts = {r["d"]: r["c"] for r in rows}
+        out = []
+        for i in range(days - 1, -1, -1):
+            day = (start_of_today - _dt.timedelta(days=i)).strftime("%Y-%m-%d")
+            out.append({"date": day, "count": counts.get(day, 0)})
+        return out

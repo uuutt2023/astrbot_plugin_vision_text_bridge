@@ -359,11 +359,165 @@ async function loadStats() {
       dbBadge.textContent = `DB: ${tail}`;
       dbBadge.title = data.db_path;
     }
+    // v0.8.12: 状态栏
+    renderStatusBar(data);
     logger.info("data", "loadStats 完成", { total: data.total, hits: data.total_hits, dbsize: data.db_size_bytes });
   } catch (e) {
     logger.error("data", "loadStats 失败", e);
     showToast("加载统计失败: " + (e?.message || e), "error");
   }
+}
+
+// v0.8.12: 状态栏渲染（TTL/上限/下次清理）
+function renderStatusBar(data) {
+  const memTtl = data.memory_cache_ttl_seconds;
+  $("status-mem-ttl").textContent = memTtl > 0 ? `${memTtl}s` : "永不过期";
+  $("status-mem-max").textContent = data.memory_cache_max_size > 0
+    ? `${data.in_memory_cache_size ?? 0} / ${data.memory_cache_max_size}`
+    : "不限制";
+  $("status-sql-ttl").textContent = data.sqlite_cache_ttl_days > 0
+    ? `${data.sqlite_cache_ttl_days} 天`
+    : "永不过期";
+  const next = data.next_clean_at;
+  if (!next || data.sqlite_clean_interval_hours === 0) {
+    $("status-next-clean").textContent = "已禁用";
+  } else {
+    const ts = next * 1000;  // UTC 秒 → 毫秒
+    const now = Date.now();
+    const deltaMs = ts - now;
+    if (deltaMs <= 0) {
+      $("status-next-clean").textContent = "即将执行";
+    } else {
+      // 友好的相对时间
+      const mins = Math.floor(deltaMs / 60000);
+      const secs = Math.floor((deltaMs % 60000) / 1000);
+      $("status-next-clean").textContent = mins > 0 ? `${mins}m ${secs}s 后` : `${secs}s 后`;
+    }
+  }
+}
+
+// v0.8.12: 拉取 + 画柱状图
+let _timelineCache = null;  // 上次拉的 buckets，供自动刷新复用
+async function loadTimeline() {
+  try {
+    const resp = await apiGet("cache/stats/timeline", { days: 30 });
+    const data = resp?.data || resp;
+    _timelineCache = data.buckets || [];
+    drawTimeline(_timelineCache);
+    logger.debug("timeline", `已画 ${_timelineCache.length} 天柱状图`);
+  } catch (e) {
+    logger.error("timeline", "loadTimeline 失败", e);
+  }
+}
+
+function drawTimeline(buckets) {
+  const svg = $("timeline-svg");
+  if (!svg) return;
+  // 清除旧内容
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  if (!buckets || buckets.length === 0) return;
+  const W = 800, H = 180;
+  const padL = 36, padR = 12, padT = 12, padB = 28;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  const n = buckets.length;
+  const maxCount = Math.max(1, ...buckets.map(b => b.count));
+  const barW = chartW / n;
+  const innerW = barW * 0.72;  // 柱间留空
+  const innerOffset = (barW - innerW) / 2;
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Y 轴网格 + 标签（0, mid, max）
+  for (let i = 0; i <= 3; i++) {
+    const y = padT + (chartH * i / 3);
+    const v = Math.round(maxCount * (3 - i) / 3);
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", padL);
+    line.setAttribute("x2", W - padR);
+    line.setAttribute("y1", y);
+    line.setAttribute("y2", y);
+    line.setAttribute("class", "axis-line");
+    svg.appendChild(line);
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", padL - 6);
+    label.setAttribute("y", y + 3);
+    label.setAttribute("text-anchor", "end");
+    label.setAttribute("class", "axis-label");
+    label.textContent = v.toString();
+    svg.appendChild(label);
+  }
+
+  // 柱
+  buckets.forEach((b, i) => {
+    const h = (b.count / maxCount) * chartH;
+    const x = padL + i * barW + innerOffset;
+    const y = padT + chartH - h;
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", x);
+    rect.setAttribute("y", y);
+    rect.setAttribute("width", innerW);
+    rect.setAttribute("height", Math.max(0, h));
+    rect.setAttribute("class", b.date === today ? "bar bar-today" : "bar");
+    rect.setAttribute("rx", 2);
+    // hover tooltip
+    rect.addEventListener("mouseenter", (e) => showTimelineTooltip(b, e));
+    rect.addEventListener("mousemove", (e) => positionTimelineTooltip(e));
+    rect.addEventListener("mouseleave", hideTimelineTooltip);
+    svg.appendChild(rect);
+  });
+
+  // X 轴日期标签（隔 5 天一个，避免重叠）
+  const step = Math.max(1, Math.floor(n / 6));
+  for (let i = 0; i < n; i += step) {
+    const b = buckets[i];
+    const x = padL + i * barW + barW / 2;
+    const y = H - padB + 16;
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", x);
+    label.setAttribute("y", y);
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("class", "axis-label");
+    label.textContent = b.date.slice(5);  // MM-DD
+    svg.appendChild(label);
+  }
+}
+
+let _timelineTip = null;
+function showTimelineTooltip(b, evt) {
+  hideTimelineTooltip();
+  const svg = $("timeline-svg");
+  _timelineTip = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  const text1 = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  text1.setAttribute("class", "tooltip-text");
+  text1.setAttribute("x", 0);
+  text1.setAttribute("y", 14);
+  text1.textContent = `${b.date}  ${b.count} 条`;
+  const text2 = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  text2.setAttribute("class", "tooltip-text");
+  text2.setAttribute("x", 0);
+  text2.setAttribute("y", 30);
+  text2.textContent = `今日${b.date === new Date().toISOString().slice(0, 10) ? " ✓" : ""}`;
+  const w = Math.max(text1.getComputedTextLength?.() || 80, 80) + 16;
+  const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bg.setAttribute("class", "tooltip-bg");
+  bg.setAttribute("x", 0);
+  bg.setAttribute("y", 0);
+  bg.setAttribute("width", w);
+  bg.setAttribute("height", 38);
+  _timelineTip.appendChild(bg);
+  _timelineTip.appendChild(text1);
+  _timelineTip.appendChild(text2);
+  _timelineTip.setAttribute("transform", `translate(${evt.offsetX + 12}, ${evt.offsetY - 8})`);
+  svg.appendChild(_timelineTip);
+}
+function positionTimelineTooltip(evt) {
+  if (!_timelineTip) return;
+  _timelineTip.setAttribute("transform", `translate(${evt.offsetX + 12}, ${evt.offsetY - 8})`);
+}
+function hideTimelineTooltip() {
+  if (_timelineTip && _timelineTip.parentNode) _timelineTip.parentNode.removeChild(_timelineTip);
+  _timelineTip = null;
 }
 
 async function loadList() {
@@ -754,11 +908,37 @@ async function onDiag() {
 $("refresh-btn").addEventListener("click", async () => {
   logger.info("ui", "点击刷新按钮");
   state.thumbCache.clear();
-  await Promise.all([loadStats(), loadList()]);
+  await Promise.all([loadStats(), loadList(), loadTimeline()]);
 });
 $("clear-btn").addEventListener("click", onClear);
 $("clean-expired-btn")?.addEventListener("click", onCleanExpired);
 $("export-btn").addEventListener("click", onExport);
+
+// v0.8.12: 自动刷新 toggle
+let _autoRefreshTimer = null;
+const AUTO_REFRESH_MS = 5000;  // 5 秒间隔
+function setAutoRefresh(enabled) {
+  if (_autoRefreshTimer) {
+    clearInterval(_autoRefreshTimer);
+    _autoRefreshTimer = null;
+  }
+  if (enabled) {
+    logger.info("auto-refresh", `开启自动刷新, 间隔 ${AUTO_REFRESH_MS}ms`);
+    _autoRefreshTimer = setInterval(async () => {
+      logger.debug("auto-refresh", "tick");
+      try {
+        await Promise.all([loadStats(), loadList(), loadTimeline()]);
+      } catch (e) {
+        logger.warn("auto-refresh", "tick 失败: " + (e?.message || e));
+      }
+    }, AUTO_REFRESH_MS);
+  } else {
+    logger.info("auto-refresh", "关闭自动刷新");
+  }
+}
+$("auto-refresh-toggle")?.addEventListener("change", (e) => {
+  setAutoRefresh(e.target.checked);
+});
 $("diag-btn").addEventListener("click", onDiag);
 
 let searchTimer = null;
@@ -805,8 +985,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 // 初始加载
-logger.info("init", "开始初始加载 stats + list");
-await Promise.all([loadStats(), loadList()]);
+logger.info("init", "开始初始加载 stats + list + timeline");
+await Promise.all([loadStats(), loadList(), loadTimeline()]);
 logger.info("init", "初始加载完成", { ...state.apiStats, logs_count: logger.logs.length });
 
 bridge.onContext(() => {

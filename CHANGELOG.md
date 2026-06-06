@@ -7,6 +7,50 @@
 
 无新变更。
 
+## [0.8.12] - 2026-06-06
+
+### Webui 增强
+
+#### 状态栏（TTL/上限/下次清理）
+- 位置：stats 卡片下面、工具栏上面
+- 4 个 chip：
+  - ⏱️ 内存 TTL：显示 `300s` 或 `永不过期`
+  - 📦 内存上限：`当前数 / 上限`（LRU 进度一眼可见）
+  - 🗓️ SQLite TTL：`7 天` 或 `永不过期`
+  - ⏭️ 下次清理：`15m 30s 后` / `即将执行` / `已禁用`
+- 依据来自 `api_stats` 额外返的 5 个字段：``memory_cache_ttl_seconds`` / ``memory_cache_max_size`` / ``sqlite_cache_ttl_days`` / ``sqlite_clean_interval_hours`` / ``next_clean_at``
+- ``next_clean_at`` 计算公式：``_last_clean_at + interval_hours * 3600``（UTC 秒）
+
+#### 按天柱状图
+- 位置：工具栏下面、表格上面
+- 纯 SVG 画 30 天柱状图（零外部依赖）
+- 颜色：紫柱 (`var(--primary)`) + 今日变绿 (`var(--accent)`)
+- Y 轴：0 / 1/3 / 2/3 / max 四条网格线 + 标签
+- X 轴：每 5 天一个日期标签（MM-DD）
+- hover tooltip：``2026-06-06  5 条   今日 ✓``
+- 靠 `CaptionCache.daily_buckets(days=30)` 返回 30 个桶（缺天补 0）
+
+#### 自动刷新 toggle
+- 位置：工具栏左侧
+- 开关：原生 `<input type=checkbox>` + 自定义 slider 样式
+- 间隔：**5 秒**（写死）
+- 开启后：``setInterval(async () => Promise.all([loadStats, loadList, loadTimeline]), 5000)``
+- 关闭：``clearInterval`` 停掉
+- 初衷：调试环境下监控缓存写入（v0.8.11 之后有了清理机制，想看后台动不动作）
+
+### 后端新接口
+- `GET /cache/stats/timeline?days=30` 返 ``{days, buckets: [{date, count}, ...]}``
+- 调 `CaptionCache.daily_buckets(days)`：用 `strftime('%Y-%m-%d', created_at, 'unixepoch')` 按天分组
+
+### 跟踪
+- ``_last_clean_at``：每次 ``clean_expired`` 调用后设 ``time.time()``，供 webui 状态栏计算“下次清理”
+  - 启动时设一次
+  - 后台 task 调设
+  - webui 手动 🧹 按钮也设
+
+### 测试
+- +7 个新测试：daily_buckets 基本/老条目不入窗口、api_stats 返状态字段、api_stats_timeline 路由、webui 元素存在（html/app.js）、_last_clean_at 记录
+
 ## [0.8.11] - 2026-06-06
 
 ### Bug 修复

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.11" />
+  <link rel="stylesheet" href="./style.css?v=0.8.12" />
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -54,6 +54,13 @@
       </div>
     </section>
 
+    <section class="status-bar glass" id="status-bar">
+      <span class="status-chip" title="内存热缓存生效时间">⏱️ 内存 TTL: <b id="status-mem-ttl">-</b></span>
+      <span class="status-chip" title="内存热缓存 LRU 上限">📦 内存上限: <b id="status-mem-max">-</b></span>
+      <span class="status-chip" title="SQLite 缓存超期清理">🗓️ SQLite TTL: <b id="status-sql-ttl">-</b></span>
+      <span class="status-chip" title="后台清理间隔 / 下次预计时间">⏭️ 下次清理: <b id="status-next-clean">-</b></span>
+    </section>
+
     <section class="toolbar glass">
       <div class="search-wrap">
         <span class="search-icon">🔍</span>
@@ -70,11 +77,24 @@
         <option value="hit_count_desc">命中最多</option>
         <option value="hit_count_asc">命中最少</option>
       </select>
+      <label class="switch" title="v0.8.12 开启后按 5s 间隔自动刷新">
+        <input type="checkbox" id="auto-refresh-toggle" />
+        <span class="switch-slider"></span>
+        <span class="switch-label">自动刷新</span>
+      </label>
       <button class="btn primary" id="refresh-btn" title="刷新 (R)">🔄 刷新</button>
       <button class="btn" id="export-btn">⬇️ 导出 JSON</button>
       <button class="btn" id="clean-expired-btn" title="v0.8.11 清理超期未命中条目（SQLite + 内存热缓存）">🧹 清理过期</button>
       <button class="btn" id="diag-btn" title="v0.8.7.1 诊断：查看 SQLite 路径/schema/最近 3 条">🔍 诊断</button>
       <button class="btn danger" id="clear-btn">🗑️ 清空全部</button>
+    </section>
+
+    <section class="timeline-wrap glass">
+      <div class="timeline-header">
+        <h3>📊 按天创建量（30 天）</h3>
+        <span class="timeline-hint">v0.8.12 柱状图 · hover 看日期详情</span>
+      </div>
+      <svg id="timeline-svg" viewBox="0 0 800 180" preserveAspectRatio="none" class="timeline-svg" aria-label="daily created cache count"></svg>
     </section>
 
     <section class="table-wrap glass">
@@ -167,6 +187,6 @@
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
 
-  <script type="module" src="./app.js?v=0.8.11" />
+  <script type="module" src="./app.js?v=0.8.12" />
 </body>
 </html>

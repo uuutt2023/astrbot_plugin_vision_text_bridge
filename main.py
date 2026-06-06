@@ -295,6 +295,7 @@ class VisionTextBridgePlugin(Star):
                 # 启动时先清一次（不管 interval）
                 if ttl_days > 0:
                     deleted = self._caption_cache.clean_expired(ttl_days)
+                    self._last_clean_at = time.time()  # v0.8.12: 供 webui 算下次清理
                     if deleted > 0:
                         logger.info("[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
                 if interval_h > 0 and ttl_days > 0:
@@ -510,7 +511,32 @@ class VisionTextBridgePlugin(Star):
                 return err("SQLite 缓存未初始化", 500)
             s = self._caption_cache.stats().to_dict()
             s["in_memory_cache_size"] = len(self._description_cache)
+            # v0.8.12: 额外加状态参数——webui 状态栏需要
+            s["memory_cache_ttl_seconds"] = int(self.config.get("memory_cache_ttl_seconds", 300) or 0)
+            s["memory_cache_max_size"] = int(self.config.get("memory_cache_max_size", 500) or 0)
+            s["sqlite_cache_ttl_days"] = int(self.config.get("sqlite_cache_ttl_days", 7) or 0)
+            s["sqlite_clean_interval_hours"] = int(self.config.get("sqlite_clean_interval_hours", 1) or 0)
+            # 下次后台清理预计时间（UTC 戳）——用上记的 last_clean_time + interval
+            last = getattr(self, "_last_clean_at", 0.0) or 0.0
+            interval_h = int(self.config.get("sqlite_clean_interval_hours", 1) or 0)
+            if interval_h > 0 and last > 0:
+                s["next_clean_at"] = last + interval_h * 3600
+            else:
+                s["next_clean_at"] = None
             return ok(s)
+
+        async def api_stats_timeline():
+            """v0.8.12: 返回按天创建的缓存条数（默认 30 天），webui 画柱状图用。"""
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            try:
+                a = _args()
+                days = int(a.get("days", 30) or 30)
+                days = max(1, min(365, days))  # 限定范围
+            except Exception:
+                days = 30
+            buckets = self._caption_cache.daily_buckets(days=days)
+            return ok({"days": days, "buckets": buckets})
 
         async def api_list():
             if self._caption_cache is None:
@@ -613,6 +639,7 @@ class VisionTextBridgePlugin(Star):
                 return err("sqlite_cache_ttl_days=0，未启用过期清理", 400)
             try:
                 deleted = self._caption_cache.clean_expired(ttl_days)
+                self._last_clean_at = time.time()  # v0.8.12: 手动清理也记一下，供 webui 算下次清理
                 # 同时清一下内存热缓存过期项
                 mem_size_before = len(self._description_cache)
                 # 访问一下触发内部 lazy expire；现在 _MemoryCache get 才会 expire
@@ -677,6 +704,7 @@ class VisionTextBridgePlugin(Star):
 
         for path, fn, methods, desc in [
             ("/cache/stats", api_stats, ["GET"], "Cache stats"),
+            ("/cache/stats/timeline", api_stats_timeline, ["GET"], "v0.8.12 按天创建量（柱状图）"),
             ("/cache/list", api_list, ["GET"], "Cache list"),
             ("/cache/delete", api_delete, ["POST"], "Delete entry"),
             ("/cache/clear", api_clear, ["POST"], "Clear all"),
@@ -710,6 +738,7 @@ class VisionTextBridgePlugin(Star):
                     break
                 try:
                     deleted = self._caption_cache.clean_expired(ttl_days)
+                    self._last_clean_at = time.time()  # v0.8.12: 供 webui 算下次清理
                     if deleted > 0 and self._should_log("cache_trace"):
                         logger.info("[vision_text_bridge] 后台清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
                 except Exception as e:
