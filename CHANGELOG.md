@@ -7,6 +7,47 @@
 
 无新变更。
 
+## [0.8.24] - 2026-06-07
+
+### 终极根因——sandbox iframe origin=null
+
+v0.8.23 之后用户报错
+```
+Access to fetch at 'http://1.12.221.36:6185/api/plug/.../cache/stats'
+from origin 'null' has been blocked by CORS policy
+```
+
+**`origin: null`** = AstrBot 插件 webui 是从 **`<iframe sandbox>`** 里加载的。
+sandbox iframe 里所有 fetch 浏览器都报 `origin: null`。
+后端 `/api/plug/...` 是同源的（`http://1.12.221.36:6185`）但因为 sandbox
+改了 origin，浏览器认为是 cross-origin，要求 server 发 ACAO。
+server 不发 ACAO→拒绝。
+
+**v0.8.18 放弃 bridge SDK 是错者。** bridge SDK 走 \`postMessage\` 跟同源
+parent dashboard 通信，dashboard 是同源，fetch 不会报 null origin。
+这是 AstrBot plugin page 的预期架构。
+
+### Fix——重新启用 bridge SDK
+
+\`\`\`js
+const s = document.createElement("script");
+s.src = "/api/plugin/page/bridge-sdk.js?asset_token=...";
+s.crossOrigin = "anonymous";  // 不用 use-credentials——会撞 ACAO=*
+s.async = false;              // 同步等 SDK
+\`\`\`
+
+v0.8.15/16 试过但撞 CORS 是因为用了 \`crossorigin="use-credentials"\`，
+应该用 \`anonymous\`.
+
+bridge SDK 加载后设 \`window.AstrBotPluginPage\`，
+app.js 检测到 \`bridge.apiGet\` 是 function 则优先走它，
+否则 fallback 到 \`fallbackFetch\` (本版本依然保留作 fallback)。
+
+### Tests
+- +1 个新测试：\`test_v0824_bridge_sdk_reload\`
+- 更新 \`test_v0823_webui_version_badge\` 以适应 v=0.8.24
+- 总计 166/166
+
 ## [0.8.23] - 2026-06-07
 
 ### 问题——用户重启 AstrBot 后还是拿到 v0.8.21

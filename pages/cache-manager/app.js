@@ -14,6 +14,31 @@
  */
 
 (async function main() {
+  // v0.8.24: 重新加载 AstrBot bridge SDK——
+  //   bridge SDK 走 postMessage 跟同源 parent (dashboard) 通信，
+  //   完全绕开 sandbox iframe 的 origin=null 问题。
+  //   server 返 Access-Control-Allow-Origin: * + crossorigin=anonymous 应该不撞。
+  try {
+    await new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = "/api/plugin/page/bridge-sdk.js?asset_token=__ASSET_TOKEN__"
+        .replace("__ASSET_TOKEN__", encodeURIComponent(window.__ASSET_TOKEN__ || ""));
+      s.crossOrigin = "anonymous";
+      s.async = false;  // 同步等 SDK 加载完才走后面
+      s.onload = () => {
+        try { logger.info("init", "bridge-sdk.js 加载完成, window.AstrBotPluginPage=", typeof window.AstrBotPluginPage); } catch (_) {}
+        resolve(true);
+      };
+      s.onerror = (e) => {
+        console.warn("[vtb] bridge-sdk.js 加载失败, 继续走 fallback", e);
+        resolve(false);
+      };
+      document.head.appendChild(s);
+    });
+  } catch (e) {
+    console.warn("[vtb] bridge-sdk 注入异常, 继续走 fallback", e);
+  }
+
   // v0.8.21: 双保险——在 <body> 末尾加载了 app.js，但不同浏览器/插件的 HTML
   // parse 速度不一致。显式等 DOMContentLoaded 确保 body 全部 parse 完才动手。
   if (document.readyState === "loading") {

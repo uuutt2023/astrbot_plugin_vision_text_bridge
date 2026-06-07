@@ -2524,6 +2524,7 @@ def run_all():
         test_v0821_app_js_loaded_after_body,
         test_v0822_endpoints_have_leading_slash,
         test_v0823_webui_version_badge,
+        test_v0824_bridge_sdk_reload,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3910,12 +3911,29 @@ def test_v0823_webui_version_badge():
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # index.html 顶部必须含 app.js? v=0.8.23
-    assert 'app.js?v=0.8.23' in h, "index.html app.js 必须用 v=0.8.23"
+    assert 'app.js?v=0.8.24' in h, "index.html app.js 必须用 v=0.8.24"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
     assert "db-path-badge" in a, "app.js 必须更新 db-path-badge 显示 webui 版本"
     print("✓ test_v0823_webui_version_badge")
+
+
+def test_v0824_bridge_sdk_reload():
+    """v0.8.24: 重新启用 AstrBot bridge SDK——
+    走 postMessage 跟同源 parent 通信, 绕开 sandbox iframe origin=null 问题。
+    crossOrigin='anonymous' (不是 'use-credentials') 才能让 server ACAO: * 被接受.
+    """
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # 1. 必须 inject bridge-sdk.js
+    assert "/api/plugin/page/bridge-sdk.js" in a, "app.js 必须主动 inject bridge-sdk.js"
+    # 2. 必须用 crossOrigin='anonymous' (不是 use-credentials)
+    assert 'crossOrigin = "anonymous"' in a, "必须 crossOrigin=anonymous (不撞 ACAO=*)"
+    # 3. 必须 async=false 同步等 SDK 加载完
+    assert "s.async = false" in a, "必须 async=false 同步等 SDK"
+    # 4. onerror 必须 fallback 到 _fallbackBridge
+    assert "bridge-sdk.js 加载失败" in a, "SDK 加载失败时必须继续走 fallback"
+    print("✓ test_v0824_bridge_sdk_reload")
 
 
 def test_v0821_app_js_loaded_after_body():
