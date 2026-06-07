@@ -7,6 +7,62 @@
 
 无新变更。
 
+## [0.8.26] - 2026-06-07
+
+### 问题 1：删除按钮 400
+
+v0.8.24 webui 加载成功后用户报:
+> 请求删除: e3d3bf2d8e5e
+> POST /cache/delete 异常 Request failed with status code 400
+
+**根因:** v0.8.24 webui 走 bridge.apiPost()。
+实测 bridge 把 \`{key: "..."}\` body 转成 query string (GET 风格)。
+main.py \`await self.context.request.json\` 拿到 \`{}\`，key 为空 → 400。
+
+### Fix——apiPost 跳过 bridge，走 fallbackFetch
+
+\`\`\`js
+// 之前:
+if (typeof bridge.apiPost === "function") {
+  resp = await bridge.apiPost(endpoint, body);
+} else {
+  resp = await fallbackFetch("POST", endpoint, body);
+}
+// v0.8.26:
+const resp = await fallbackFetch("POST", endpoint, body);  // 永远走 fetch
+\`\`\`
+
+**为什么可行:** v0.8.24 log 显示 fetch 从 sandbox iframe 发起都成功
+(GET cache/stats, cache/list, cache/thumbnail 都 OK)。
+同源 fetch 在 sandbox iframe 里浏览器不发 CORS preflight，
+所以 fallbackFetch 始终能用。
+
+### 问题 2：缩略图 base64 跨刷新重请求
+
+v0.8.9 加的 LRUCache(100) 是在内存里——硬刷新就清空。
+用户希望同一会话窗口内多刷新不需要重新请求 base64。
+
+### Fix——sessionStorage 跨刷新缓存
+
+\`\`\`js
+const ssKey = \`vtb_thumb:\${imageId}\`;
+// 读
+const ss = sessionStorage.getItem(ssKey);
+if (ss) { /* 命中直接返回 */ }
+// 写 (与 LRUCache 同步)
+try { sessionStorage.setItem(ssKey, JSON.stringify(thumb)); } catch (_) {}
+\`\`\`
+
+限制:
+- 错误状态 (\`{__err:true}\`) 和无图状态 (\`{__none:true}\`) 也缓存，避免重试
+- 写失败 (QuotaExceededError) 静默 catch
+- 超出浏览器限额 (约 5MB) 后续就只走 LRUCache
+
+### Tests
+- +1 个新测试: \`test_v0826_post_skips_bridge_and_thumb_sessionstorage\`
+- 更新 \`test_v0823_webui_version_badge\` 以适应 v=0.8.26
+- 总计 168/168
+
 ## [0.8.25] - 2026-06-07
 
 ### 问题——同一张图产生两次 mmx vision describe

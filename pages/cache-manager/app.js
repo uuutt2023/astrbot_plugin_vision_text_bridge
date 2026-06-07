@@ -372,12 +372,9 @@ async function apiPost(endpoint, body = {}) {
   state.apiStats.calls += 1;
   logger.debug("api", `POST ${endpoint}`, body);
   try {
-    let resp;
-    if (typeof bridge.apiPost === "function") {
-      resp = await bridge.apiPost(endpoint, body);
-    } else {
-      resp = await fallbackFetch("POST", endpoint, body);
-    }
+    // v0.8.26: 跳过 bridge.apiPost——v0.8.24 实测 bridge 把 body 转 query 导致 400
+    // fetch 走 fallbackFetch (同源), GET 全 OK, POST 也应该 OK
+    const resp = await fallbackFetch("POST", endpoint, body);
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const ok = resp?.ok !== false;
@@ -792,6 +789,25 @@ async function ensureThumb(imageId, slot) {
     }
     return;
   }
+  // v0.8.26: sessionStorage 跨刷新缓存（错误/无图状态也存，避免重复请求）
+  const ssKey = `vtb_thumb:${imageId}`;
+  try {
+    const ss = sessionStorage.getItem(ssKey);
+    if (ss) {
+      const cached = JSON.parse(ss);
+      state.thumbCache.set(imageId, cached);
+      if (cached.__err) {
+        slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
+      } else if (cached.__none) {
+        slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+      } else {
+        logger.debug("thumb", `sessionStorage 命中: ${imageId.slice(0, 12)}`);
+        renderThumb(slot, cached);
+      }
+      return;
+    }
+  } catch (_) { /* sessionStorage 不可用或 parse 错 */ }
+
   // v0.8.9: 走并发池（默认 6 路）避免一次性 20 个 RTT 堆 bridge
   return thumbPool.run(async () => {
     try {
@@ -801,15 +817,21 @@ async function ensureThumb(imageId, slot) {
         const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
         state.thumbCache.set(imageId, thumb);
         renderThumb(slot, thumb);
+        // v0.8.26: 存 sessionStorage (跨刷新), 失败静默 catch (存储满)
+        try { sessionStorage.setItem(ssKey, JSON.stringify(thumb)); } catch (_) { /* quota exceeded */ }
         logger.debug("thumb", `加载缩略图成功: ${imageId.slice(0, 12)}`, { mime: thumb.mime, w: thumb.w, h: thumb.h });
       } else {
-        state.thumbCache.set(imageId, { __none: true });  // 失败也 cache 避免重试
+        const stub = { __none: true };
+        state.thumbCache.set(imageId, stub);
         slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+        try { sessionStorage.setItem(ssKey, JSON.stringify(stub)); } catch (_) {}
         logger.debug("thumb", `无缩略图（v0.8.5 之前数据）: ${imageId.slice(0, 12)}`);
       }
     } catch (e) {
-      state.thumbCache.set(imageId, { __err: true });  // 失败也 cache 避免无限重试
+      const stub = { __err: true };
+      state.thumbCache.set(imageId, stub);
       slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
+      try { sessionStorage.setItem(ssKey, JSON.stringify(stub)); } catch (_) {}
       logger.warn("thumb", `加载缩略图失败: ${imageId.slice(0, 12)}`, e);
     }
   });

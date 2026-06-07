@@ -2526,6 +2526,7 @@ def run_all():
         test_v0823_webui_version_badge,
         test_v0824_bridge_sdk_reload,
         test_v0825_filter_bot_avatar_in_hook,
+        test_v0826_post_skips_bridge_and_thumb_sessionstorage,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3912,7 +3913,7 @@ def test_v0823_webui_version_badge():
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # index.html 顶部必须含 app.js? v=0.8.23
-    assert 'app.js?v=0.8.24' in h, "index.html app.js 必须用 v=0.8.24"
+    assert 'app.js?v=0.8.26' in h, "index.html app.js 必须用 v=0.8.26"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -3950,6 +3951,24 @@ def test_v0825_filter_bot_avatar_in_hook():
     # 3. 加 saved_urls 诊断 log——后续调试用
     assert "hook 入口 saved_urls" in src, "main.py 必须加 hook 入口诊断 log"
     print("✓ test_v0825_filter_bot_avatar_in_hook")
+
+
+def test_v0826_post_skips_bridge_and_thumb_sessionstorage():
+    """v0.8.26:
+    1. apiPost 跳过 bridge.apiPost (v0.8.24 发现 bridge 把 body 转 query 导致 400)
+    2. ensureThumb 加 sessionStorage 跨刷新缓存
+    """
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # 1. apiPost 必须直接走 fallbackFetch
+    # 找到 apiPost 函数体
+    import re
+    m = re.search(r"async function apiPost\(.*?\n\s*const resp = await fallbackFetch\(.POST., endpoint, body\);", a, re.DOTALL)
+    assert m, "apiPost 必须直接走 fallbackFetch (不经过 bridge)"
+    assert "bridge.apiPost(endpoint, body)" not in m.group(0), "apiPost 内部不应再调 bridge.apiPost"
+    # 2. ensureThumb 必须有 sessionStorage 读写
+    assert "sessionStorage.getItem(ssKey)" in a, "ensureThumb 必须读 sessionStorage"
+    assert "sessionStorage.setItem(ssKey, JSON.stringify(thumb))" in a, "ensureThumb 必须写 sessionStorage"
+    print("✓ test_v0826_post_skips_bridge_and_thumb_sessionstorage")
 
 
 def test_v0821_app_js_loaded_after_body():
