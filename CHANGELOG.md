@@ -7,6 +7,45 @@
 
 无新变更。
 
+## [0.8.18] - 2026-06-07
+
+### Bug 修复——彻底放弃 bridge SDK，走直 fetch backend
+v0.8.15/16 在 webui 主动 inject `/api/plugin/page/bridge-sdk.js`，但
+CORS 错一直在：
+```
+Access to script at '.../bridge-sdk.js?asset_token=...' 
+from origin 'null' has been blocked by CORS policy: 
+The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' 
+when the request's credentials mode is 'include'.
+```
+
+#### 真因
+- AstrBot 服务端返 `Access-Control-Allow-Origin: *`（wildcard）
+- page iframe 加载时 origin 是 `null`（sandboxed 容器 / data: URL）
+- `<script>` class request 默认 credentials mode 是 `include`
+- CORS 规范不允许 **wildcard ACAO + credentials include** 共存
+- **服务端 CORS 策略是 AstrBot 平台定的，webui 端没法改**
+
+#### 修复
+彻底放弃 bridge SDK：
+- ``index.html`` 不再 inject ``bridge-sdk.js`` script
+- ``app.js`` 顶层用 _fallbackBridge stub：
+  ```js
+  const _fallbackBridge = { ready: () => Promise.resolve({source: "fallback"}), apiGet: null, apiPost: null };
+  const bridge = window.AstrBotPluginPage || _fallbackBridge;
+  ```
+- ``apiGet``/``apiPost`` 检测 ``typeof bridge.apiGet === "function"``——bridge 没注入就走 fallbackFetch
+- fallbackFetch 走 ``fetch('/api/plug/astrbot_plugin_vision_text_bridge/...')``——**same origin**，无 CORS 问题
+
+#### 代价
+- 失去 bridge 提供的 i18n / theme / context 机制（webui 不依赖这些）
+- 未来如果 AstrBot 修复了 CORS 问题，bridge 又能 inject，webui 会自动优先用
+
+### 测试
+- 1 个测试改名 + 1 个测试改语义：不再期望主动 inject bridge-sdk.js
+- +1 个新测试：``test_app_js_uses_fallback_bridge_stub`` —— 验 _fallbackBridge 定义存在
+- 总计 160/160
+
 ## [0.8.17] - 2026-06-07
 
 ### 瘦身 + 审查

@@ -10,26 +10,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.16" />
-  <!-- v0.8.16: 主动加载 AstrBot bridge SDK（不依赖平台 iframe 注入）
-       bridge-sdk.js 是 IIFE，加载后会在 window 上挂 AstrBotPluginPage 对象。
-       asset_token 从 URL 提取（AstrBot 平台 iframe 加载时会加）。
-       v0.8.15 踩坑：crossOrigin='use-credentials' + page origin=null 撞 CORS；
-       干净的 <script src> 默认就是 no-cors anonymous，不需要 crossOrigin。 -->
-  <script>
-    (function injectBridgeSdk() {
-      const params = new URLSearchParams(location.search);
-      const token = params.get('asset_token');
-      const url = '/api/plugin/page/bridge-sdk.js' + (token ? '?asset_token=' + encodeURIComponent(token) : '');
-      // 干净的 script element：浏览器用默认 no-cors anonymous，
-      // 不发送 cookie、不抬 CORS。asset_token 在 URL 里鉴权。
-      const sdk = document.createElement('script');
-      sdk.src = url;
-      sdk.async = false;  // 必须同步执行（在 app.js 之前）
-      sdk.onerror = function () { console.warn('[vtb] bridge-sdk.js 加载失败——fallbackFetch 路径'); };
-      document.head.appendChild(sdk);
-    })();
-  </script>
+  <link rel="stylesheet" href="./style.css?v=0.8.18" />
+  <!-- v0.8.18: 彻底移除 bridge-sdk.js 主动加载
+       原设计 v0.8.15 主动 inject /api/plugin/page/bridge-sdk.js，但 AstrBot 服务端返
+       Access-Control-Allow-Origin: * + origin=null + credentials mode=include 三者撞 CORS。
+       修不了——服务端 CORS 策略是 AstrBot 平台定的。
+
+       现在：webui 走 fallbackFetch 直 fetch /api/plug/<plugin>/... 后端路由，
+       跟其他 AstrBot 插件 webui 一样使用 POST/GET 直打 backend，
+       不用任何 SDK 桥接。
+  -->
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -206,6 +196,6 @@
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
 
-  <script type="module" src="./app.js?v=0.8.16" />
+  <script type="module" src="./app.js?v=0.8.18" />
 </body>
 </html>

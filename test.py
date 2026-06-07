@@ -2516,8 +2516,9 @@ def run_all():
         test_tool_filter_handles_none_container,
         test_tool_filter_in_event_via_extra_key,
         test_strip_residual_base64_clears_func_tool,
-        test_webui_waits_for_bridge_in_app_js,
-        test_index_html_injects_bridge_sdk,
+        test_webui_no_direct_bridge_await_in_app_js,
+        test_index_html_no_bridge_sdk_loading,
+        test_app_js_uses_fallback_bridge_stub,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3810,37 +3811,40 @@ def test_strip_residual_base64_clears_func_tool():
 # v0.8.14 webui bridge 防御性 fallback
 # ===========================================================================
 
-def test_webui_waits_for_bridge_in_app_js():
-    """v0.8.14: app.js 顶层必须有 waitForBridge() 而不是直接读 window.AstrBotPluginPage。"""
+def test_webui_no_direct_bridge_await_in_app_js():
+    """v0.8.18: app.js 顶层不应有 ``const bridge = window.AstrBotPluginPage;`` 裸读——必须走 fallbackBridge stub。"""
     import re
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    assert "waitForBridge" in src, "app.js 必须有 waitForBridge()"
-    # 旧的 "const bridge = window.AstrBotPluginPage;" 顶层裸读不应该再存在
     bad = re.search(r"^const bridge = window\.AstrBotPluginPage;?\s*$", src, re.MULTILINE)
     assert not bad, "app.js 顶层不应该再裸读 window.AstrBotPluginPage"
     # 验证有 fallback 路径
     assert "fallbackFetch" in src, "app.js 必须有 fallbackFetch() 直 fetch backend"
     assert "/api/plug/astrbot_plugin_vision_text_bridge" in src, "app.js 必须有正确的 PLUGIN_PATH"
-    print("✓ test_webui_waits_for_bridge_in_app_js")
+    print("✓ test_webui_no_direct_bridge_await_in_app_js")
 
 
-def test_index_html_injects_bridge_sdk():
-    """v0.8.15: index.html 必须主动 inject /api/plugin/page/bridge-sdk.js，不依赖平台注入。"""
+def test_index_html_no_bridge_sdk_loading():
+    """v0.8.18: index.html 不再主动 inject bridge-sdk.js——AstrBot 服务端 CORS wildcard
+    + origin=null + credentials mode=include 三者撞。改走 fallbackFetch 直打 backend。
+    """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
-    assert "/api/plugin/page/bridge-sdk.js" in h, "index.html 必须主动 inject bridge-sdk.js"
-    # 验证在 app.js script 标签之前（顺序很重要——bridge 必须先）
-    sdk_pos = h.find("/api/plugin/page/bridge-sdk.js")
-    appjs_pos = h.find("app.js?")
-    assert sdk_pos > 0 and appjs_pos > 0, "bridge-sdk.js 和 app.js script 标签都要存在"
-    assert sdk_pos < appjs_pos, "bridge-sdk.js script 必须在 app.js script 之前（保证同步加载顺序）"
-    # 验证 asset_token 从 URL 提取
-    assert "asset_token" in h, "必须从 URL 提取 asset_token 传给 bridge-sdk.js"
-    # v0.8.16: 不能再用 crossOrigin='use-credentials'（v0.8.15 踩坑 + page origin=null 撞 CORS）
-    # 验代码里（不是注释）没有 use-credentials
     import re
     code_only = re.sub(r"<!--[\s\S]*?-->", "", h)  # 去掉注释
-    assert "use-credentials" not in code_only, "v0.8.15 踩坑：crossOrigin='use-credentials' + page origin=null 撞 CORS wildcard"
-    print("✓ test_index_html_injects_bridge_sdk")
+    # 不应该再 inject bridge-sdk.js（允许在注释里解释为什么）
+    assert "/api/plugin/page/bridge-sdk.js" not in code_only, "v0.8.18 不应再主动加载 bridge-sdk.js"
+    print("✓ test_index_html_no_bridge_sdk_loading")
+
+
+def test_app_js_uses_fallback_bridge_stub():
+    """v0.8.18: app.js 应该用 fallback bridge stub，永远不依赖 window.AstrBotPluginPage。"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # 必须有 _fallbackBridge stub
+    assert "_fallbackBridge" in src, "app.js 必须定义 _fallbackBridge stub"
+    # bridge 应该是 fallback 而不是 AstrBotPluginPage
+    assert "const bridge = window.AstrBotPluginPage || _fallbackBridge" in src, "bridge 必须是 fallback"
+    # 必须检测 bridge.apiGet/apiPost 是否为 function，不是就 fallbackFetch
+    assert "typeof bridge.apiGet === \"function\"" in src, "必须检测 bridge.apiGet 是否可用"
+    print("✓ test_app_js_uses_fallback_bridge_stub")
 
 
 # ===========================================================================
