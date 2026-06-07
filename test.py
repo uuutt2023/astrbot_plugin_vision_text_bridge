@@ -2525,6 +2525,7 @@ def run_all():
         test_v0822_endpoints_have_leading_slash,
         test_v0823_webui_version_badge,
         test_v0824_bridge_sdk_reload,
+        test_v0825_filter_bot_avatar_in_hook,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3934,6 +3935,21 @@ def test_v0824_bridge_sdk_reload():
     # 4. onerror 必须 fallback 到 _fallbackBridge
     assert "bridge-sdk.js 加载失败" in a, "SDK 加载失败时必须继续走 fallback"
     print("✓ test_v0824_bridge_sdk_reload")
+
+
+def test_v0825_filter_bot_avatar_in_hook():
+    """v0.8.25: 在 on_llm_request hook 入口过滤 AstrBot 框架注入的 bot 头像
+    (q.qlogo.cn/headimg_dl?dst_uin=... 模式), 视觉理解 bot 头像没意义。
+    """
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
+    # 1. 必须在 saved_urls 那段加 q.qlogo.cn 过滤
+    assert "q.qlogo.cn/headimg_dl" in src, "main.py 必须过滤 q.qlogo.cn bot avatar"
+    assert "_bot_avatar_pat" in src, "main.py 必须有 _bot_avatar_pat 正则"
+    # 2. 必须过滤后 log 一下跳过了多少
+    assert "v0.8.25 过滤 bot 头像" in src, "main.py 必须 log 过滤结果"
+    # 3. 加 saved_urls 诊断 log——后续调试用
+    assert "hook 入口 saved_urls" in src, "main.py 必须加 hook 入口诊断 log"
+    print("✓ test_v0825_filter_bot_avatar_in_hook")
 
 
 def test_v0821_app_js_loaded_after_body():

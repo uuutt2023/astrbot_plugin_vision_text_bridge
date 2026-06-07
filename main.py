@@ -795,6 +795,15 @@ class VisionTextBridgePlugin(Star):
         saved_parts = list(req.extra_user_content_parts or []) if req.extra_user_content_parts else []
         saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
 
+        # 1a-pre) v0.8.25: 诊断日志——打印 saved_urls 原始来源，
+        # 查出是否有 bot 自己的头像 / at 段被误注入
+        if self._should_log("hook_trace"):
+            logger.info(
+                "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
+                len(saved_urls),
+                [u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u for u in saved_urls],
+            )
+
         # 1a) 从 event.message_obj 补提（v0.8.5 防御 chat_plus 抽走图）
         if event is not None:
             try:
@@ -815,6 +824,28 @@ class VisionTextBridgePlugin(Star):
             except Exception as e:
                 if self._should_log("hook_trace"):
                     logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)
+
+        # v0.8.25: 过滤 AstrBot 框架 user @ bot 时注入的 bot avatar
+        # AstrBot 框架会主动把 bot 自己的头像 URL 塞到 req.image_urls
+        # (q.qlogo.cn/headimg_dl?dst_uin=... 的固定模式)
+        # 视觉理解 bot 头像没意义——跳过
+        if saved_urls:
+            _bot_avatar_pat = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
+            filtered = [u for u in saved_urls if not (isinstance(u, str) and _bot_avatar_pat.search(u))]
+            if len(filtered) != len(saved_urls):
+                removed = set(saved_urls) - set(filtered)
+                logger.info(
+                    "[vision_text_bridge] v0.8.25 过滤 bot 头像 %d 张: %s",
+                    len(removed), list(removed),
+                )
+                saved_urls = filtered
+        # v0.8.25: 诊断——打 saved_urls 头部看看 AstrBot 到底注入了什么
+        if saved_urls:
+            logger.info(
+                "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
+                len(saved_urls),
+                [u[:120] + ("..." if isinstance(u, str) and len(u) > 120 else "") for u in saved_urls],
+            )
 
         # 1b) 清空
         req.image_urls = []

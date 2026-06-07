@@ -7,6 +7,40 @@
 
 无新变更。
 
+## [0.8.25] - 2026-06-07
+
+### 问题——同一张图产生两次 mmx vision describe
+
+v0.8.24 后用户报告：
+> 同一张图片，产生了两次视觉理解请求
+> mmx rc=0 image_urls=2
+
+### 诊断
+v0.8.24 上线后 user 发图 `[At:bot] [图片]`，A bot 响应，
+hook 入口 `saved_urls` = 2。但 md5 不同：
+- `2cb242a2450eb218…` (102092B) = user 发的图
+- `e3d3bf2d8e5ee330…` (1596476B) = bot 自己的头像
+
+AstrBot 框架在 user @ bot 时会**主动**把 bot 自己的 avatar URL
+（`q.qlogo.cn/headimg_dl?dst_uin=<bot_qq>` 模式）注入到 req.image_urls。
+vision_text_bridge 对**两个不同**图都 mmx 描述了一遍。
+bot 头像不需要视觉理解。
+
+### Fix——hook 入口过滤 q.qlogo.cn bot avatar
+
+\`\`\`python
+_bot_avatar_pat = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
+filtered = [u for u in saved_urls if not _bot_avatar_pat.search(u)]
+saved_urls = filtered
+\`\`\`
+
+另外加 **saved_urls 诊断 log** (always-on)，后续调试能从 log 直接看到
+AstrBot 到底注入了哪些 image_url。
+
+### Tests
+- +1 个新测试：\`test_v0825_filter_bot_avatar_in_hook\`
+- 总计 167/167
+
 ## [0.8.24] - 2026-06-07
 
 ### 终极根因——sandbox iframe origin=null
