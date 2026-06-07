@@ -10,12 +10,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.20" />
+  <link rel="stylesheet" href="./style.css?v=0.8.21" />
   <!-- v0.8.20: 全部改成普通 <script>，不再用 type=module
-       logger.js 先同步加载（设 window.webuiLogger），然后 app.js 加载
-       消除 ESM import 依赖（部分 AstrBot 版本对 type=module 处理不一致） -->
-  <script src="./logger.js?v=0.8.20"></script>
-  <script src="./app.js?v=0.8.20"></script>
+       v0.8.21: logger.js 在 <head> 里同步加载（极小，零依赖），
+                app.js 移到 </body> 之前，确保 body 全部 parse 完才跑
+                ——之前在 <head> 里加载时 modal-close 等元素还不存在
+       -->
+  <script src="./logger.js?v=0.8.21"></script>
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -192,5 +193,6 @@
     <div class="debug-body" id="debug-body"></div>
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
+  <script src="./app.js?v=0.8.21"></script>
 </body>
 </html>

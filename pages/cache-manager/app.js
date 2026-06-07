@@ -14,6 +14,16 @@
  */
 
 (async function main() {
+  // v0.8.21: 双保险——在 <body> 末尾加载了 app.js，但不同浏览器/插件的 HTML
+  // parse 速度不一致。显式等 DOMContentLoaded 确保 body 全部 parse 完才动手。
+  if (document.readyState === "loading") {
+    try {
+      await new Promise((resolve) => {
+        document.addEventListener("DOMContentLoaded", resolve, { once: true });
+      });
+    } catch (e) { /* ignore */ }
+  }
+
   // v0.8.20: 同步从 window 取 logger（保证不抛错）
   const logger = (typeof window !== "undefined" && window.webuiLogger) || {
     debug() {}, info() {}, warn() {}, error() {},
@@ -61,6 +71,15 @@
 
   // ============= 下面是原来的 webui 逻辑 =============
   const $ = (id) => document.getElementById(id);
+  // v0.8.21: 防御性 bind——元素不存在时跳过，避免 TypeError 中断初始化
+  const bind = (id, evt, fn) => {
+    const el = document.getElementById(id);
+    if (!el) {
+      console.warn("[vtb] 跳过绑定 #" + id + "：元素不存在");
+      return;
+    }
+    el.addEventListener(evt, fn);
+  };
 
 // v0.8.9: LRU 缩略图缓存——Map 维护插入顺序，set 越上限删头部
 class LRUCache {
@@ -808,12 +827,12 @@ function showModalImg(thumb) {
   $("detail-modal").hidden = false;
 }
 
-$("modal-close").addEventListener("click", () => {
+bind("modal-close", "click", () => {
   logger.debug("ui", "关闭详情 modal");
   $("detail-modal").hidden = true;
 });
 
-$("detail-modal").addEventListener("click", (e) => {
+bind("detail-modal", "click", (e) => {
   if (e.target.id === "detail-modal") {
     logger.debug("ui", "点击 modal 背景关闭");
     $("detail-modal").hidden = true;
@@ -984,14 +1003,14 @@ async function onDiag() {
 
 // ----- event binding -----
 
-$("refresh-btn").addEventListener("click", async () => {
+bind("refresh-btn", "click", async () => {
   logger.info("ui", "点击刷新按钮");
   state.thumbCache.clear();
   await Promise.all([loadStats(), loadList(), loadTimeline()]);
 });
-$("clear-btn").addEventListener("click", onClear);
+bind("clear-btn", "click", onClear);
 $("clean-expired-btn")?.addEventListener("click", onCleanExpired);
-$("export-btn").addEventListener("click", onExport);
+bind("export-btn", "click", onExport);
 
 // v0.8.12: 自动刷新 toggle
 let _autoRefreshTimer = null;
@@ -1018,10 +1037,10 @@ function setAutoRefresh(enabled) {
 $("auto-refresh-toggle")?.addEventListener("change", (e) => {
   setAutoRefresh(e.target.checked);
 });
-$("diag-btn").addEventListener("click", onDiag);
+bind("diag-btn", "click", onDiag);
 
 let searchTimer = null;
-$("search-input").addEventListener("input", (e) => {
+bind("search-input", "input", (e) => {
   clearTimeout(searchTimer);
   const v = e.target.value.trim();
   logger.debug("ui", `搜索输入变化: "${v}"`);
@@ -1032,19 +1051,19 @@ $("search-input").addEventListener("input", (e) => {
   }, 300);
 });
 
-$("order-by").addEventListener("change", (e) => {
+bind("order-by", "change", (e) => {
   logger.info("ui", `排序切换: ${e.target.value}`);
   state.order_by = e.target.value;
   state.offset = 0;
   loadList();
 });
 
-$("prev-btn").addEventListener("click", () => {
+bind("prev-btn", "click", () => {
   state.offset = Math.max(0, state.offset - state.limit);
   logger.info("ui", `翻到上一页, offset=${state.offset}`);
   loadList();
 });
-$("next-btn").addEventListener("click", () => {
+bind("next-btn", "click", () => {
   if (state.offset + state.limit < state.total) {
     state.offset += state.limit;
     logger.info("ui", `翻到下一页, offset=${state.offset}`);

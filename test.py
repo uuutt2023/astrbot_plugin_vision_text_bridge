@@ -2521,6 +2521,7 @@ def run_all():
         test_app_js_uses_fallback_bridge_stub,
         test_index_html_has_bridge_mode_badge,
         test_v0820_drops_esm_module,
+        test_v0821_app_js_loaded_after_body,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3880,6 +3881,29 @@ def test_v0820_drops_esm_module():
     # 6. 必须在末尾 catch 启动崩溃，全屏显示错
     assert "})().catch(" in aj, "v0.8.20 app.js 必须在 IIFE 末尾 catch 启动错误"
     print("✓ test_v0820_drops_esm_module")
+
+
+def test_v0821_app_js_loaded_after_body():
+    """v0.8.21: <script src='./app.js'> 必须在 </body> 之前加载，
+    避免在 <head> 里提前执行（DOM 还没 parse 完）时调 $('xxx') 返回 null。
+    """
+    h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
+    # logger.js 可以在 head 里（轻量，全局）但 app.js 必须在 body 末尾
+    # 1. 找 app.js 的 script 标签所在行
+    import re
+    # 忽略 HTML 注释里的“</body>”提及，只匹配实际标签
+    body_match = re.search(r"</body>\s*$", h, re.MULTILINE)
+    assert body_match, "index.html 缺 </body>"
+    app_match = re.search(r'<script src="\./app\.js[^"]*"', h)
+    assert app_match, "index.html 缺 app.js <script>"
+    assert app_match.start() < body_match.start(), "app.js 必须在 </body> 之前加载"
+    # 2. app.js IIFE 顶部必须等 DOMContentLoaded（双保险）
+    aj = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    assert "DOMContentLoaded" in aj, "app.js IIFE 顶部必须等 DOMContentLoaded"
+    assert "document.readyState" in aj, "app.js IIFE 必须检查 document.readyState"
+    # 3. bind() helper 必须存在，防 null addEventListener
+    assert "const bind = (id, evt, fn) =>" in aj, "app.js 必须有 bind() helper"
+    print("✓ test_v0821_app_js_loaded_after_body")
 
 
 # ===========================================================================

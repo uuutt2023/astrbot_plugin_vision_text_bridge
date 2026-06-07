@@ -7,7 +7,7 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.0.0-blue)](https://docs.astrbot.app/)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-green)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.8.20-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.21-brightgreen)](CHANGELOG.md)
 
 [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues) · [AstrBot 文档](https://docs.astrbot.app/)
 

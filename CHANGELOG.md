@@ -7,6 +7,39 @@
 
 无新变更。
 
+## [0.8.21] - 2026-06-07
+
+### 根因——app.js 在 <head> 加载，DOM 未就绪
+
+v0.8.20 push 后用户报启动崩溃：
+```
+TypeError: Cannot read properties of null (reading 'addEventListener')
+  at main (app.js:811:17)
+```
+app.js line 811 = `$('modal-close').addEventListener(...)`。
+
+**为什么 null？** index.html 里：
+- line 18: `<script src="./app.js?v=0.8.20">` 在 `<head>` 末尾
+- line 146: `<button id="modal-close">` 在 `<body>` 中间
+- app.js 同步执行到 line 811 时，body 还没 parse 完，`$('modal-close')` 返回 null。
+
+v0.8.20 改为同步 IIFE 后，正好原来 ESM \`type="module"\` 会自动 defer 加载（等 DOM parse 完），现在不 defer 了反而踩进这个坑。
+
+### Fix——三道保险
+
+1. **app.js 移到 \`</body>\` 之前**——保证 body 全部 parse 完才跑
+2. **IIFE 顶部 \`document.readyState === 'loading'?\` 等待 DOMContentLoaded**——双保险，防其他被推后的 HTML 加载场景
+3. **bind() helper**——所有顶层 \`$('xxx').addEventListener(...)\` 改为 \`bind('xxx', 'evt', fn)\`，
+   元素不存在时 \`console.warn\` 跳过，不再中断初始化
+
+### 几点另过
+- logger.js 留在 \`<head>\` 里（轻量、只设 window 全局，不读 DOM）
+- AstrBot 平台自定义 \`asset_token\` 可能会被 cache， \`?v=0.8.21\` cache-bust
+
+### Tests
+- +1 个新测试：\`test_v0821_app_js_loaded_after_body\`
+- 总计 163/163
+
 ## [0.8.20] - 2026-06-07
 
 ### 根因——app.js 顶层代码根本没跑
