@@ -6,45 +6,61 @@
  * v0.8.18: 彻底放弃 bridge SDK——AstrBot 服务端 CORS wildcard + origin=null +
  *          credentials mode=include 三者撞，bridge-sdk.js fetch 永远会拒。
  *          改用 fetch 直打 backend (fallbackFetch)——跟其他 AstrBot 插件 webui 一致。
- *          bridge 如果未来某天能被正常 inject，apiGet/apiPost 会自动优先用它。
+ * v0.8.20: 去掉 ESM import——logger 改 window.webuiLogger，app.js 改成普通 <script>。
+ *          消除 module system 依赖（部分 AstrBot 版本对 type=module 处理不一致）。
+ *          整个 webui 零外部依赖。
+ *
+ * 包裹为 async IIFE——解决 top-level await 在普通 <script> 不被支持的问题。
  */
 
-import logger from "./logger.js";
+(async function main() {
+  // v0.8.20: 同步从 window 取 logger（保证不抛错）
+  const logger = (typeof window !== "undefined" && window.webuiLogger) || {
+    debug() {}, info() {}, warn() {}, error() {},
+  };
 
-// v0.8.18: 极简 bridge stub——fallbackFetch 内部已经能跑，bridge 只为兼容旧路径存在
-const _fallbackBridge = {
-  ready: () => Promise.resolve({ source: "fallback" }),
-  apiGet: null,  // null = 走 fallbackFetch
-  apiPost: null,
-};
-const bridge = window.AstrBotPluginPage || _fallbackBridge;
-const _isFallback = bridge === _fallbackBridge;
-logger.info("init", "bridge:", _isFallback ? "fallback (直 fetch)" : "AstrBotPluginPage (SDK)");
-// v0.8.19: 右上角 badge 让用户一眼看到 webui 是真加载好了
-{
-  const badge = document.getElementById("bridge-mode-badge");
-  if (badge) {
-    if (_isFallback) {
-      badge.textContent = "🔌 fallback (直 fetch)";
-      badge.classList.add("bridge-fallback");
-      badge.title = "AstrBot page bridge SDK 不可用，webui 走 fallbackFetch 直 fetch backend。功能 100% 正常。";
-    } else {
-      badge.textContent = "🟢 bridge (SDK)";
-      badge.classList.add("bridge-ok");
-      badge.title = "AstrBotPluginPage bridge 注入成功";
+  // v0.8.18: 极简 bridge stub——fallbackFetch 内部已经能跑，bridge 只为兼容旧路径存在
+  const _fallbackBridge = {
+    ready: () => Promise.resolve({ source: "fallback" }),
+    apiGet: null,
+    apiPost: null,
+  };
+  const bridge = window.AstrBotPluginPage || _fallbackBridge;
+  const _isFallback = bridge === _fallbackBridge;
+  try {
+    logger.info("init", "bridge:", _isFallback ? "fallback (直 fetch)" : "AstrBotPluginPage (SDK)");
+  } catch (e) { console.log("logger not ready:", e); }
+
+  // v0.8.19: 右上角 badge 让用户一眼看到 webui 是真加载好了
+  try {
+    const badge = document.getElementById("bridge-mode-badge");
+    if (badge) {
+      if (_isFallback) {
+        badge.textContent = "🔌 fallback (直 fetch)";
+        badge.classList.add("bridge-fallback");
+        badge.title = "AstrBot page bridge SDK 不可用，webui 走 fallbackFetch 直 fetch backend。功能 100% 正常。";
+      } else {
+        badge.textContent = "🟢 bridge (SDK)";
+        badge.classList.add("bridge-ok");
+        badge.title = "AstrBotPluginPage bridge 注入成功";
+      }
+    }
+  } catch (e) { console.warn("bridge badge init failed:", e); }
+
+  if (typeof bridge.ready === "function") {
+    try {
+      const ctx = await bridge.ready();
+      logger.info("init", "bridge.ready() 完成, ctx=", ctx);
+    } catch (e) {
+      logger.warn("init", "bridge.ready() 失败，继续走 fallback", e);
     }
   }
-}
-if (typeof bridge.ready === "function") {
-  try {
-    const ctx = await bridge.ready();
-    logger.info("init", "bridge.ready() 完成, ctx=", ctx);
-  } catch (e) {
-    logger.warn("init", "bridge.ready() 失败，继续走 fallback", e);
-  }
-}
 
-const $ = (id) => document.getElementById(id);
+  // 把 bridge / _fallbackBridge 暴露到 window 上让下面 init 用
+  window._vtb_bridge = bridge;
+
+  // ============= 下面是原来的 webui 逻辑 =============
+  const $ = (id) => document.getElementById(id);
 
 // v0.8.9: LRU 缩略图缓存——Map 维护插入顺序，set 越上限删头部
 class LRUCache {
@@ -1057,3 +1073,13 @@ if (typeof bridge.onContext === "function") {
     logger.debug("init", "bridge context 变化（无操作）");
   });
 }
+
+})().catch((e) => {
+  console.error("[vtb] 启动崩溃:", e);
+  try {
+    document.body.innerHTML = '<div style="padding: 24px; color: #f87171; background: #0b0f19; font-family: monospace; white-space: pre-wrap; min-height: 100vh;">'
+      + '<h1>❌ Webui 启动失败</h1>'
+      + '<pre style="color: #e2e8f0;">' + (e && e.stack ? e.stack : String(e)) + '</pre>'
+      + '</div>';
+  } catch (_) { /* ignore */ }
+});

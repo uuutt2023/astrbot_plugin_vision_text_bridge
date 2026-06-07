@@ -7,6 +7,56 @@
 
 无新变更。
 
+## [0.8.20] - 2026-06-07
+
+### 根因——app.js 顶层代码根本没跑
+
+v0.8.19 push 后用户报“bridge: checking… / DB: loading… / stats 不显示 / 表不显示”——
+这说明 **app.js 顶层代码崩了**，badge 更新代码、`loadStats()` 等从未执行。
+
+### 根因——ESM \`<script type=module>\` + AstrBot iframe
+
+部分 AstrBot 版本对 \`<script type="module">\` 处理不一致：
+- logger.js 是 ESM module (\`export default logger\`)
+- app.js \`import logger from "./logger.js"\`
+- 两个 \`<script type="module">\` 加载，import 解析任何一环挂了就 throw
+- 顶层 \`await bridge.ready()\` 报错后后面所有代码不跑
+
+### Fix——单文件 webui，零外部依赖
+
+1. **logger.js 改为全局脚本**（不再 ESM）：
+   ```js
+   (function (global) {
+     class WebuiLogger { ... }
+     global.webuiLogger = new WebuiLogger();
+   })(window);
+   ```
+2. **app.js 去掉 \`import logger\`，改用 \`window.webuiLogger\`**：
+   ```js
+   const logger = (typeof window !== "undefined" && window.webuiLogger) || {
+     debug() {}, info() {}, warn() {}, error() {},
+   };
+   ```
+3. **index.html 改为普通 \`<script>\` 同步加载**（非 module）：
+   ```html
+   <script src="./logger.js?v=0.8.20"></script>
+   <script src="./app.js?v=0.8.20"></script>
+   ```
+4. **app.js 包裹为 async IIFE**——解决顶层 \`await bridge.ready()\` 在普通 script 下不被支持的问题。
+5. **IIFE 末尾 \`})().catch()\` 启动崩溃全屏显示**——以后任何启动错都能一眼看到。
+
+### Webui 零外部依赖
+
+- logger.js 原生 class，window.webuiLogger
+- app.js 不依赖任何模块
+- index.html 2 个普通 script
+- 现在即使浏览器 ESM 有问题 webui 也能跑
+
+### Tests
+- +1 个新测试：\`test_v0820_drops_esm_module\`
+- 更新 \`test_webui_logger_module_exists\` / \`test_webui_app_uses_logger\` 以适应新架构
+- 总计 162/162
+
 ## [0.8.19] - 2026-06-07
 
 ### 变改进展提示

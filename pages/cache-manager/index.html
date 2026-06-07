@@ -10,16 +10,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.19" />
-  <!-- v0.8.18: 彻底移除 bridge-sdk.js 主动加载
-       原设计 v0.8.15 主动 inject /api/plugin/page/bridge-sdk.js，但 AstrBot 服务端返
-       Access-Control-Allow-Origin: * + origin=null + credentials mode=include 三者撞 CORS。
-       修不了——服务端 CORS 策略是 AstrBot 平台定的。
-
-       现在：webui 走 fallbackFetch 直 fetch /api/plug/<plugin>/... 后端路由，
-       跟其他 AstrBot 插件 webui 一样使用 POST/GET 直打 backend，
-       不用任何 SDK 桥接。
-  -->
+  <link rel="stylesheet" href="./style.css?v=0.8.20" />
+  <!-- v0.8.20: 全部改成普通 <script>，不再用 type=module
+       logger.js 先同步加载（设 window.webuiLogger），然后 app.js 加载
+       消除 ESM import 依赖（部分 AstrBot 版本对 type=module 处理不一致） -->
+  <script src="./logger.js?v=0.8.20"></script>
+  <script src="./app.js?v=0.8.20"></script>
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -196,7 +192,5 @@
     <div class="debug-body" id="debug-body"></div>
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
-
-  <script type="module" src="./app.js?v=0.8.19" />
 </body>
 </html>

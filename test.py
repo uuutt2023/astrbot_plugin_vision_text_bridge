@@ -2520,6 +2520,7 @@ def run_all():
         test_index_html_no_bridge_sdk_loading,
         test_app_js_uses_fallback_bridge_stub,
         test_index_html_has_bridge_mode_badge,
+        test_v0820_drops_esm_module,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -2716,7 +2717,7 @@ def test_api_diag_returns_db_info():
 
 
 def test_webui_logger_module_exists():
-    """v0.8.7.2: webui logger 模块存在且语法正确。"""
+    """v0.8.7.2: webui logger 模块存在且语法正确。v0.8.20 改为全局脚本，无 export default。"""
     import subprocess
     result = subprocess.run(["node", "--check", "pages/cache-manager/logger.js"],
                             capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
@@ -2724,8 +2725,8 @@ def test_webui_logger_module_exists():
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "pages/cache-manager/logger.js"), encoding="utf-8") as f:
         content = f.read()
-    assert "export default logger" in content
     assert "class WebuiLogger" in content
+    assert "window.webuiLogger" in content or "global.webuiLogger" in content, "v0.8.20 logger 须暴露到 window"
     assert "_log" in content
     for lvl in ["debug", "info", "warn", "error"]:
         assert f"{lvl}(" in content, f"logger.js 未实现 {lvl}()"
@@ -2733,20 +2734,21 @@ def test_webui_logger_module_exists():
 
 
 def test_webui_app_uses_logger():
-    """v0.8.7.2: app.js 全面接入 logger（4 个级别都有调用 + API 包装）。"""
+    """v0.8.7.2: app.js 全面接入 logger。v0.8.20 改用 window.webuiLogger，不再 import。"""
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "pages/cache-manager/app.js"), encoding="utf-8") as f:
         content = f.read()
-    assert 'import logger from "./logger.js"' in content
+    # v0.8.20: 不再 import，改用 window.webuiLogger
+    assert "import logger from " not in content, "v0.8.20 app.js 不应再 import logger"
+    assert "window.webuiLogger" in content, "v0.8.20 必须用 window.webuiLogger"
     for lvl in ["debug", "info", "warn", "error"]:
         assert f"logger.{lvl}(" in content, f"app.js 未调 logger.{lvl}"
     assert "async function apiGet" in content
     assert "async function apiPost" in content
-    # 业务代码不应直接调 bridge.apiGet/apiPost（必须走包装）
-    # 允许 logger.js / 注释中提及
     import re
-    # 找出 import 之后的所有 bridge.apiGet/apiPost 调用
-    after_import = content.split("import logger")[1]
+    # 找出 import 之后的所有 bridge.apiGet/apiPost 调用（v0.8.20 不再有 import）
+    parts = content.split("import logger", 1)
+    after_import = parts[1] if len(parts) > 1 else content
     # 但包装函数本身（apiGet/apiPost）当然会调 bridge.apiGet/apiPost——排除这两个函数体
     # 简化：只检查不在 async function apiGet/apiPost 内部
     lines = after_import.split("\n")
@@ -3855,6 +3857,29 @@ def test_index_html_has_bridge_mode_badge():
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     assert "bridge-mode-badge" in h, "index.html 必须有 #bridge-mode-badge 元素"
     print("✓ test_index_html_has_bridge_mode_badge")
+
+
+def test_v0820_drops_esm_module():
+    """v0.8.20: app.js / logger.js / index.html 不再使用 ESM type=module。
+    部分 AstrBot 版本对 <script type=module> 处理不一致，导致 app.js 顶层代码不跑。
+    """
+    h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
+    # 1. 不能再用 type=module
+    assert "type=\"module\"" not in h, "v0.8.20 index.html 不应再使用 type=module"
+    # 2. logger.js / app.js 都用普通 <script>
+    assert '<script src="./logger.js' in h, "logger.js 必须用普通 <script> 加载"
+    assert '<script src="./app.js' in h, "app.js 必须用普通 <script> 加载"
+    # 3. logger.js 不再 export default
+    lj = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/logger.js"), encoding="utf-8").read()
+    assert "export default" not in lj, "v0.8.20 logger.js 不再 export default"
+    # 4. app.js 不再 import logger
+    aj = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    assert "import logger from " not in aj, "v0.8.20 app.js 不再 import logger"
+    # 5. app.js 必须包裹为 IIFE 解决 top-level await
+    assert "(async function main() {" in aj, "v0.8.20 app.js 必须包裹为 IIFE"
+    # 6. 必须在末尾 catch 启动崩溃，全屏显示错
+    assert "})().catch(" in aj, "v0.8.20 app.js 必须在 IIFE 末尾 catch 启动错误"
+    print("✓ test_v0820_drops_esm_module")
 
 
 # ===========================================================================
