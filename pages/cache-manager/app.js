@@ -18,7 +18,23 @@ const _fallbackBridge = {
   apiPost: null,
 };
 const bridge = window.AstrBotPluginPage || _fallbackBridge;
-logger.info("init", "bridge:", bridge === _fallbackBridge ? "fallback (直 fetch)" : "AstrBotPluginPage (SDK)");
+const _isFallback = bridge === _fallbackBridge;
+logger.info("init", "bridge:", _isFallback ? "fallback (直 fetch)" : "AstrBotPluginPage (SDK)");
+// v0.8.19: 右上角 badge 让用户一眼看到 webui 是真加载好了
+{
+  const badge = document.getElementById("bridge-mode-badge");
+  if (badge) {
+    if (_isFallback) {
+      badge.textContent = "🔌 fallback (直 fetch)";
+      badge.classList.add("bridge-fallback");
+      badge.title = "AstrBot page bridge SDK 不可用，webui 走 fallbackFetch 直 fetch backend。功能 100% 正常。";
+    } else {
+      badge.textContent = "🟢 bridge (SDK)";
+      badge.classList.add("bridge-ok");
+      badge.title = "AstrBotPluginPage bridge 注入成功";
+    }
+  }
+}
 if (typeof bridge.ready === "function") {
   try {
     const ctx = await bridge.ready();

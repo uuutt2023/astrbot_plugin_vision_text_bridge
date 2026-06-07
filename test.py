@@ -2519,6 +2519,7 @@ def run_all():
         test_webui_no_direct_bridge_await_in_app_js,
         test_index_html_no_bridge_sdk_loading,
         test_app_js_uses_fallback_bridge_stub,
+        test_index_html_has_bridge_mode_badge,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3844,7 +3845,16 @@ def test_app_js_uses_fallback_bridge_stub():
     assert "const bridge = window.AstrBotPluginPage || _fallbackBridge" in src, "bridge 必须是 fallback"
     # 必须检测 bridge.apiGet/apiPost 是否为 function，不是就 fallbackFetch
     assert "typeof bridge.apiGet === \"function\"" in src, "必须检测 bridge.apiGet 是否可用"
+    # v0.8.19: bridge mode badge 让用户能视觉上看出 webui 加载状态
+    assert "bridge-mode-badge" in src, "app.js 必须更新 bridge-mode-badge 状态"
     print("✓ test_app_js_uses_fallback_bridge_stub")
+
+
+def test_index_html_has_bridge_mode_badge():
+    """v0.8.19: index.html 顶部必须添加 #bridge-mode-badge 元素。"""
+    h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
+    assert "bridge-mode-badge" in h, "index.html 必须有 #bridge-mode-badge 元素"
+    print("✓ test_index_html_has_bridge_mode_badge")
 
 
 # ===========================================================================

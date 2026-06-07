@@ -7,6 +7,26 @@
 
 无新变更。
 
+## [0.8.19] - 2026-06-07
+
+### 变改进展提示
+v0.8.18 推后用户报“webui还是报错”，但仔细看错误堆栈发现：
+- 之前的 ``bridge-sdk.js`` CORS 错（v0.8.15/16/17 修的那个）**已经消失**
+- 剩下的 ``cloud.astrbot.app/api/v1/github/repo-info`` CORS 错是 **AstrBot dashboard 自己的代码**（``index-DL0WKcFI.js``）调的，与本插件 webui 无关
+
+### 新增——bridge mode badge
+用户看不到自己的 webui 状态，会误以为 console CORS 错都是本插件的问题。加一个右上角 badge：
+- ``🔌 fallback (直 fetch)``（橙色，bridge SDK 不可用时走 fallbackFetch）——功能 100% 正常
+- ``🟢 bridge (SDK)``（绿色，bridge SDK 注入成功）
+- 鼠标 hover 有 tooltip 说明
+
+### 样式
+- style.css 加 ``.badge.bridge-ok`` (绿色) 和 ``.badge.bridge-fallback`` (橙色)
+
+### 测试
+- +1 个新测试：``test_index_html_has_bridge_mode_badge``
+- 总计 161/161
+
 ## [0.8.18] - 2026-06-07
 
 ### Bug 修复——彻底放弃 bridge SDK，走直 fetch backend

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.18" />
+  <link rel="stylesheet" href="./style.css?v=0.8.19" />
   <!-- v0.8.18: 彻底移除 bridge-sdk.js 主动加载
        原设计 v0.8.15 主动 inject /api/plugin/page/bridge-sdk.js，但 AstrBot 服务端返
        Access-Control-Allow-Origin: * + origin=null + credentials mode=include 三者撞 CORS。
@@ -35,6 +35,7 @@
       </div>
     </div>
     <div class="topbar-actions">
+      <span class="badge" id="bridge-mode-badge" title="">bridge: checking…</span>
       <span class="badge" id="db-path-badge" title="">DB: loading…</span>
     </div>
   </header>
@@ -196,6 +197,6 @@
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
 
-  <script type="module" src="./app.js?v=0.8.18" />
+  <script type="module" src="./app.js?v=0.8.19" />
 </body>
 </html>
