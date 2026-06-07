@@ -41,6 +41,24 @@
     logger.info("init", "bridge:", _isFallback ? "fallback (直 fetch)" : "AstrBotPluginPage (SDK)");
   } catch (e) { console.log("logger not ready:", e); }
 
+  // v0.8.23: detect actual loaded version from index.html's script src
+  // AstrBot may serve stale webui after restart——显式出示实际运行的版本，
+  // 避免用户看到 console 报错不知道到底跑的是哪个版本
+  try {
+    const dbBadge = document.getElementById("db-path-badge");
+    if (dbBadge) {
+      // 从当前页面的 <script> 标签里拿 v=X.Y.Z
+      const scripts = document.querySelectorAll('script[src*="app.js"]');
+      let ver = "unknown";
+      for (const s of scripts) {
+        const m = s.src.match(/[?&]v=([0-9.]+)/);
+        if (m) { ver = m[1]; break; }
+      }
+      dbBadge.textContent = `webui: v${ver}`;
+      dbBadge.title = `app.js 实际加载的版本。仓库 head: ${(window.__VTB_HEAD_VERSION__) || "unknown"}。不一致说明 AstrBot 没加载新代码。`;
+    }
+  } catch (e) { console.warn("version badge init failed:", e); }
+
   // v0.8.19: 右上角 badge 让用户一眼看到 webui 是真加载好了
   try {
     const badge = document.getElementById("bridge-mode-badge");

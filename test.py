@@ -2523,6 +2523,7 @@ def run_all():
         test_v0820_drops_esm_module,
         test_v0821_app_js_loaded_after_body,
         test_v0822_endpoints_have_leading_slash,
+        test_v0823_webui_version_badge,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3900,6 +3901,21 @@ def test_v0822_endpoints_have_leading_slash():
     # 防御性：fallbackFetch 内部也要以 / 开头
     assert "const ep = endpoint.startsWith(\"/\")" in src, "fallbackFetch 必须防御性加 /"
     print("✓ test_v0822_endpoints_have_leading_slash")
+
+
+def test_v0823_webui_version_badge():
+    """v0.8.23: webui 启动时读 script src 的 ?v=X.Y.Z 写入 db-path-badge，
+    让用户一眼看出 AstrBot 实际加载了什么版本（避免 AstrBot cache 误示）
+    """
+    h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # index.html 顶部必须含 app.js? v=0.8.23
+    assert 'app.js?v=0.8.23' in h, "index.html app.js 必须用 v=0.8.23"
+    # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
+    assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
+    assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
+    assert "db-path-badge" in a, "app.js 必须更新 db-path-badge 显示 webui 版本"
+    print("✓ test_v0823_webui_version_badge")
 
 
 def test_v0821_app_js_loaded_after_body():

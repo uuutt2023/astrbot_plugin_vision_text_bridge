@@ -10,13 +10,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.22" />
+  <link rel="stylesheet" href="./style.css?v=0.8.23" />
   <!-- v0.8.20: 全部改成普通 <script>，不再用 type=module
        v0.8.21: logger.js 在 <head> 里同步加载（极小，零依赖），
                 app.js 移到 </body> 之前，确保 body 全部 parse 完才跑
                 ——之前在 <head> 里加载时 modal-close 等元素还不存在
        -->
-  <script src="./logger.js?v=0.8.22"></script>
+  <script src="./logger.js?v=0.8.23"></script>
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -33,7 +33,7 @@
     </div>
     <div class="topbar-actions">
       <span class="badge" id="bridge-mode-badge" title="">bridge: checking…</span>
-      <span class="badge" id="db-path-badge" title="">DB: loading…</span>
+      <span class="badge" id="db-path-badge" title="">webui version</span>
     </div>
   </header>
 
@@ -193,6 +193,6 @@
     <div class="debug-body" id="debug-body"></div>
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
-  <script src="./app.js?v=0.8.22"></script>
+  <script src="./app.js?v=0.8.23"></script>
 </body>
 </html>

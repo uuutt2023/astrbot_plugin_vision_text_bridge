@@ -7,6 +7,39 @@
 
 无新变更。
 
+## [0.8.23] - 2026-06-07
+
+### 问题——用户重启 AstrBot 后还是拿到 v0.8.21
+
+v0.8.22 push 后用户报告：
+> 改了几个版本后 webui 里还是出现 `app.js?v=0.8.21`，
+> 改后的 endpoint 缺 / 那个错依然存在。
+
+**根因：用户没有 \`git pull\`，仅重启了 AstrBot。**
+重启进程不会拉新代码——只 reload 本地已存在的旧文件。
+A用户本地 \`pages/cache-manager/index.html\` 依然是 v0.8.21 push 时 pull 的版本，\`<script src="./app.js?v=0.8.21">\`，v0.8.22 push 没被 pull 进去。
+
+正确顺序：
+```bash
+cd /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge
+git pull     # ← 先拉代码
+# 然后再重启 AstrBot
+```
+
+### Fix——右上角加 webui 版本 badge
+
+v0.8.23 加 \`webui: vX.Y.Z\` badge (复用 \`#db-path-badge\`)—— webui 启动时读
+\`document.querySelectorAll('script[src*="app.js"]')\` 拿实际的 \`?v=X.Y.Z\`，
+显示在右上角。
+
+用户一眼能看出 AstrBot 实际加载的是什么版本。
+如果 badge 显示 \`webui: v0.8.21\` 而 GitHub HEAD 是 v0.8.23，
+说明 \`git pull\` 未执行。
+
+### Tests
+- +1 个新测试：\`test_v0823_webui_version_badge\`
+- 总计 165/165
+
 ## [0.8.22] - 2026-06-07
 
 ### 根因——endpoint 缺 /，URL 拼成 ...bridgecache/stats
