@@ -2522,6 +2522,7 @@ def run_all():
         test_index_html_has_bridge_mode_badge,
         test_v0820_drops_esm_module,
         test_v0821_app_js_loaded_after_body,
+        test_v0822_endpoints_have_leading_slash,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3881,6 +3882,24 @@ def test_v0820_drops_esm_module():
     # 6. 必须在末尾 catch 启动崩溃，全屏显示错
     assert "})().catch(" in aj, "v0.8.20 app.js 必须在 IIFE 末尾 catch 启动错误"
     print("✓ test_v0820_drops_esm_module")
+
+
+def test_v0822_endpoints_have_leading_slash():
+    """v0.8.22: app.js 调 apiGet/apiPost 时 endpoint 必须以 '/' 开头，
+    避免和 PLUGIN_PATH 直接拼接产生 '/api/plug/<plugin>cache/stats' (错)
+    """
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    # 抓出所有 apiGet/apiPost(endpoint, ...) 调用
+    import re
+    calls = re.findall(r"(?:apiGet|apiPost)\(([^\n]+)", src)
+    for c in calls:
+        # 提取第一个字符串参数（"或`“包起来的）
+        m = re.search(r'[`"\'](/[^"\'`]+)[`"\']', c)
+        if m:
+            assert m.group(1).startswith("/"), f"endpoint 必须以 / 开头: {m.group(1)} in '{c.strip()}'"
+    # 防御性：fallbackFetch 内部也要以 / 开头
+    assert "const ep = endpoint.startsWith(\"/\")" in src, "fallbackFetch 必须防御性加 /"
+    print("✓ test_v0822_endpoints_have_leading_slash")
 
 
 def test_v0821_app_js_loaded_after_body():

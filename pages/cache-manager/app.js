@@ -268,9 +268,12 @@ initDebugPanel();
 // ----- API 包装（统一加日志） -----
 
 // v0.8.14: bridge.apiGet/apiPost 不存在时 fallback 到直 fetch backend
+// v0.8.22: PLUGIN_PATH 末尾不加 /——下下面负责保证 endpoint 有 “/” 开头
 const PLUGIN_PATH = `/api/plug/astrbot_plugin_vision_text_bridge`;
 async function fallbackFetch(method, endpoint, payload) {
-  const url = `${PLUGIN_PATH}${endpoint}`;
+  // 防御性：endpoint 必须以 / 开头，偷漏了 / 会拼成 ...bridgecache/stats (错)
+  const ep = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  const url = `${PLUGIN_PATH}${ep}`;
   const init = {
     method,
     headers: { "Content-Type": "application/json" },
@@ -444,7 +447,7 @@ function truncate(s, n) {
 async function loadStats() {
   logger.debug("data", "loadStats() 开始");
   try {
-    const resp = await apiGet("cache/stats");
+    const resp = await apiGet("/cache/stats");
     const data = resp?.data || resp;
     $("stat-total").textContent = data.total ?? 0;
     $("stat-hits").textContent = data.total_hits ?? 0;
@@ -498,7 +501,7 @@ function renderStatusBar(data) {
 let _timelineCache = null;  // 上次拉的 buckets，供自动刷新复用
 async function loadTimeline() {
   try {
-    const resp = await apiGet("cache/stats/timeline", { days: 30 });
+    const resp = await apiGet("/cache/stats/timeline", { days: 30 });
     const data = resp?.data || resp;
     _timelineCache = data.buckets || [];
     drawTimeline(_timelineCache);
@@ -626,7 +629,7 @@ async function loadList() {
   state.loading = true;
   logger.debug("data", "loadList 开始", { offset: state.offset, limit: state.limit, search: state.search });
   try {
-    const resp = await apiGet("cache/list", {
+    const resp = await apiGet("/cache/list", {
       limit: state.limit,
       offset: state.offset,
       search: state.search,
@@ -749,7 +752,7 @@ async function ensureThumb(imageId, slot) {
   // v0.8.9: 走并发池（默认 6 路）避免一次性 20 个 RTT 堆 bridge
   return thumbPool.run(async () => {
     try {
-      const resp = await apiGet(`cache/thumbnail/${encodeURIComponent(imageId)}`);
+      const resp = await apiGet(`/cache/thumbnail/${encodeURIComponent(imageId)}`);
       const data = resp?.data || resp;
       if (data?.has_image && data.data_url) {
         const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
@@ -785,7 +788,7 @@ function renderThumb(slot, thumb) {
 async function onView(imageId) {
   logger.info("ui", `查看缓存详情: ${imageId.slice(0, 12)}`);
   try {
-    const resp = await apiGet(`cache/thumbnail/${encodeURIComponent(imageId)}`);
+    const resp = await apiGet(`/cache/thumbnail/${encodeURIComponent(imageId)}`);
     const data = resp?.data || resp;
     const body = $("modal-body");
     let html = "";
@@ -855,7 +858,7 @@ async function onDelete(id) {
     return;
   }
   try {
-    const resp = await apiPost("cache/delete", { key: id });
+    const resp = await apiPost("/cache/delete", { key: id });
     if (resp?.ok !== false) {
       state.thumbCache.delete(id);
       logger.info("ui", `删除成功: ${id.slice(0, 12)}`);

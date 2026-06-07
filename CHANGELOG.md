@@ -7,6 +7,37 @@
 
 无新变更。
 
+## [0.8.22] - 2026-06-07
+
+### 根因——endpoint 缺 /，URL 拼成 ...bridgecache/stats
+
+v0.8.21 push 后用户报错：
+```
+GET http://1.12.221.36:6185/api/plug/astrbot_plugin_vision_text_bridgecache/stats
+                                                    ↑ 少了一个斜杠
+=> 实际请求返回 404/连不上
+```
+
+v0.8.14 引入了 PLUGIN_PATH = `/api/plug/astrbot_plugin_vision_text_bridge`，
+v0.8.18 走 fallbackFetch 时该函数直接 \`${PLUGIN_PATH}${endpoint}\` 拼接。
+但业务代码调用 \`apiGet("cache/stats")\`——endpoint 不带 \`/\`，
+拼接后变成 \`/api/plug/astrbot_plugin_vision_text_bridgecache/stats\`。
+404。后端路由是 \`/api/plug/<plugin>/<path:subpath>\`——需要 \`/\` 分隔。
+
+v0.8.20 该这个错本该能抓住，但当时没报、用户没明显错误。
+今天 v0.8.21 修复 DOM 加载顺序后，
+API 调用确实发出去了，404/CORS 错才露出来。
+
+### Fix——endpoint 全部加 / 前缀
+
+1. **所有业务调用点修改** (8 处)：\`apiGet("cache/stats")\` → \`apiGet("/cache/stats")\`。
+2. **fallbackFetch 防御性加 /**：\`<code>const ep = endpoint.startsWith("/") ? endpoint : "/" + endpoint;<\/code>\`。
+3. **fallback URL 拼接**改用 \`ep\` 而不是 \`endpoint\`。
+
+### Tests
+- +1 个新测试：\`test_v0822_endpoints_have_leading_slash\` 全面检查所有 \`apiGet/apiPost\` 调用 endpoint 以 \`/\` 开头
+- 总计 164/164
+
 ## [0.8.21] - 2026-06-07
 
 ### 根因——app.js 在 <head> 加载，DOM 未就绪
