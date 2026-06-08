@@ -3916,8 +3916,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.33 (v0.8.33 写走 bridge 手动拼 query)
-    assert 'app.js?v=0.8.33' in h, "index.html app.js 必须用 v=0.8.33"
+    # index.html 顶部必须含 app.js? v=0.8.34 (v0.8.34 apiWrite 改回两参数 + backend debug log)
+    assert 'app.js?v=0.8.34' in h, "index.html app.js 必须用 v=0.8.34"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -4143,9 +4143,11 @@ def test_v0831_write_uses_bridge_with_manual_query():
     m = re.search(r"function apiWrite\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m, "app.js 必须有 apiWrite 函数"
     body = m.group(1)
-    # v0.8.33 改回 bridge.apiGet + 手动拼 query (v0.8.32 sendBeacon 401 没 cookie)
-    assert "bridge.apiGet" in body, "apiWrite 应调 bridge.apiGet (v0.8.33 走 bridge 带 cookie auth)"
-    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon (v0.8.32 401)"
+    # v0.8.34: 改回两参数 bridge.apiGet(endpoint, params)
+    # v0.8.33 手动拼 query 报 'Plugin bridge endpoint is invalid' (bridge 拒绝带 ? 的 endpoint)
+    assert "bridge.apiGet(endpoint, params" in body or "bridge.apiGet(endpoint,params" in body, \
+        "apiWrite 应调 bridge.apiGet(endpoint, params) 两参数 (v0.8.34 修 v0.8.33 'invalid endpoint')"
+    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon"
     # bridge.apiGet 应在 fallbackFetch 之前 (主优先)
     bridge_pos = body.find("bridge.apiGet")
     fallback_pos = body.find("fallbackFetch")

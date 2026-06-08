@@ -573,14 +573,10 @@ class VisionTextBridgePlugin(Star):
                        "items": [e.to_dict() for e in items]})
 
         async def _read_key_from_request():
-            """v0.8.32: 抽取共用 key 提取。多路径防 500。
-            优先顺序: query > json body > form body > text body
-            - query:  GET + bridge.apiGet 全路径 (v0.8.31 验证 OK)
-            - json:   POST + application/json
-            - form:   sendBeacon (application/x-www-form-urlencoded, 无 CORS 限制)
-            - text:   fallback 兑底
-            """
+            """v0.8.32→v0.8.34: 抽取共用 key 提取。多路径防 500。
+            v0.8.34 加诊断: bridge 调时 query 是什么 / 读 key 全尝试。"""
             key = ""
+            debug_lines = []
             # 1. query
             try:
                 req = self.context.request
@@ -590,38 +586,51 @@ class VisionTextBridgePlugin(Star):
                         key = (query.get("key") or "").strip()
                     elif isinstance(query, dict):
                         key = (query.get("key") or "").strip()
+                    debug_lines.append(f"query={dict(query) if hasattr(query, 'items') else query!r}")
             except Exception as e:
-                logger.debug("[vision_text_bridge] query 读 key 失败: %s", e)
+                debug_lines.append(f"query-err={e}")
             if key:
+                logger.warning(f"[vtb-debug delete] key from query: {key[:12]}  ({'; '.join(debug_lines)})")
                 return key
             # 2. json body
             try:
                 body = await self.context.request.json
                 key = (body.get("key") or "").strip()
+                debug_lines.append(f"json-body={body!r}")
                 if key:
+                    logger.warning(f"[vtb-debug delete] key from json: {key[:12]}  ({'; '.join(debug_lines)})")
                     return key
-            except Exception:
-                pass
-            # 3. form body (sendBeacon application/x-www-form-urlencoded)
+            except Exception as e:
+                debug_lines.append(f"json-err={type(e).__name__}")
+            # 3. form body
             try:
                 form = await self.context.request.post
                 if form and hasattr(form, "get"):
                     key = (form.get("key") or "").strip()
+                    debug_lines.append(f"form-body={dict(form) if hasattr(form, 'items') else form!r}")
                     if key:
+                        logger.warning(f"[vtb-debug delete] key from form: {key[:12]}  ({'; '.join(debug_lines)})")
                         return key
-            except Exception:
-                pass
-            # 4. raw text body fallback (兑底)
+            except Exception as e:
+                debug_lines.append(f"form-err={type(e).__name__}")
+            # 4. raw text body
             try:
                 raw = await self.context.request.text
-                if raw and "=" in raw:
-                    from urllib.parse import parse_qs
-                    parsed = parse_qs(raw)
-                    vals = parsed.get("key", [])
-                    if vals:
-                        key = vals[0].strip()
-            except Exception:
-                pass
+                if raw:
+                    debug_lines.append(f"raw-text={raw[:200]!r}")
+                    if "=" in raw:
+                        from urllib.parse import parse_qs
+                        parsed = parse_qs(raw)
+                        vals = parsed.get("key", [])
+                        if vals:
+                            key = vals[0].strip()
+                            logger.warning(f"[vtb-debug delete] key from raw-text: {key[:12]}  ({'; '.join(debug_lines)})")
+                            return key
+                else:
+                    debug_lines.append("raw-text=empty")
+            except Exception as e:
+                debug_lines.append(f"raw-err={type(e).__name__}")
+            logger.warning(f"[vtb-debug delete] NO KEY FOUND ({'; '.join(debug_lines)})")
             return key
 
         async def api_delete():

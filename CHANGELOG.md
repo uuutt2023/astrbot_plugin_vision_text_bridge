@@ -7,6 +7,53 @@
 
 无新变更。
 
+## [0.8.34] - 2026-06-08
+
+### 诊断进度——v0.8.33 揭晓了 bridge 错误路径
+
+v0.8.33 user log:
+
+```
+[ERROR] WRITE bridge 异常 Plugin bridge endpoint is invalid.
+Error: Plugin bridge endpoint is invalid.
+    at bridge-sdk.js:172:11
+```
+
+**bridge-sdk.js 主动拒绝 带 ? 的 endpoint**——所以 v0.8.33
+手动拼 query 报 invalid。
+
+### 修正 v0.8.28 走 bridge 报 400 的可能原因
+
+v0.8.28 调用为:
+```js
+bridge.apiGet("/cache/delete", { key: id })
+```
+
+bridge 内部转 params → query string (有效 endpoint, 不报 invalid),
+dashboard 调 backend。
+
+backend 返 400, 但 user log 只显示 400 没看 body——可能是 400 缺 key,
+也可能是别的原因。v0.8.28 走 path 完整, URL 上有 ?key=...。
+
+**v0.8.34 找回两参数 + backend debug log 看清**:
+- v0.8.28 走 bridge.apiGet("/cache/delete", {key: id}) 两参数
+- bridge 内部转 params → query
+- dashboard 调 backend 带 query
+- backend _read_key_from_request 增强诊断 log, 看到底 query 拿到了没
+
+### Fix——v0.8.34
+
+apiWrite 改回两参数调 bridge.apiGet (bridge 内部转 query), backend
+加详细 warning log:
+```python
+logger.warning(f"[vtb-debug delete] key from query: {key[:12]}  ({'; '.join(debug_lines)})")
+```
+
+### Tests
+- 172/172 (v0.8.31 test update 为 v0.8.34, 检查两参数调用)
+
+## [0.8.33] - 2026-06-08
+
 ## [0.8.33] - 2026-06-08
 
 ### 问题——v0.8.32 sendBeacon 401

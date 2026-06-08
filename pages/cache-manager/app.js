@@ -84,15 +84,15 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19 + v0.8.33: 右上角 badge——v0.8.33 写回 bridge.apiGet
-  // v0.8.32 sendBeacon 401 (不带 cookie), v0.8.33 改回 bridge.apiGet + 手动拼 query
-  // bridge 调 dashboard 调 backend 是同源, 带 cookie, auth 过
+  // v0.8.19 + v0.8.34: 右上角 badge——v0.8.34 apiWrite 改回两参数 bridge.apiGet
+  // v0.8.33 手动拼 query 报 "Plugin bridge endpoint is invalid"
+  // v0.8.34 改回两参数 + backend debug log 看到底是哪步出问题
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🟢 bridge (读+写)";
+      badge.textContent = "🟢 bridge (读+写, v0.8.34)";
       badge.classList.add("bridge-ok");
-      badge.title = "v0.8.33 读 + 写 都走 bridge.apiGet (postMessage 跨 sandbox origin=null, parent dashboard 同源 fetch 带 cookie auth)。写接口 endpoint 手动拼 query string (v0.8.32 sendBeacon 不带 cookie 401 拒)。";
+      badge.title = "v0.8.34 读 + 写 都走 bridge.apiGet 两参数 (bridge 内部转 query, v0.8.33 手动拼 query 被 bridge 拒 endpoint invalid)。backend _read_key_from_request 增强 + debug log 看清哪步拿到 key。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -369,29 +369,20 @@ async function apiGet(endpoint, params = {}) {
   }
 }
 
-// v0.8.33: 写操作专用——bridge.apiGet 单参数 (endpoint + query 拼好)
-// v0.8.32 sendBeacon 走 POST (绕过 CORS) 但 不带 cookie, backend 401 auth 拒
-// v0.8.28 走 bridge.apiGet 报 400 是 backend 缺 key (auth 已过)——说明 bridge 调 dashboard 有 cookie
-// 现在手动拼 query string 到 endpoint, bridge 不需要转换 params
+// v0.8.34: 写操作专用——bridge.apiGet 两参数 (endpoint, params)
+// v0.8.33 手动拼 query 报 "Plugin bridge endpoint is invalid"——bridge 拒绝带 ? 的 endpoint
+// v0.8.28 用两参数报 400, 但实际是 400 是 backend 返的 (auth 已过), 可能 backend _read_key_from_request 没拿到 query
+// v0.8.34 改回两参数 + backend debug log 看出哪里出的问题
 async function apiWrite(endpoint, params = {}) {
   const t0 = performance.now();
   state.apiStats.calls += 1;
   logger.debug("api", `WRITE bridge GET ${endpoint}`, params);
   try {
-    // 手动拼 query string 到 endpoint
-    let fullEndpoint = endpoint;
-    if (params && Object.keys(params).length > 0) {
-      const qs = new URLSearchParams(params).toString();
-      if (qs) {
-        fullEndpoint = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${qs}`;
-      }
-    }
     let resp;
     if (typeof bridge.apiGet === "function") {
-      // 单参数 (endpoint + query 拼好) bridge 不转换
-      resp = await bridge.apiGet(fullEndpoint);
+      // v0.8.34: 两参数——bridge 内部转 params -> query string
+      resp = await bridge.apiGet(endpoint, params || {});
     } else {
-      // 兑底
       resp = await fallbackFetch("GET", endpoint, params);
     }
     const dt = (performance.now() - t0).toFixed(1);
@@ -399,10 +390,10 @@ async function apiWrite(endpoint, params = {}) {
     const data = resp?.data || resp;
     const ok = resp?.ok !== false;
     if (ok) {
-      logger.info("api", `WRITE bridge GET ${fullEndpoint} OK ${dt}ms`, _summarize(data));
+      logger.info("api", `WRITE bridge GET ${endpoint} OK ${dt}ms`, _summarize(data));
     } else {
       state.apiStats.errors += 1;
-      logger.warn("api", `WRITE bridge GET ${fullEndpoint} 失败 ${dt}ms`, resp?.error || resp);
+      logger.warn("api", `WRITE bridge GET ${endpoint} 失败 ${dt}ms`, resp?.error || resp);
     }
     return resp;
   } catch (e) {
