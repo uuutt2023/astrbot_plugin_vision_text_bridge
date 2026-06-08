@@ -84,14 +84,15 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19 + v0.8.29: 右上角 badge——v0.8.29 永远走 fallbackFetch
-  // (bridge.apiGet 调 delete 接口会被中间层丢 key) 简化 badge
+  // v0.8.19 + v0.8.30: 右上角 badge——v0.8.30 分派架构
+  // 读 (apiGet) 走 bridge.apiGet, 写 (apiWrite) 走 fallbackFetch GET
+  // fallbackFetch 不设 Content-Type, 保证 GET 是 simple request (不 preflight)
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🔌 fallbackFetch (同源)";
+      badge.textContent = "🟡 读 bridge / 写 fallbackFetch";
       badge.classList.add("bridge-fallback");
-      badge.title = "v0.8.29+ 改用 fallbackFetch 直连 backend。GET 走同源 fetch (无 CORS), POST 不会触发（API 已全迁 GET）。bridge SDK 只保留 SDK 加载探测，不再被调用。";
+      badge.title = "v0.8.30 读操作走 bridge.apiGet (postMessage 同源)；写操作走 fallbackFetch GET simple request (不发 Content-Type, 不会 preflight)。sandbox iframe 跨 origin=null 问题减半。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -312,20 +313,24 @@ async function fallbackFetch(method, endpoint, payload) {
   // 防御性：endpoint 必须以 / 开头，偷漏了 / 会拼成 ...bridgecache/stats (错)
   const ep = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
   const url = `${PLUGIN_PATH}${ep}`;
-  const init = {
-    method,
-    headers: { "Content-Type": "application/json" },
-  };
-  if (payload && Object.keys(payload).length > 0) {
-    if (method === "GET") {
+  // v0.8.30: CORS 决胜点。sandbox iframe origin=null + server 永远不发 ACAO
+  // - GET: 绝不能发自定义 Content-Type (application/json 不在 simple request 列表)——拼到 query string
+  // - POST: 走 postMessage 调 parent (用 bridge.apiPost 仍能被跨)
+  // 这里 fallbackFetch 仅作为写操作发用 (DELETE/REGENERATE/... 都迁到 GET) ，
+  // 故只剩 GET 路径。GET simple request 不发 preflight。
+  const init = { method };
+  if (method === "GET") {
+    if (payload && Object.keys(payload).length > 0) {
       const qs = new URLSearchParams(payload).toString();
-      if (qs) init.url = `${url}?${qs}`;
-      else init.url = url;
+      init.url = qs ? `${url}?${qs}` : url;
     } else {
-      init.body = JSON.stringify(payload);
       init.url = url;
     }
   } else {
+    // POST: Content-Type: application/json 会 preflight——sandbox iframe 里会被拒
+    // 所有写操作已迁 GET, 这里只作老路径兑底, 换 text/plain (simple request)
+    init.headers = { "Content-Type": "text/plain;charset=UTF-8" };
+    init.body = payload ? JSON.stringify(payload) : "{}";
     init.url = url;
   }
   logger.warn("api", `fallback fetch: ${method} ${init.url}`);
@@ -338,10 +343,14 @@ async function apiGet(endpoint, params = {}) {
   state.apiStats.calls += 1;
   logger.debug("api", `GET ${endpoint}`, params);
   try {
-    // v0.8.29: 永远走 fallbackFetch——bridge.apiGet 虽能调
-    // 但实测 bridge 转 path/query 走样 (delete 接口报 400 key 缺)
-    // fallbackFetch 同源 fetch 验证过全 OK
-    const resp = await fallbackFetch("GET", endpoint, params);
+    // v0.8.30: 读操作走 bridge.apiGet (v0.8.24 验证过 OK, 走 postMessage 绕 sandbox origin=null)
+    // 写操作 onDelete/onRegenerate/onClear/onCleanExpired 调 apiWrite() 走 fallbackFetch (GET 简单请求 不发 preflight)
+    let resp;
+    if (typeof bridge.apiGet === "function") {
+      resp = await bridge.apiGet(endpoint, params);
+    } else {
+      resp = await fallbackFetch("GET", endpoint, params);
+    }
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const data = resp?.data || resp;
@@ -356,6 +365,32 @@ async function apiGet(endpoint, params = {}) {
   } catch (e) {
     state.apiStats.errors += 1;
     logger.error("api", `GET ${endpoint} 异常`, e);
+    throw e;
+  }
+}
+
+// v0.8.30: 写操作专用。bridge.apiGet 调 delete 会丢 key (v0.8.28 实测)
+// 走 fallbackFetch (GET 简单请求, 不发 Content-Type 不发 preflight, 可跨 sandbox origin=null)
+async function apiWrite(endpoint, params = {}) {
+  const t0 = performance.now();
+  state.apiStats.calls += 1;
+  logger.debug("api", `WRITE GET ${endpoint}`, params);
+  try {
+    const resp = await fallbackFetch("GET", endpoint, params);
+    const dt = (performance.now() - t0).toFixed(1);
+    state.apiStats.lastLatencyMs = dt;
+    const data = resp?.data || resp;
+    const ok = resp?.ok !== false;
+    if (ok) {
+      logger.info("api", `WRITE GET ${endpoint} OK ${dt}ms`, _summarize(data));
+    } else {
+      state.apiStats.errors += 1;
+      logger.warn("api", `WRITE GET ${endpoint} 失败 ${dt}ms`, resp?.error || resp);
+    }
+    return resp;
+  } catch (e) {
+    state.apiStats.errors += 1;
+    logger.error("api", `WRITE GET ${endpoint} 异常`, e);
     throw e;
   }
 }
@@ -916,8 +951,8 @@ async function onDelete(id) {
     return;
   }
   try {
-    // v0.8.27: 改用 GET + query string (避免 CORS preflight, sandbox iframe 里能过)
-    const resp = await apiGet("/cache/delete", { key: id });
+    // v0.8.30: 走 apiWrite (fallbackFetch GET, 不发 Content-Type, 不 preflight)
+    const resp = await apiWrite("/cache/delete", { key: id });
     if (resp?.ok !== false) {
       state.thumbCache.delete(id);
       try { sessionStorage.removeItem(`vtb_thumb:${id}`); } catch (_) {}
@@ -939,7 +974,7 @@ async function onRegenerate(id) {
   showToast("正在重新生成描述...");
   try {
     // v0.8.27: GET + query (避免 CORS preflight)
-    const resp = await apiGet("cache/regenerate", { key: id });
+    const resp = await apiWrite("cache/regenerate", { key: id });
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
       if (data.ok) {
@@ -967,8 +1002,8 @@ async function onClear() {
     return;
   }
   try {
-    // v0.8.27: GET (避免 CORS preflight, 纯动作)
-    const resp = await apiGet("cache/clear");
+    // v0.8.30: apiWrite GET (sandbox iframe simple request, 不 preflight)
+    const resp = await apiWrite("cache/clear");
     const data = resp?.data || resp;
     logger.info("ui", `清空完成: ${data?.cleared ?? 0} 条`);
     showToast("已清空 " + (data?.cleared ?? 0) + " 条");
@@ -987,8 +1022,8 @@ async function onCleanExpired() {
     return;
   }
   try {
-    // v0.8.27: GET (避免 CORS preflight)
-    const resp = await apiGet("cache/clean_expired");
+    // v0.8.30: apiWrite GET (sandbox iframe simple request, 不 preflight)
+    const resp = await apiWrite("cache/clean_expired");
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
       const sql = data?.deleted_sqlite ?? 0;

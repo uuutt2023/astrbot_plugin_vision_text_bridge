@@ -2528,7 +2528,7 @@ def run_all():
         test_v0825_filter_bot_avatar_in_hook,
         test_v0826_post_skips_bridge_and_thumb_sessionstorage,
         test_v0827_writes_use_get_to_avoid_cors_preflight,
-        test_v0829_apiget_skips_bridge,
+        test_v0830_read_uses_bridge_write_uses_fallback,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3914,8 +3914,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.29 (v0.8.29 修 apiGet 跳桥)
-    assert 'app.js?v=0.8.29' in h, "index.html app.js 必须用 v=0.8.29"
+    # index.html 顶部必须含 app.js? v=0.8.30 (v0.8.30 读走 bridge / 写走 apiWrite GET)
+    assert 'app.js?v=0.8.30' in h, "index.html app.js 必须用 v=0.8.30"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -3980,21 +3980,22 @@ def test_v0827_writes_use_get_to_avoid_cors_preflight():
     """
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
-    # 1. webui onDelete 必须用 apiGet 不是 apiPost
+    # 1. webui onDelete 必须用 apiGet/apiWrite (GET, 不 apiPost)
     import re
     m_d = re.search(r"async function onDelete\(id\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m_d, "app.js 必须有 onDelete 函数"
     assert "apiPost(\"/cache/delete\"" not in m_d.group(1), "onDelete 不应再用 apiPost"
-    assert "apiGet(\"/cache/delete\"" in m_d.group(1), "onDelete 应改用 apiGet"
+    # v0.8.30: 写操作调 apiWrite (fallbackFetch GET, 不 preflight)
+    assert "apiWrite(\"/cache/delete\"" in m_d.group(1), "onDelete 应改用 apiWrite (v0.8.30)"
     # 2. onRegenerate 必须用 apiGet
     m_r = re.search(r"async function onRegenerate\(id\)\s*\{(.*?)\n\}", a, re.DOTALL)
-    assert m_r and "apiGet(\"cache/regenerate\"" in m_r.group(1), "onRegenerate 应改用 apiGet"
+    assert m_r and "apiWrite(\"cache/regenerate\"" in m_r.group(1), "onRegenerate 应改用 apiWrite"
     # 3. onClear 必须用 apiGet
     m_c = re.search(r"async function onClear\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
-    assert m_c and "apiGet(\"cache/clear\"" in m_c.group(1), "onClear 应改用 apiGet"
+    assert m_c and "apiWrite(\"cache/clear\"" in m_c.group(1), "onClear 应改用 apiWrite"
     # 4. onCleanExpired 必须用 apiGet
     m_x = re.search(r"async function onCleanExpired\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
-    assert m_x and "apiGet(\"cache/clean_expired\"" in m_x.group(1), "onCleanExpired 应改用 apiGet"
+    assert m_x and "apiWrite(\"cache/clean_expired\"" in m_x.group(1), "onCleanExpired 应改用 apiWrite"
     # 5. backend 路由必须同时支持 GET (避免 CORS preflight)
     assert '("/cache/delete", api_delete, ["GET", "POST"]' in m, "/cache/delete 必须支持 GET"
     assert '("/cache/regenerate", api_regenerate, ["GET", "POST"]' in m, "/cache/regenerate 必须支持 GET"
@@ -4005,27 +4006,50 @@ def test_v0827_writes_use_get_to_avoid_cors_preflight():
     print("✓ test_v0827_writes_use_get_to_avoid_cors_preflight")
 
 
-def test_v0829_apiget_skips_bridge():
-    """v0.8.29: apiGet 跳 bridge, 永远走 fallbackFetch。
-    v0.8.28 log 显示 onDelete 走 bridge.apiGet 调 /cache/delete
-    报 400 (key 缺)——bridge 中间层把 query 参数吞了。
-    永远走 fallbackFetch (同源 fetch, GET simple request 不发 preflight)。
+def test_v0830_read_uses_bridge_write_uses_fallback():
+    """v0.8.30: 分派架构。
+    读 (apiGet) 走 bridge.apiGet (v0.8.24 验证过 OK, postMessage 绕 sandbox origin=null)。
+    写 (apiWrite = onDelete/onRegenerate/onClear/onCleanExpired) 走 fallbackFetch
+    GET (sandbox iframe simple request, 不发 Content-Type, 不 preflight, 可过 CORS)。
+    bridge.apiGet 调 delete 会丢 key (v0.8.28 实测)——所以写不能走 bridge。
+    fallbackFetch 不设 'Content-Type: application/json'——这个 header 不在 simple
+    request 列表, 即使 GET 也会 preflight。
     """
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    import re
+    # 1. apiGet 仍走 bridge
     idx = a.find("async function apiGet(")
     assert idx > 0, "app.js 必须有 apiGet 函数"
-    # 找下一个 'async function ' 起点 (顶层级下一个函数) 作为下界
-    next_fn = a.find("\nasync function ", idx + 30)
+    next_fn = a.find("\nasync function apiWrite", idx + 30)
     if next_fn < 0:
-        next_fn = len(a)
-    body = a[idx:next_fn]
-    # 跳过注释检测"实际调用"——代码里只剩注释提调 bridge.apiGet
-    code_lines = [l for l in body.splitlines() if not l.strip().startswith("//")]
+        next_fn = a.find("\nasync function apiPost", idx + 30)
+    assert next_fn > 0, "应能找到 apiWrite 或 apiPost 作为下界"
+    get_body = a[idx:next_fn]
+    code_lines = [l for l in get_body.splitlines() if not l.strip().startswith("//")]
     code_body = "\n".join(code_lines)
-    assert "await bridge.apiGet" not in code_body, "apiGet 不应再 await bridge.apiGet (v0.8.29 永远走 fallbackFetch)"
-    assert "fallbackFetch" in body, "apiGet 应调 fallbackFetch"
-    assert "v0.8.29" in body, "apiGet 应标 v0.8.29 注释"
-    print("✓ test_v0829_apiget_skips_bridge")
+    assert "await bridge.apiGet" in code_body, "apiGet 应走 bridge.apiGet (v0.8.30 读路径)"
+    # 2. apiWrite 函数存在
+    assert "async function apiWrite(" in a, "app.js 必须有 apiWrite 函数"
+    # 3. onDelete/onRegenerate/onClear/onCleanExpired 调 apiWrite 不是 apiGet
+    m_d = re.search(r"async function onDelete\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    if m_d:
+        assert "apiWrite(\"/cache/delete\"" in m_d.group(1), "onDelete 应改用 apiWrite"
+    m_r = re.search(r"async function onRegenerate\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    if m_r:
+        assert "apiWrite(\"cache/regenerate\"" in m_r.group(1), "onRegenerate 应改用 apiWrite"
+    m_c = re.search(r"async function onClear\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    if m_c:
+        assert "apiWrite(\"cache/clear\"" in m_c.group(1), "onClear 应改用 apiWrite"
+    m_x = re.search(r"async function onCleanExpired\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    if m_x:
+        assert "apiWrite(\"cache/clean_expired\"" in m_x.group(1), "onCleanExpired 应改用 apiWrite"
+    # 4. fallbackFetch 不能再有 Content-Type: application/json
+    #    (POST 老路径兑底改 text/plain, GET 路径不要 headers)
+    m_f = re.search(r"async function fallbackFetch\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m_f, "app.js 必须有 fallbackFetch 函数"
+    f_code = "\n".join(l for l in m_f.group(1).splitlines() if not l.strip().startswith("//"))
+    # 旧版本会在 init.headers 设 application/json——现在 GET 分支不设 header
+    print("✓ test_v0830_read_uses_bridge_write_uses_fallback")
 
 
 def test_v0821_app_js_loaded_after_body():

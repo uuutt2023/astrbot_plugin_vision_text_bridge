@@ -7,6 +7,49 @@
 
 无新变更。
 
+## [0.8.30] - 2026-06-08
+
+### 问题——v0.8.29 一刀切跳桥导致全 CORS 死
+
+v0.8.29 push 后用户 log:
+
+```
+1.12.221.36/:1 Access to fetch at 'http://1.12.221.36:6185/api/plug/.../cache/stats' from origin 'null' has been blocked by CORS policy
+Failed to load resource: net::ERR_FAILED
+GET /cache/stats 异常 Failed to fetch
+```
+
+全部读接口也死了。原因是 fallbackFetch 一直设
+`Content-Type: application/json`——这个 header 不在
+CORS simple request 列表里 (application/x-www-form-urlencoded /
+multipart/form-data / text/plain 才免 preflight)，**GET + 任意
+application/json 也会触发 preflight**。
+
+### 错在哪
+
+v0.8.18 看到 fallbackFetch 调 GET 能走之前就以为 GET OK了——其实是
+v0.8.24 重新开了 bridge SDK 后, 实际读接口一直走 bridge.apiGet
+(postMessage 跳 sandbox origin=null 限制), fallbackFetch 几手没被调用过。
+
+v0.8.29 让 apiGet 全走 fallbackFetch, 误将 CORS 头加在 GET 上 → preflight 被拒 → 全死。
+
+### Fix——v0.8.30 分派架构
+
+- **读 (apiGet)** 走 bridge.apiGet （v0.8.24 验证过 OK，postMessage 跨同源）
+- **写 (apiWrite)** 走 fallbackFetch GET，**不设 Content-Type**——GET 是 simple request
+  不会被 CORS preflight 拦截
+- onDelete / onRegenerate / onClear / onCleanExpired 调 apiWrite 而非 apiGet
+- bridge.apiGet 调 delete 丢 key 报 400 这个坑 v0.8.28 发现了——现在写不跳桥
+
+fallbackFetch POST 路径: 兑底改 `Content-Type: text/plain;charset=UTF-8`
+(仍属 simple request)——仅是兑底, 所有写接口已迁 GET。
+
+### Tests
+- +1 个新测试: \`test_v0830_read_uses_bridge_write_uses_fallback\`
+- 总计 170/170
+
+## [0.8.29] - 2026-06-08
+
 ## [0.8.29] - 2026-06-08
 
 ### 进展——v0.8.28 backend 不再 500 但仍然 400
