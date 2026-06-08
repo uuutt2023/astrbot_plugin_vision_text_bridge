@@ -2527,6 +2527,7 @@ def run_all():
         test_v0824_bridge_sdk_reload,
         test_v0825_filter_bot_avatar_in_hook,
         test_v0826_post_skips_bridge_and_thumb_sessionstorage,
+        test_v0827_writes_use_get_to_avoid_cors_preflight,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3913,7 +3914,7 @@ def test_v0823_webui_version_badge():
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # index.html 顶部必须含 app.js? v=0.8.23
-    assert 'app.js?v=0.8.26' in h, "index.html app.js 必须用 v=0.8.26"
+    assert 'app.js?v=0.8.27' in h, "index.html app.js 必须用 v=0.8.27"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -3969,6 +3970,38 @@ def test_v0826_post_skips_bridge_and_thumb_sessionstorage():
     assert "sessionStorage.getItem(ssKey)" in a, "ensureThumb 必须读 sessionStorage"
     assert "sessionStorage.setItem(ssKey, JSON.stringify(thumb))" in a, "ensureThumb 必须写 sessionStorage"
     print("✓ test_v0826_post_skips_bridge_and_thumb_sessionstorage")
+
+
+def test_v0827_writes_use_get_to_avoid_cors_preflight():
+    """v0.8.27: sandbox iframe 里 POST + Content-Type: application/json 触发 CORS preflight
+    (server 不发 ACAO → 拒)。把 write 操作改用 GET + query string
+    (GET 是 simple request, 不发 preflight, 可过)。
+    """
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
+    # 1. webui onDelete 必须用 apiGet 不是 apiPost
+    import re
+    m_d = re.search(r"async function onDelete\(id\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m_d, "app.js 必须有 onDelete 函数"
+    assert "apiPost(\"/cache/delete\"" not in m_d.group(1), "onDelete 不应再用 apiPost"
+    assert "apiGet(\"/cache/delete\"" in m_d.group(1), "onDelete 应改用 apiGet"
+    # 2. onRegenerate 必须用 apiGet
+    m_r = re.search(r"async function onRegenerate\(id\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m_r and "apiGet(\"cache/regenerate\"" in m_r.group(1), "onRegenerate 应改用 apiGet"
+    # 3. onClear 必须用 apiGet
+    m_c = re.search(r"async function onClear\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m_c and "apiGet(\"cache/clear\"" in m_c.group(1), "onClear 应改用 apiGet"
+    # 4. onCleanExpired 必须用 apiGet
+    m_x = re.search(r"async function onCleanExpired\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m_x and "apiGet(\"cache/clean_expired\"" in m_x.group(1), "onCleanExpired 应改用 apiGet"
+    # 5. backend 路由必须同时支持 GET (避免 CORS preflight)
+    assert '("/cache/delete", api_delete, ["GET", "POST"]' in m, "/cache/delete 必须支持 GET"
+    assert '("/cache/regenerate", api_regenerate, ["GET", "POST"]' in m, "/cache/regenerate 必须支持 GET"
+    assert '("/cache/clear", api_clear, ["GET", "POST"]' in m, "/cache/clear 必须支持 GET"
+    assert '("/cache/clean_expired", api_clean_expired, ["GET", "POST"]' in m, "/cache/clean_expired 必须支持 GET"
+    # 6. backend api_delete / api_regenerate 必须从 query 读 key (兼容 GET)
+    assert "request.query.get(\"key\")" in m, "api_delete/api_regenerate 必须从 query 读 key"
+    print("✓ test_v0827_writes_use_get_to_avoid_cors_preflight")
 
 
 def test_v0821_app_js_loaded_after_body():

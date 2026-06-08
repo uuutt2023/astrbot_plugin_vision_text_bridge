@@ -575,11 +575,15 @@ class VisionTextBridgePlugin(Star):
         async def api_delete():
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
-            try:
-                body = await self.context.request.json
-            except Exception:
-                body = {}
-            key = (body.get("key") or "").strip()
+            # v0.8.27: 优先从 query string 拿 key (GET 风格, 跨 sandbox iframe 不撞 CORS preflight)
+            # 兼容: 从 json body 拿 (POST 风格)
+            key = (self.context.request.query.get("key") or "").strip()
+            if not key:
+                try:
+                    body = await self.context.request.json
+                    key = (body.get("key") or "").strip()
+                except Exception:
+                    pass
             if not key:
                 return err("缺少参数 key")
             self._description_cache.pop(key, None)
@@ -599,11 +603,14 @@ class VisionTextBridgePlugin(Star):
         async def api_regenerate():
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
-            try:
-                body = await self.context.request.json
-            except Exception:
-                body = {}
-            key = (body.get("key") or "").strip()
+            # v0.8.27: 优先从 query string 拿 (避免 CORS preflight)
+            key = (self.context.request.query.get("key") or "").strip()
+            if not key:
+                try:
+                    body = await self.context.request.json
+                    key = (body.get("key") or "").strip()
+                except Exception:
+                    pass
             if not key:
                 return err("缺少参数 key")
             self._description_cache.pop(key, None)
@@ -723,13 +730,13 @@ class VisionTextBridgePlugin(Star):
             ("/cache/stats", api_stats, ["GET"], "Cache stats"),
             ("/cache/stats/timeline", api_stats_timeline, ["GET"], "v0.8.12 按天创建量（柱状图）"),
             ("/cache/list", api_list, ["GET"], "Cache list"),
-            ("/cache/delete", api_delete, ["POST"], "Delete entry"),
-            ("/cache/clear", api_clear, ["POST"], "Clear all"),
-            ("/cache/regenerate", api_regenerate, ["POST"], "Regenerate"),
+            ("/cache/delete", api_delete, ["GET", "POST"], "Delete entry (GET 避免 CORS preflight)"),
+            ("/cache/clear", api_clear, ["GET", "POST"], "Clear all (GET 避免 CORS preflight)"),
+            ("/cache/regenerate", api_regenerate, ["GET", "POST"], "Regenerate (GET 避免 CORS preflight)"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
             ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "缩略图：image_id 走路径参数（GET）"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
-            ("/cache/clean_expired", api_clean_expired, ["POST"], "v0.8.11 手动清理过期缓存"),
+            ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "v0.8.11 手动清理过期缓存 (GET 避免 CORS preflight)"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)
 

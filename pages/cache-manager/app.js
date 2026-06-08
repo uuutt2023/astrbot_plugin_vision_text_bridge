@@ -923,9 +923,11 @@ async function onDelete(id) {
     return;
   }
   try {
-    const resp = await apiPost("/cache/delete", { key: id });
+    // v0.8.27: 改用 GET + query string (避免 CORS preflight, sandbox iframe 里能过)
+    const resp = await apiGet("/cache/delete", { key: id });
     if (resp?.ok !== false) {
       state.thumbCache.delete(id);
+      try { sessionStorage.removeItem(`vtb_thumb:${id}`); } catch (_) {}
       logger.info("ui", `删除成功: ${id.slice(0, 12)}`);
       showToast("已删除");
       await Promise.all([loadStats(), loadList()]);
@@ -943,7 +945,8 @@ async function onRegenerate(id) {
   logger.info("ui", `请求重新生成: ${id.slice(0, 12)}`);
   showToast("正在重新生成描述...");
   try {
-    const resp = await apiPost("cache/regenerate", { key: id });
+    // v0.8.27: GET + query (避免 CORS preflight)
+    const resp = await apiGet("cache/regenerate", { key: id });
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
       if (data.ok) {
@@ -971,7 +974,8 @@ async function onClear() {
     return;
   }
   try {
-    const resp = await apiPost("cache/clear", {});
+    // v0.8.27: GET (避免 CORS preflight, 纯动作)
+    const resp = await apiGet("cache/clear");
     const data = resp?.data || resp;
     logger.info("ui", `清空完成: ${data?.cleared ?? 0} 条`);
     showToast("已清空 " + (data?.cleared ?? 0) + " 条");
@@ -990,7 +994,8 @@ async function onCleanExpired() {
     return;
   }
   try {
-    const resp = await apiPost("cache/clean_expired", {});
+    // v0.8.27: GET (避免 CORS preflight)
+    const resp = await apiGet("cache/clean_expired");
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
       const sql = data?.deleted_sqlite ?? 0;

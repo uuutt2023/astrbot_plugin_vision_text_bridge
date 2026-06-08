@@ -7,6 +7,50 @@
 
 无新变更。
 
+## [0.8.27] - 2026-06-08
+
+### 根因——POST 触发 CORS preflight
+
+v0.8.26 push 后用户报删除还是报错。
+观察 webui console 发现:
+- \`GET /cache/thumbnail/*\` 全 OK
+- \`GET /cache/stats\` / \`/cache/list\` / \`/cache/stats/timeline\` 全 OK
+- **\`POST /cache/delete\` 撞 CORS: Response to preflight request doesn't pass access control check**
+
+**关键发现:** sandbox iframe 里
+- **GET 是 simple request**——不发 preflight，过
+- **POST + Content-Type: application/json** 浏览器**发 OPTIONS preflight**探路
+- server 不发 \`Access-Control-Allow-Origin\` 头 → preflight 拒
+- 原 preflight 拒，导致 POST 本身也不发
+
+v0.8.18 我以为“sandbox iframe 都不能 fetch”是错的——GET 全部能过。
+是 **POST 触发 preflight** 才撞 CORS。
+
+### Fix——所有 write 操作改用 GET + query string
+
+将 4 个 backend 路由从 \`["POST"]\` 改为 \`["GET", "POST"]\`：
+- \`/cache/delete\`
+- \`/cache/regenerate\`
+- \`/cache/clear\`
+- \`/cache/clean_expired\`
+
+backend 优先从 \`request.query.get("key")\` 读 key (兼容 GET, 避免 preflight)。
+
+webui 4 个对应函数从 \`apiPost(...)\` 改为 \`apiGet(...)\`：
+- \`onDelete(id)\` → \`apiGet("/cache/delete", { key: id })\`
+- \`onRegenerate(id)\` → \`apiGet("cache/regenerate", { key: id })\`
+- \`onClear()\` → \`apiGet("cache/clear")\`
+- \`onCleanExpired()\` → \`apiGet("cache/clean_expired")\`
+
+apiPost 仍然保留作其它 POST 接口 (如果有的话) 的通用包装。
+
+### 顺便——onDelete 同步清 sessionStorage 缩略图缓存
+删除后加 \`sessionStorage.removeItem(\\\`vtb_thumb:\${id}\\\`)\` 避免下次看 list 还查到。
+
+### Tests
+- +1 个新测试: \`test_v0827_writes_use_get_to_avoid_cors_preflight\` 检查 webui + backend 两边都用 GET
+- 总计 169/169
+
 ## [0.8.26] - 2026-06-07
 
 ### 问题 1：删除按钮 400
