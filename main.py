@@ -573,8 +573,15 @@ class VisionTextBridgePlugin(Star):
                        "items": [e.to_dict() for e in items]})
 
         async def _read_key_from_request():
-            """v0.8.28: 抽取共用 key 提取。优先 query (GET, 兑 CORS preflight), fallback json body (POST)。"""
+            """v0.8.32: 抽取共用 key 提取。多路径防 500。
+            优先顺序: query > json body > form body > text body
+            - query:  GET + bridge.apiGet 全路径 (v0.8.31 验证 OK)
+            - json:   POST + application/json
+            - form:   sendBeacon (application/x-www-form-urlencoded, 无 CORS 限制)
+            - text:   fallback 兑底
+            """
             key = ""
+            # 1. query
             try:
                 req = self.context.request
                 if req is not None:
@@ -585,12 +592,36 @@ class VisionTextBridgePlugin(Star):
                         key = (query.get("key") or "").strip()
             except Exception as e:
                 logger.debug("[vision_text_bridge] query 读 key 失败: %s", e)
-            if not key:
-                try:
-                    body = await self.context.request.json
-                    key = (body.get("key") or "").strip()
-                except Exception:
-                    pass
+            if key:
+                return key
+            # 2. json body
+            try:
+                body = await self.context.request.json
+                key = (body.get("key") or "").strip()
+                if key:
+                    return key
+            except Exception:
+                pass
+            # 3. form body (sendBeacon application/x-www-form-urlencoded)
+            try:
+                form = await self.context.request.post
+                if form and hasattr(form, "get"):
+                    key = (form.get("key") or "").strip()
+                    if key:
+                        return key
+            except Exception:
+                pass
+            # 4. raw text body fallback (兑底)
+            try:
+                raw = await self.context.request.text
+                if raw and "=" in raw:
+                    from urllib.parse import parse_qs
+                    parsed = parse_qs(raw)
+                    vals = parsed.get("key", [])
+                    if vals:
+                        key = vals[0].strip()
+            except Exception:
+                pass
             return key
 
         async def api_delete():

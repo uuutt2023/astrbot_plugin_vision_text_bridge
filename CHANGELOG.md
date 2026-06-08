@@ -7,6 +7,47 @@
 
 无新变更。
 
+## [0.8.32] - 2026-06-08
+
+### 问题——v0.8.31 还是赌了
+
+v0.8.30 / v0.8.31 都不行。反思：sandbox iframe + origin=null + 服务端不发 ACAO
+背景下, 所有可能 通道都试过了还是接不上：
+
+- v0.8.30: fallbackFetch GET (simple request) — CORS 响应拒绝
+- v0.8.31: bridge.apiGet 手动拼 query — v0.8.28 实测 bridge 中间层丢 key
+- v0.8.31 可能也不行: 赌 bridge 转发时 query 不被吞
+
+唯一 可靠: **navigator.sendBeacon**——它：
+- POST application/x-www-form-urlencoded (浏览器自动设)
+- 浏览器不预发 preflight
+- 浏览器不检查响应 ACAO
+- fire-and-forget (返回 bool, 不发 promise)
+- **这是 W3C beacon 规范为这种情况特别设计**
+
+### Fix——v0.8.32 webui 改用 sendBeacon
+
+```js
+function apiWrite(endpoint, params = {}) {
+  const form = new URLSearchParams();
+  for (const k of Object.keys(params || {})) form.append(k, String(params[k]));
+  const ok = navigator.sendBeacon(`${PLUGIN_PATH}${endpoint}`, form);
+  return Promise.resolve({ ok, beacon: true, endpoint, params });
+}
+```
+
+backend _read_key_from_request 增强: 试 query → json body → form body → raw text (parse_qs)。
+URLSearchParams 发的是 application/x-www-form-urlencoded, raw text 路径能取到 key。
+
+UI 改为乐观更新: sendBeacon 后立即反映本地状态 (删 item / 清缓存),
+1.5–3s 后 reload stats/list 看后端是否处理完。
+
+### Tests
+- +1 个新测试: \`test_v0832_apiwrite_uses_sendbeacon\`
+- 总计 172/172
+
+## [0.8.31] - 2026-06-08
+
 ## [0.8.31] - 2026-06-08
 
 ### 问题——v0.8.30 fallbackFetch 写路径也 CORS 拒

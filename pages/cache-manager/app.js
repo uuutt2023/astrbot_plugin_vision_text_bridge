@@ -84,15 +84,15 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19 + v0.8.31: 右上角 badge——v0.8.31 读写都走 bridge
-  // sandbox iframe 跨 origin=null, 直 fetch 永远 CORS 拒
-  // bridge.postMessage 是唯一通道——读和写都走
+  // v0.8.19 + v0.8.32: 右上角 badge——v0.8.32 写用 sendBeacon
+  // sandbox iframe 跨 origin=null 任何 fetch 都 CORS 拒, bridge.apiGet 丢 key, fallbackFetch GET 拒
+  // navigator.sendBeacon 唯一可靠——不发 preflight, 不检查 ACAO, fire-and-forget
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🟢 bridge (全路径)";
+      badge.textContent = "🟡 读 bridge / 写 sendBeacon";
       badge.classList.add("bridge-ok");
-      badge.title = "v0.8.31 读 + 写 都走 bridge.apiGet (postMessage 跨 sandbox origin=null, parent 同源 fetch)。写接口 endpoint 手动拼 query string, 不依赖 bridge 的 params 转换 (v0.8.28 实测转换会丢 key)。";
+      badge.title = "v0.8.32 读操作走 bridge.apiGet (postMessage 跨同源), 写操作走 navigator.sendBeacon (POST form, 无 CORS 限制, fire-and-forget)。sandbox iframe + origin=null + 服务端无 ACAO 环境, 唯一可靠组合。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -369,46 +369,38 @@ async function apiGet(endpoint, params = {}) {
   }
 }
 
-// v0.8.31: 写操作专用。sandbox iframe 跨 origin=null, 直 fetch 永远 CORS 拒
-// (即使 simple request 不发 preflight, 响应仍检查 ACAO, 服务端不发)
-// 唯一通道是 bridge.postMessage (同源 parent dashboard 调 backend)
-// v0.8.28 实测 bridge.apiGet 传 params 会丢 key 报 400——
-// 现在手动把 query 拼到 endpoint, 不依赖 bridge 转换
-async function apiWrite(endpoint, params = {}) {
+// v0.8.32: 写操作专用——navigator.sendBeacon (POST form, 无 CORS 限制)
+// bridge.apiGet 调 delete 丢 key (v0.8.28 验证), fallbackFetch GET 跨 sandbox origin=null 被拒
+// sendBeacon 走 POST + application/x-www-form-urlencoded——
+// 浏览器会发出去, 不发 preflight, 不检查 ACAO, fire-and-forget
+// server-side 读 form data 拿 key (v0.8.32 main.py _read_key_from_request 增强)
+function apiWrite(endpoint, params = {}) {
   const t0 = performance.now();
   state.apiStats.calls += 1;
-  logger.debug("api", `WRITE GET ${endpoint}`, params);
+  logger.debug("api", `WRITE beacon POST ${endpoint}`, params);
   try {
-    // 手动拼 query string 到 endpoint
-    let fullEndpoint = endpoint;
+    const ep = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+    const url = `${PLUGIN_PATH}${ep}`;
+    const form = new URLSearchParams();
     if (params && Object.keys(params).length > 0) {
-      const qs = new URLSearchParams(params).toString();
-      if (qs) {
-        fullEndpoint = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${qs}`;
+      for (const k of Object.keys(params)) {
+        form.append(k, String(params[k] ?? ""));
       }
     }
-    let resp;
-    if (typeof bridge.apiGet === "function") {
-      // 传单参数 (endpoint + query), bridge 不再转换 params
-      resp = await bridge.apiGet(fullEndpoint);
-    } else {
-      // 兑底: fallbackFetch GET (无 bridge SDK 的环境)
-      resp = await fallbackFetch("GET", endpoint, params);
-    }
+    const ok = navigator.sendBeacon(url, form);
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
-    const data = resp?.data || resp;
-    const ok = resp?.ok !== false;
     if (ok) {
-      logger.info("api", `WRITE GET ${fullEndpoint} OK ${dt}ms`, _summarize(data));
+      logger.info("api", `WRITE beacon POST ${url} 已送出 ${dt}ms`);
+      return Promise.resolve({ ok: true, beacon: true, endpoint, params });
     } else {
       state.apiStats.errors += 1;
-      logger.warn("api", `WRITE GET ${fullEndpoint} 失败 ${dt}ms`, resp?.error || resp);
+      logger.warn("api", `WRITE beacon POST ${url} 失败 (被浏览器拒)`);
+      return Promise.resolve({ ok: false, error: "sendBeacon 拒发" });
     }
-    return resp;
   } catch (e) {
     state.apiStats.errors += 1;
-    logger.error("api", `WRITE GET ${endpoint} 异常`, e);
+    logger.error("api", `WRITE beacon 异常`, e);
     throw e;
   }
 }
@@ -969,14 +961,22 @@ async function onDelete(id) {
     return;
   }
   try {
-    // v0.8.30: 走 apiWrite (fallbackFetch GET, 不发 Content-Type, 不 preflight)
+    // v0.8.32: sendBeacon fire-and-forget, UI 乐观更新
     const resp = await apiWrite("/cache/delete", { key: id });
-    if (resp?.ok !== false) {
+    if (resp?.ok) {
+      // 乐观更新——本地缓存/UI 立即反映删除
       state.thumbCache.delete(id);
       try { sessionStorage.removeItem(`vtb_thumb:${id}`); } catch (_) {}
-      logger.info("ui", `删除成功: ${id.slice(0, 12)}`);
-      showToast("已删除");
-      await Promise.all([loadStats(), loadList()]);
+      // 从 state.items 中也移除, 避免 UI 重复
+      if (state.items) {
+        state.items = state.items.filter(it => it.image_id !== id);
+      }
+      logger.info("ui", `删除送出 (beacon): ${id.slice(0, 12)}`);
+      showToast("已删除 (后端异步处理)");
+      // 轮询一下确认 server 处理完 + stats 同步
+      setTimeout(async () => {
+        await Promise.all([loadStats(), loadList()]);
+      }, 1500);
     } else {
       logger.warn("ui", `删除失败: ${resp?.error || "未知"}`);
       showToast("删除失败: " + (resp?.error || "未知"), "error");
@@ -991,18 +991,14 @@ async function onRegenerate(id) {
   logger.info("ui", `请求重新生成: ${id.slice(0, 12)}`);
   showToast("正在重新生成描述...");
   try {
-    // v0.8.27: GET + query (避免 CORS preflight)
+    // v0.8.32: sendBeacon fire-and-forget, 1.5s 后 reload 看结果
     const resp = await apiWrite("cache/regenerate", { key: id });
-    if (resp?.ok !== false) {
-      const data = resp?.data || resp;
-      if (data.ok) {
-        logger.info("ui", `重新生成成功: ${id.slice(0, 12)} (长度=${data.description?.length || 0})`);
-        showToast("重新生成成功（长度=" + (data.description?.length || 0) + "）");
-      } else {
-        logger.warn("ui", `重新生成失败: mmx 调用失败`);
-        showToast("重新生成失败：mmx 调用失败", "error");
-      }
-      await Promise.all([loadStats(), loadList()]);
+    if (resp?.ok) {
+      logger.info("ui", `重新生成送出 (beacon): ${id.slice(0, 12)}`);
+      showToast("重新生成请求已送出 (后端异步处理)");
+      setTimeout(async () => {
+        await Promise.all([loadStats(), loadList()]);
+      }, 3000);
     } else {
       logger.warn("ui", `重新生成失败: ${resp?.error || "未知"}`);
       showToast("重新生成失败: " + (resp?.error || "未知"), "error");
@@ -1020,13 +1016,19 @@ async function onClear() {
     return;
   }
   try {
-    // v0.8.30: apiWrite GET (sandbox iframe simple request, 不 preflight)
+    // v0.8.32: sendBeacon
     const resp = await apiWrite("cache/clear");
-    const data = resp?.data || resp;
-    logger.info("ui", `清空完成: ${data?.cleared ?? 0} 条`);
-    showToast("已清空 " + (data?.cleared ?? 0) + " 条");
-    state.thumbCache.clear();
-    await Promise.all([loadStats(), loadList()]);
+    if (resp?.ok) {
+      logger.info("ui", "清空请求送出 (beacon)");
+      showToast("清空请求已送出");
+      state.thumbCache.clear();
+      setTimeout(async () => {
+        await Promise.all([loadStats(), loadList()]);
+      }, 2000);
+    } else {
+      logger.warn("ui", `清空失败: ${resp?.error || "未知"}`);
+      showToast("清空失败: " + (resp?.error || "未知"), "error");
+    }
   } catch (e) {
     logger.error("ui", "清空异常", e);
     showToast("清空失败: " + (e?.message || e), "error");
@@ -1040,16 +1042,14 @@ async function onCleanExpired() {
     return;
   }
   try {
-    // v0.8.30: apiWrite GET (sandbox iframe simple request, 不 preflight)
+    // v0.8.32: sendBeacon
     const resp = await apiWrite("cache/clean_expired");
-    if (resp?.ok !== false) {
-      const data = resp?.data || resp;
-      const sql = data?.deleted_sqlite ?? 0;
-      const mem = data?.purged_memory ?? 0;
-      logger.info("ui", `清理完成: SQLite=${sql}条, 内存=${mem}条 (TTL=${data?.ttl_days}天)`);
-      showToast(`清理完成: SQLite ${sql} 条 + 内存 ${mem} 条过期`);
-      state.thumbCache.clear();
-      await Promise.all([loadStats(), loadList()]);
+    if (resp?.ok) {
+      logger.info("ui", "清理请求送出 (beacon)");
+      showToast("清理请求已送出");
+      setTimeout(async () => {
+        await Promise.all([loadStats(), loadList()]);
+      }, 2000);
     } else {
       logger.warn("ui", `清理失败: ${resp?.error || "未知"}`);
       showToast("清理失败: " + (resp?.error || "未知"), "error");
