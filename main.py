@@ -572,22 +572,43 @@ class VisionTextBridgePlugin(Star):
                        "limit": limit, "offset": offset,
                        "items": [e.to_dict() for e in items]})
 
-        async def api_delete():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            # v0.8.27: 优先从 query string 拿 key (GET 风格, 跨 sandbox iframe 不撞 CORS preflight)
-            # 兼容: 从 json body 拿 (POST 风格)
-            key = (self.context.request.query.get("key") or "").strip()
+        async def _read_key_from_request():
+            """v0.8.28: 抽取共用 key 提取。优先 query (GET, 兑 CORS preflight), fallback json body (POST)。"""
+            key = ""
+            try:
+                req = self.context.request
+                if req is not None:
+                    query = getattr(req, "query", None) or {}
+                    if hasattr(query, "get"):
+                        key = (query.get("key") or "").strip()
+                    elif isinstance(query, dict):
+                        key = (query.get("key") or "").strip()
+            except Exception as e:
+                logger.debug("[vision_text_bridge] query 读 key 失败: %s", e)
             if not key:
                 try:
                     body = await self.context.request.json
                     key = (body.get("key") or "").strip()
                 except Exception:
                     pass
+            return key
+
+        async def api_delete():
+            if self._caption_cache is None:
+                return err("SQLite 缓存未初始化", 500)
+            key = await _read_key_from_request()
             if not key:
                 return err("缺少参数 key")
-            self._description_cache.pop(key, None)
-            return ok({"deleted": self._caption_cache.delete(key), "key": key})
+            try:
+                self._description_cache.pop(key, None)
+            except Exception as e:
+                logger.debug("[vision_text_bridge] _description_cache.pop 失败: %s", e)
+            try:
+                deleted = self._caption_cache.delete(key)
+            except Exception as e:
+                logger.exception("[vision_text_bridge] _caption_cache.delete 异常: %s", e)
+                return err(f"删除失败: {e}", 500)
+            return ok({"deleted": deleted, "key": key})
 
         async def api_clear():
             if self._caption_cache is None:
@@ -603,18 +624,14 @@ class VisionTextBridgePlugin(Star):
         async def api_regenerate():
             if self._caption_cache is None:
                 return err("SQLite 缓存未初始化", 500)
-            # v0.8.27: 优先从 query string 拿 (避免 CORS preflight)
-            key = (self.context.request.query.get("key") or "").strip()
-            if not key:
-                try:
-                    body = await self.context.request.json
-                    key = (body.get("key") or "").strip()
-                except Exception:
-                    pass
+            key = await _read_key_from_request()
             if not key:
                 return err("缺少参数 key")
-            self._description_cache.pop(key, None)
-            self._caption_cache.delete(key)
+            try:
+                self._description_cache.pop(key, None)
+                self._caption_cache.delete(key)
+            except Exception as e:
+                logger.debug("[vision_text_bridge] regenerate 清理旧缓存失败: %s", e)
             new_desc = await self._describe_one(key)
             return ok({"key": key, "description": new_desc, "ok": bool(new_desc)})
 

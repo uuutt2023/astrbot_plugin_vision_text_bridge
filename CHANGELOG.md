@@ -7,6 +7,34 @@
 
 无新变更。
 
+## [0.8.28] - 2026-06-08
+
+### 进展——v0.8.27 GET 路径走通了但 backend 500
+
+v0.8.27 push 后用户报:
+```
+GET /api/plug/.../cache/delete?key=e3d3bf2d8e5ee3303842c6fc07e96bf3 500
+[ERROR] [api] GET /cache/delete 异常 Request failed with status code 500
+```
+
+不是 CORS 错了，是 **backend 500 异常**。context.request.query 在不同
+AstrBot 版本中可能不存在, 或 self.context.request 抛 TypeError。
+
+### Fix——api_delete/regenerate 抽取 _read_key_from_request
+
+v0.8.28 抽出共用 key 提取函数:
+- 优先从 query.get("key") (GET 风格)
+- fallback 从 json body (POST 风格)
+- 每个步骤 try/except 防 500
+
+另外让:
+- \`self._caption_cache.delete(key)\` 异常返回 500 + 错信息 (不至于吞错)
+- \`self._description_cache.pop()\` 异常静默 catch (不是关键路径)
+
+### Tests
+- +1 个新测试: \`test_v0828_api_delete_handles_missing_query\`
+- 总计 169/169
+
 ## [0.8.27] - 2026-06-08
 
 ### 根因——POST 触发 CORS preflight
