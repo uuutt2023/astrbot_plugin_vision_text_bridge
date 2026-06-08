@@ -7,6 +7,58 @@
 
 无新变更。
 
+## [0.8.33] - 2026-06-08
+
+### 问题——v0.8.32 sendBeacon 401
+
+v0.8.32 push 后用户 log:
+
+```
+[INFO] WRITE beacon POST /api/plug/.../cache/delete 已送出 0.5ms
+POST http://.../cache/delete   401
+```
+
+sendBeacon 跨 origin=null 不带 cookie, backend auth 401 拒。
+stats 还是 10 (删除未生效)。
+
+### 为什么 v0.8.28 走 bridge 是 400 不是 401
+
+v0.8.28 user log:
+```
+GET /api/plug/.../cache/delete?key=...  400
+```
+
+——是 400, 不是 401. 说明 **bridge 调 dashboard 调 backend 是带 cookie 的**——auth
+通过了, 剩下是业务逻辑问题 (key 缺)。
+
+### 错在哪
+
+v0.8.31 我奢 bridge 转发时 query 不被吞——v0.8.28 报 400 是 “缺 key” 说明
+bridge 转发 时确实吞了。但那 不代表 发不出去——只代表 转发 后 query 丢了。
+
+### Fix——v0.8.33 apiWrite 改回 bridge.apiGet + 手动拼 query
+
+```js
+async function apiWrite(endpoint, params = {}) {
+  let fullEndpoint = endpoint;
+  if (params && Object.keys(params).length > 0) {
+    const qs = new URLSearchParams(params).toString();
+    if (qs) {
+      fullEndpoint = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${qs}`;
+    }
+  }
+  return await bridge.apiGet(fullEndpoint);  // 单参数, bridge 不再转 params
+}
+```
+
+如果 bridge 调 dashboard 转发时仍吞 query, 会报 400 缺 key——我们可以加 backend
+log 验证下 v0.8.33 的实际行为。
+
+### Tests
+- 172/172 (v0.8.32 测试 update 为 v0.8.33)
+
+## [0.8.32] - 2026-06-08
+
 ## [0.8.32] - 2026-06-08
 
 ### 问题——v0.8.31 还是赌了
