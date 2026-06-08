@@ -7,6 +7,54 @@
 
 无新变更。
 
+## [0.8.31] - 2026-06-08
+
+### 问题——v0.8.30 fallbackFetch 写路径也 CORS 拒
+
+v0.8.30 push 后用户 log:
+
+```
+1.12.221.36/:1 Access to fetch at 'http://1.12.221.36:6185/api/plug/.../cache/delete?key=...'
+  from origin 'null' has been blocked by CORS policy:
+  No 'Access-Control-Allow-Origin' header is present
+[ERROR] WRITE GET /cache/delete 异常 Failed to fetch
+[ERROR] 删除异常 Failed to fetch
+```
+
+读接口 (bridge.apiGet) 全部 OK。写接口 (fallbackFetch GET) 全 CORS 拒。
+
+### 错在哪
+
+CORS spec 的 "simple request" 只是免 preflight——**响应本身仍要
+ACAC (ACAO) 头才能被 JS 读到**。服务端不发 ACAO, 任何 fetch (GET/POST,
+带不带 Content-Type) 都会被拒。
+
+sandbox iframe origin=null 调后端: 唯一通道是 bridge.postMessage
+(parent dashboard 同源 fetch, 跨不过 sandbox 限制)。
+
+### Fix——v0.8.31 写操作也走 bridge
+
+```js
+async function apiWrite(endpoint, params) {
+  // 手动拼 query string 到 endpoint (避免 bridge 转 params 丢 key)
+  let fullEndpoint = endpoint;
+  if (params && Object.keys(params).length > 0) {
+    const qs = new URLSearchParams(params).toString();
+    if (qs) fullEndpoint = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${qs}`;
+  }
+  if (typeof bridge.apiGet === "function") {
+    return await bridge.apiGet(fullEndpoint);  // 传单参数, bridge 不转换
+  }
+  return await fallbackFetch("GET", endpoint, params);  // 兑底
+}
+```
+
+### Tests
+- +1 个新测试: \`test_v0831_write_uses_bridge_with_manual_query\`
+- 总计 171/171
+
+## [0.8.30] - 2026-06-08
+
 ## [0.8.30] - 2026-06-08
 
 ### 问题——v0.8.29 一刀切跳桥导致全 CORS 死

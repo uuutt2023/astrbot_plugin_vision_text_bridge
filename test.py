@@ -2529,6 +2529,7 @@ def run_all():
         test_v0826_post_skips_bridge_and_thumb_sessionstorage,
         test_v0827_writes_use_get_to_avoid_cors_preflight,
         test_v0830_read_uses_bridge_write_uses_fallback,
+        test_v0831_write_uses_bridge_with_manual_query,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3914,8 +3915,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.30 (v0.8.30 读走 bridge / 写走 apiWrite GET)
-    assert 'app.js?v=0.8.30' in h, "index.html app.js 必须用 v=0.8.30"
+    # index.html 顶部必须含 app.js? v=0.8.31 (v0.8.31 写走 bridge + 手动拼 query)
+    assert 'app.js?v=0.8.31' in h, "index.html app.js 必须用 v=0.8.31"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -4123,6 +4124,32 @@ def test_caption_cache_datetime_top_level():
         # 顶部 import 之后的 都不应有这个 as 别名
         assert line_no > 30, f"caption_cache.py:{line_no} 还在方法内 import datetime as _dt"
     print("✓ test_caption_cache_datetime_top_level")
+
+
+def test_v0831_write_uses_bridge_with_manual_query():
+    """v0.8.31: 写操作 (apiWrite) 也走 bridge, 但 endpoint 手动拼 query string。
+
+    背景: sandbox iframe origin=null, 直 fetch 永远 CORS 拒 (服务端不发 ACAO)。
+    v0.8.30 走 fallbackFetch GET simple request 仍被拒。
+    唯一通道是 bridge.postMessage (同源 parent dashboard)。
+    v0.8.28 实测 bridge.apiGet 传 params 转 query 会丢 key 报 400。
+    手动把 query 拼到 endpoint, 不依赖 bridge 转换。
+    """
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    import re
+    m = re.search(r"async function apiWrite\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m, "app.js 必须有 apiWrite 函数"
+    body = m.group(1)
+    # 应有 URLSearchParams 拼 query
+    assert "URLSearchParams" in body, "apiWrite 应手动拼 query string"
+    # 应有 bridge.apiGet 调用 (主路径)
+    assert "bridge.apiGet" in body, "apiWrite 应调 bridge.apiGet (v0.8.31 走 bridge.postMessage)"
+    # bridge.apiGet 应在 fallbackFetch 之前 (主优先)
+    bridge_pos = body.find("bridge.apiGet")
+    fallback_pos = body.find("fallbackFetch")
+    if fallback_pos > 0:
+        assert bridge_pos < fallback_pos, "bridge.apiGet 必须在 fallbackFetch 之前 (主路径)"
+    print("✓ test_v0831_write_uses_bridge_with_manual_query")
 
 
 if __name__ == "__main__":

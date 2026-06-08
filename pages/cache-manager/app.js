@@ -84,15 +84,15 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19 + v0.8.30: 右上角 badge——v0.8.30 分派架构
-  // 读 (apiGet) 走 bridge.apiGet, 写 (apiWrite) 走 fallbackFetch GET
-  // fallbackFetch 不设 Content-Type, 保证 GET 是 simple request (不 preflight)
+  // v0.8.19 + v0.8.31: 右上角 badge——v0.8.31 读写都走 bridge
+  // sandbox iframe 跨 origin=null, 直 fetch 永远 CORS 拒
+  // bridge.postMessage 是唯一通道——读和写都走
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🟡 读 bridge / 写 fallbackFetch";
-      badge.classList.add("bridge-fallback");
-      badge.title = "v0.8.30 读操作走 bridge.apiGet (postMessage 同源)；写操作走 fallbackFetch GET simple request (不发 Content-Type, 不会 preflight)。sandbox iframe 跨 origin=null 问题减半。";
+      badge.textContent = "🟢 bridge (全路径)";
+      badge.classList.add("bridge-ok");
+      badge.title = "v0.8.31 读 + 写 都走 bridge.apiGet (postMessage 跨 sandbox origin=null, parent 同源 fetch)。写接口 endpoint 手动拼 query string, 不依赖 bridge 的 params 转换 (v0.8.28 实测转换会丢 key)。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -369,23 +369,41 @@ async function apiGet(endpoint, params = {}) {
   }
 }
 
-// v0.8.30: 写操作专用。bridge.apiGet 调 delete 会丢 key (v0.8.28 实测)
-// 走 fallbackFetch (GET 简单请求, 不发 Content-Type 不发 preflight, 可跨 sandbox origin=null)
+// v0.8.31: 写操作专用。sandbox iframe 跨 origin=null, 直 fetch 永远 CORS 拒
+// (即使 simple request 不发 preflight, 响应仍检查 ACAO, 服务端不发)
+// 唯一通道是 bridge.postMessage (同源 parent dashboard 调 backend)
+// v0.8.28 实测 bridge.apiGet 传 params 会丢 key 报 400——
+// 现在手动把 query 拼到 endpoint, 不依赖 bridge 转换
 async function apiWrite(endpoint, params = {}) {
   const t0 = performance.now();
   state.apiStats.calls += 1;
   logger.debug("api", `WRITE GET ${endpoint}`, params);
   try {
-    const resp = await fallbackFetch("GET", endpoint, params);
+    // 手动拼 query string 到 endpoint
+    let fullEndpoint = endpoint;
+    if (params && Object.keys(params).length > 0) {
+      const qs = new URLSearchParams(params).toString();
+      if (qs) {
+        fullEndpoint = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${qs}`;
+      }
+    }
+    let resp;
+    if (typeof bridge.apiGet === "function") {
+      // 传单参数 (endpoint + query), bridge 不再转换 params
+      resp = await bridge.apiGet(fullEndpoint);
+    } else {
+      // 兑底: fallbackFetch GET (无 bridge SDK 的环境)
+      resp = await fallbackFetch("GET", endpoint, params);
+    }
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const data = resp?.data || resp;
     const ok = resp?.ok !== false;
     if (ok) {
-      logger.info("api", `WRITE GET ${endpoint} OK ${dt}ms`, _summarize(data));
+      logger.info("api", `WRITE GET ${fullEndpoint} OK ${dt}ms`, _summarize(data));
     } else {
       state.apiStats.errors += 1;
-      logger.warn("api", `WRITE GET ${endpoint} 失败 ${dt}ms`, resp?.error || resp);
+      logger.warn("api", `WRITE GET ${fullEndpoint} 失败 ${dt}ms`, resp?.error || resp);
     }
     return resp;
   } catch (e) {
