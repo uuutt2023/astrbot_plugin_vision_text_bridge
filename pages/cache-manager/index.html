@@ -10,13 +10,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.34" />
+  <link rel="stylesheet" href="./style.css?v=0.8.35" />
   <!-- v0.8.24: 重新启用 AstrBot bridge SDK。
        v0.8.18 放弃是因为 sandbox iframe 撞 CORS 错。
        真因：v0.8.15/16 用了 crossorigin="use-credentials" 撞 server wildward *。
        正确：crossorigin="anonymous" + fetch 走 bridge（bridge 用 postMessage 跟同源 parent 通信，绕开 sandbox origin=null）.
   -->
-  <script src="./logger.js?v=0.8.34"></script>
+  <script src="./logger.js?v=0.8.35"></script>
 </head>
 <body>
   <div class="bg-orb orb-1"></div>
@@ -193,6 +193,6 @@
     <div class="debug-body" id="debug-body"></div>
   </div>
   <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
-  <script src="./app.js?v=0.8.34"></script>
+  <script src="./app.js?v=0.8.35"></script>
 </body>
 </html>

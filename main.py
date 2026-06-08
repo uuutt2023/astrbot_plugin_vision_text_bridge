@@ -869,22 +869,52 @@ class VisionTextBridgePlugin(Star):
             )
 
         # 1a) 从 event.message_obj 补提（v0.8.5 防御 chat_plus 抽走图）
+        # v0.8.35: 递归扫描嵌套 (引用消息里包 image)
         if event is not None:
             try:
                 chain = getattr(getattr(event, "message_obj", None), "message", None)
                 if chain:
-                    for comp in chain:
-                        ctype = getattr(comp, "type", None)
-                        if ctype not in ("image", "Image"):
-                            continue
-                        if not callable(getattr(comp, "convert_to_file_path", None)):
-                            continue
-                        try:
-                            fp = await comp.convert_to_file_path()
-                        except Exception:
-                            fp = None
-                        if fp and fp not in saved_urls:
-                            saved_urls.append(fp)
+                    # 递归辅助函数——同时从顶层 + 嵌套 (reply/reference/forward node) 里拿 image
+                    async def _collect_image_urls_from_components(components, depth=0):
+                        added = 0
+                        for comp in components:
+                            ctype = getattr(comp, "type", None)
+                            # 引用/回复/转发 node 等嵌套结构——进内部递归
+                            if ctype in ("reply", "Reply", "reference", "Reference",
+                                         "forward", "Forward", "json", "Json",
+                                         "node", "Node"):
+                                inner = None
+                                for attr in ("message", "messages", "content", "data",
+                                             "nodes", "_message", "_data"):
+                                    inner = getattr(comp, attr, None)
+                                    if inner:
+                                        break
+                                if isinstance(inner, list):
+                                    added += await _collect_image_urls_from_components(inner, depth + 1)
+                                continue
+                            # image component——转 file path
+                            if ctype in ("image", "Image"):
+                                if not callable(getattr(comp, "convert_to_file_path", None)):
+                                    continue
+                                try:
+                                    fp = await comp.convert_to_file_path()
+                                except Exception:
+                                    fp = None
+                                if fp and fp not in saved_urls:
+                                    saved_urls.append(fp)
+                                    added += 1
+                        return added
+
+                    added_count = await _collect_image_urls_from_components(chain)
+                    # v0.8.35: 诊断——打 chain 顶层 + 嵌套 type 看看（默认 INFO）
+                    type_summary = []
+                    for c in chain:
+                        t = getattr(c, "type", "?")
+                        type_summary.append(str(t))
+                    logger.info(
+                        "[vision_text_bridge] v0.8.35 chain 顶层 types=%s, 递归补提了 %d 张图",
+                        type_summary, added_count,
+                    )
             except Exception as e:
                 if self._should_log("hook_trace"):
                     logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)

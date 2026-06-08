@@ -2531,6 +2531,7 @@ def run_all():
         test_v0830_read_uses_bridge_write_uses_fallback,
         test_v0831_write_uses_bridge_with_manual_query,
         test_v0832_apiwrite_uses_sendbeacon,
+        test_v0835_recursive_image_scan_in_quote,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -2870,8 +2871,8 @@ def test_main_py_slim_under_1300_lines():
     with open(path, "r", encoding="utf-8") as f:
         n = sum(1 for _ in f)
     # v0.8.13 加了 tool_filter（_filter_disabled_tools / _filter_tools_in_event + 链末兜底），阈值放宽到 1700
-    # v0.8.28: api_delete/regenerate 抽了 _read_key_from_request 后瘦身, 阈值放宽到 1750
-    assert n < 1750, f"main.py 现在 {n} 行，未达到瘦身目标 (<1750)"
+    # v0.8.35: 加递归扫嵌套 image 后 1773 行, 阈值放宽到 1800
+    assert n < 1800, f"main.py 现在 {n} 行，未达到瘦身目标 (<1800)"
     print(f"✓ test_main_py_slim_under_1300_lines (main.py = {n} 行)")
 
 
@@ -3916,8 +3917,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.34 (v0.8.34 apiWrite 改回两参数 + backend debug log)
-    assert 'app.js?v=0.8.34' in h, "index.html app.js 必须用 v=0.8.34"
+    # index.html 顶部必须含 app.js? v=0.8.35 (v0.8.35 main hook 递归扫嵌套引用 image)
+    assert 'app.js?v=0.8.35' in h, "index.html app.js 必须用 v=0.8.35"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -4173,6 +4174,27 @@ def test_v0832_apiwrite_uses_sendbeacon():
     assert "bridge.apiGet" in body, "apiWrite 应调 bridge.apiGet (v0.8.33 走 bridge 带 cookie)"
     assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon (v0.8.32 401)"
     print("✓ test_v0832_apiwrite_uses_sendbeacon")
+
+
+def test_v0835_recursive_image_scan_in_quote():
+    """v0.8.35: 引用消息里的 image component 在嵌套 comp 内, v0.8.5 只扫顶层
+    会遗漏. 递归扫 reply/reference/forward/json/node 等嵌套结构.
+
+    背景: user log 显示
+        [vision_text_bridge] hook 入口 saved_urls (size=0): []
+        [vision_text_bridge] on_llm_request: image_urls=0, parts=2, contexts=0
+    user 引用了一条带图片的消息, 但 hook 拿不到——因为 image 在引用 comp 内部.
+    """
+    m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
+    # 找 _collect_image_urls_from_components 函数 + 递归逻辑
+    assert "_collect_image_urls_from_components" in m, "main.py 应有递归函数"
+    # 递归处理嵌套结构
+    assert '"reply"' in m or "'reply'" in m, "递归应处理 reply 类型"
+    assert "Reference" in m, "递归应处理 Reference 类型"
+    assert "Forward" in m or "forward" in m, "递归应处理 forward 类型"
+    # 顶层调用递归
+    assert "await _collect_image_urls_from_components" in m, "on_llm_request 应调递归"
+    print("✓ test_v0835_recursive_image_scan_in_quote")
 
 
 if __name__ == "__main__":

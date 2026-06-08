@@ -7,6 +7,69 @@
 
 无新变更。
 
+## [0.8.35] - 2026-06-08
+
+### 问题——本插件识别不到引用内图片
+
+user 运行日志:
+```
+[vision_text_bridge] hook 入口 saved_urls (size=0): []
+[vision_text_bridge] on_llm_request: image_urls=0, parts=2, contexts=0
+```
+
+user 发的是:
+```
+[引用消息: [图片: https://multimedia.nt.qq.com.cn/...]]
+[At: bot]分析图片
+```
+
+hook 全 空——但 user 明确传了图片。
+
+### 根因
+
+v0.8.5 补提代码只扫顶层 chain:
+```python
+for comp in chain:
+    ctype = getattr(comp, "type", None)
+    if ctype not in ("image", "Image"):
+        continue
+```
+
+AstroBot v4.25.4 引用消息结构是
+**嵌套**的:顶层 comp 是 type=reply/Reference
+里面包了原始消息的子 comp, 里面 才有 type=image。
+顶层 type!=image 跳过→完全拿不到。
+
+### Fix——v0.8.35 递归扫描
+
+```python
+async def _collect_image_urls_from_components(components, depth=0):
+    for comp in components:
+        ctype = getattr(comp, "type", None)
+        # 嵌套结构: reply / reference / forward / json / node
+        if ctype in ("reply", "Reference", "forward", "Forward",
+                     "json", "Json", "node", "Node"):
+            inner = getattr(comp, "message", None) \
+                or getattr(comp, "messages", None) \
+                or getattr(comp, "content", None) \
+                ...
+            if isinstance(inner, list):
+                await _collect_image_urls_from_components(inner, depth+1)
+            continue
+        # image comp
+        if ctype in ("image", "Image"):
+            ...
+            saved_urls.append(fp)
+```
+
+也默认 INFO 级别打 chain types 诊断 log, 不需开启 verbose_logging。
+
+### Tests
+- +1 个新测试: \`test_v0835_recursive_image_scan_in_quote\`
+- 总计 173/173
+
+## [0.8.34] - 2026-06-08
+
 ## [0.8.34] - 2026-06-08
 
 ### 诊断进度——v0.8.33 揭晓了 bridge 错误路径
