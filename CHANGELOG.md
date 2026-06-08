@@ -7,6 +7,51 @@
 
 无新变更。
 
+## [0.8.29] - 2026-06-08
+
+### 进展——v0.8.28 backend 不再 500 但仍然 400
+
+v0.8.28 push 后用户 log:
+```
+GET /api/plug/.../cache/delete?key=e3d3bf2d8e5ee3303842c6fc07e96bf3   400
+[ERROR] GET /cache/delete 异常 Request failed with status code 400
+```
+
+不是 500 (不再 crash) 但还是 400。
+调用栈表明走的是 **bridge.apiGet** 而不是 fallbackFetch:
+```
+apiGet @ app.js:348
+onDelete @ app.js:927
+apiGet @ bridge-sdk.js:233
+makeRequest @ bridge-sdk.js:55
+postMessage @ bridge-sdk.js:44
+```
+
+v0.8.26 我只改 apiPost 跳 bridge, 忘改 apiGet。bridge 中间层把
+endpoint + query 丢了一部分 (传过来后 backend query.get('key') 是空)。
+
+### Fix——v0.8.29 apiGet 永远走 fallbackFetch
+
+```js
+async function apiGet(endpoint, params = {}) {
+  // v0.8.29: 永远走 fallbackFetch——bridge.apiGet 虽能调
+  // 但实测 bridge 转 path/query 走样 (delete 接口报 400 key 缺)
+  // fallbackFetch 同源 fetch 验证过全 OK
+  const resp = await fallbackFetch("GET", endpoint, params);
+  ...
+}
+```
+
+另外修 badge 描述：变为「fallbackFetch (同源)」+ title
+解释为什么改。
+
+### Tests
+- +1 个新测试: \`test_v0829_apiget_skips_bridge\`（括号计数法
+  取 apiGet 函数体，注释不算）
+- 总计 170/170
+
+
+
 ## [0.8.28] - 2026-06-08
 
 ### 进展——v0.8.27 GET 路径走通了但 backend 500

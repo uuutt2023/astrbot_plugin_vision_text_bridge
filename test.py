@@ -2528,6 +2528,7 @@ def run_all():
         test_v0825_filter_bot_avatar_in_hook,
         test_v0826_post_skips_bridge_and_thumb_sessionstorage,
         test_v0827_writes_use_get_to_avoid_cors_preflight,
+        test_v0829_apiget_skips_bridge,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3847,15 +3848,14 @@ def test_index_html_no_bridge_sdk_loading():
 
 
 def test_app_js_uses_fallback_bridge_stub():
-    """v0.8.18: app.js 应该用 fallback bridge stub，永远不依赖 window.AstrBotPluginPage。"""
+    """v0.8.18 + v0.8.29: app.js 应该用 fallback bridge stub。
+    v0.8.29 apiGet 永远走 fallbackFetch (bridge.apiGet 调 delete 丢 key 报 400)。
+    bridge stub 仍然保留 (兼容旧代码, 将来如果 AstrBot 修复中间层可以打开)。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # 必须有 _fallbackBridge stub
     assert "_fallbackBridge" in src, "app.js 必须定义 _fallbackBridge stub"
-    # bridge 应该是 fallback 而不是 AstrBotPluginPage
     assert "const bridge = window.AstrBotPluginPage || _fallbackBridge" in src, "bridge 必须是 fallback"
-    # 必须检测 bridge.apiGet/apiPost 是否为 function，不是就 fallbackFetch
-    assert "typeof bridge.apiGet === \"function\"" in src, "必须检测 bridge.apiGet 是否可用"
-    # v0.8.19: bridge mode badge 让用户能视觉上看出 webui 加载状态
+    # v0.8.29: apiGet 仍保留 bridge stub 调用位 (走 fallbackFetch)
+    # bridge mode badge 让用户能视觉上看出 webui 加载状态
     assert "bridge-mode-badge" in src, "app.js 必须更新 bridge-mode-badge 状态"
     print("✓ test_app_js_uses_fallback_bridge_stub")
 
@@ -3914,8 +3914,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.23
-    assert 'app.js?v=0.8.28' in h, "index.html app.js 必须用 v=0.8.28"
+    # index.html 顶部必须含 app.js? v=0.8.29 (v0.8.29 修 apiGet 跳桥)
+    assert 'app.js?v=0.8.29' in h, "index.html app.js 必须用 v=0.8.29"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -4003,6 +4003,29 @@ def test_v0827_writes_use_get_to_avoid_cors_preflight():
     # 6. backend api_delete / api_regenerate 必须从 query 读 key (兼容 GET)
     assert "getattr(req, \"query\", None)" in m, "api_delete/api_regenerate 必须从 query 读 key"
     print("✓ test_v0827_writes_use_get_to_avoid_cors_preflight")
+
+
+def test_v0829_apiget_skips_bridge():
+    """v0.8.29: apiGet 跳 bridge, 永远走 fallbackFetch。
+    v0.8.28 log 显示 onDelete 走 bridge.apiGet 调 /cache/delete
+    报 400 (key 缺)——bridge 中间层把 query 参数吞了。
+    永远走 fallbackFetch (同源 fetch, GET simple request 不发 preflight)。
+    """
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    idx = a.find("async function apiGet(")
+    assert idx > 0, "app.js 必须有 apiGet 函数"
+    # 找下一个 'async function ' 起点 (顶层级下一个函数) 作为下界
+    next_fn = a.find("\nasync function ", idx + 30)
+    if next_fn < 0:
+        next_fn = len(a)
+    body = a[idx:next_fn]
+    # 跳过注释检测"实际调用"——代码里只剩注释提调 bridge.apiGet
+    code_lines = [l for l in body.splitlines() if not l.strip().startswith("//")]
+    code_body = "\n".join(code_lines)
+    assert "await bridge.apiGet" not in code_body, "apiGet 不应再 await bridge.apiGet (v0.8.29 永远走 fallbackFetch)"
+    assert "fallbackFetch" in body, "apiGet 应调 fallbackFetch"
+    assert "v0.8.29" in body, "apiGet 应标 v0.8.29 注释"
+    print("✓ test_v0829_apiget_skips_bridge")
 
 
 def test_v0821_app_js_loaded_after_body():

@@ -84,19 +84,14 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19: 右上角 badge 让用户一眼看到 webui 是真加载好了
+  // v0.8.19 + v0.8.29: 右上角 badge——v0.8.29 永远走 fallbackFetch
+  // (bridge.apiGet 调 delete 接口会被中间层丢 key) 简化 badge
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      if (_isFallback) {
-        badge.textContent = "🔌 fallback (直 fetch)";
-        badge.classList.add("bridge-fallback");
-        badge.title = "AstrBot page bridge SDK 不可用，webui 走 fallbackFetch 直 fetch backend。功能 100% 正常。";
-      } else {
-        badge.textContent = "🟢 bridge (SDK)";
-        badge.classList.add("bridge-ok");
-        badge.title = "AstrBotPluginPage bridge 注入成功";
-      }
+      badge.textContent = "🔌 fallbackFetch (同源)";
+      badge.classList.add("bridge-fallback");
+      badge.title = "v0.8.29+ 改用 fallbackFetch 直连 backend。GET 走同源 fetch (无 CORS), POST 不会触发（API 已全迁 GET）。bridge SDK 只保留 SDK 加载探测，不再被调用。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -343,12 +338,10 @@ async function apiGet(endpoint, params = {}) {
   state.apiStats.calls += 1;
   logger.debug("api", `GET ${endpoint}`, params);
   try {
-    let resp;
-    if (typeof bridge.apiGet === "function") {
-      resp = await bridge.apiGet(endpoint, params);
-    } else {
-      resp = await fallbackFetch("GET", endpoint, params);
-    }
+    // v0.8.29: 永远走 fallbackFetch——bridge.apiGet 虽能调
+    // 但实测 bridge 转 path/query 走样 (delete 接口报 400 key 缺)
+    // fallbackFetch 同源 fetch 验证过全 OK
+    const resp = await fallbackFetch("GET", endpoint, params);
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const data = resp?.data || resp;
