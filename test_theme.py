@@ -109,6 +109,70 @@ def test_theme_toggle_no_emoji():
     print("test_theme_toggle_no_emoji: PASS")
 
 
+def test_light_theme_input_uses_glass_bg_strong():
+    """浅色主题下输入框背景必须用 glass-bg-strong (随主题变, 不写死 rgba 15/23/42)。"""
+    css = _read("style.css")
+    m = re.search(r'#search-input\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m, "#search-input 块必须存在"
+    body = m.group(1)
+    assert "var(--glass-bg-strong)" in body, \
+        "浅色主题下输入框背景必须用 var(--glass-bg-strong) (不能写死 rgba 深色半透)"
+    assert "rgba(15, 23, 42" not in body, \
+        "输入框背景不能硬编码 rgba(15, 23, 42 ...) (浅色主题下看不见)"
+    print("test_light_theme_input_uses_glass_bg_strong: PASS")
+
+
+def test_light_theme_thead_uses_glass_bg():
+    """表头背景必须用 glass-bg 变量 (随主题变)。"""
+    css = _read("style.css")
+    m = re.search(r'#cache-table\s+thead\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m, "#cache-table thead 块必须存在"
+    body = m.group(1)
+    assert "var(--glass-bg)" in body, \
+        "表头背景必须用 var(--glass-bg) (不能写死 rgba 深色半透)"
+    assert "rgba(15, 23, 42" not in body, \
+        "表头背景不能硬编码 rgba(15, 23, 42 ...)"
+    m_th = re.search(r'#cache-table\s+th\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m_th
+    th_body = m_th.group(1)
+    assert "var(--text-sub)" in th_body, \
+        "表头文字必须用 var(--text-sub) (浅色主题下看得清)"
+    print("test_light_theme_thead_uses_glass_bg: PASS")
+
+
+def test_primary_button_white_text():
+    """刷新按钮 (.btn.primary) 紫蓝渐变背景 + 白字。"""
+    css = _read("style.css")
+    m = re.search(r'\.btn\.primary\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m, ".btn.primary 块必须存在"
+    body = m.group(1)
+    assert "color: #ffffff" in body or "color: white" in body or "color: #fff" in body, \
+        ".btn.primary 文字必须固定白色 (不能跟主题文字色走 — 浅色主题下深蓝背景配深字看不清)"
+    assert "color: var(--text-main)" not in body, \
+        ".btn.primary 不能用 var(--text-main) (会被主题覆盖成深色)"
+    print("test_primary_button_white_text: PASS")
+
+
+def test_switch_off_bg_has_light_variant():
+    """switch 关闭背景必须有浅色主题变体 — 浅色下应该是浅灰色。"""
+    css = _read("style.css")
+    m_light = re.search(r'\[data-theme="light"\]\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m_light, "[data-theme=\"light\"] 块必须存在"
+    light_body = m_light.group(1)
+    assert "--switch-off-bg" in light_body, \
+        "浅色主题必须有 --switch-off-bg 变量 (关闭时的浅灰色背景)"
+    m_var = re.search(r'--switch-off-bg:\s*([^;]+);', light_body)
+    assert m_var, "--switch-off-bg 在浅色主题必须定义"
+    val = m_var.group(1).strip()
+    assert "ffffff" not in val.lower().replace(" ", ""), \
+        f"浅色主题 --switch-off-bg 不能是纯白 (用户要求浅灰), got: {val}"
+    m_slider = re.search(r'\.switch-slider\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m_slider
+    assert "var(--switch-off-bg" in m_slider.group(1), \
+        ".switch-slider 背景必须用 var(--switch-off-bg)"
+    print("test_switch_off_bg_has_light_variant: PASS")
+
+
 if __name__ == "__main__":
     test_theme_dark_default_in_css()
     test_theme_light_defines_all_variables()
@@ -117,5 +181,9 @@ if __name__ == "__main__":
     test_index_html_theme_init_runs_early()
     test_app_js_has_init_theme_toggle()
     test_theme_toggle_no_emoji()
+    test_light_theme_input_uses_glass_bg_strong()
+    test_light_theme_thead_uses_glass_bg()
+    test_primary_button_white_text()
+    test_switch_off_bg_has_light_variant()
     print("---")
     print("ALL THEME TESTS PASSED")

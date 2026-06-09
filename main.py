@@ -590,7 +590,15 @@ class VisionTextBridgePlugin(Star):
 
         # 1a) 从 event.message_obj 补提（ 防御 chat_plus 抽走图）
         # : 递归扫描嵌套 (引用消息里包 image)
-        if event is not None:
+        #
+        # 【重要】  同一个用户原图在 AstrBot 内部被存成 2 份：
+        #   - req.image_urls 里: compressed_xxx.jpg （压缩版、AstrBot 用于发送给 provider）
+        #   - event.message_obj 里: io_temp_img_xxx.jpg （原图、未压缩、供其他插件读）
+        # 两份内容不同 (压缩 vs 未压缩) → md5 不同 → 调 2 次 mmx 浪费 13s
+        #
+        # 正确做法: 只在 ``req.image_urls`` **空**时 (chat_plus 已抽走图) 才递归补
+        # event.message_obj——AstrBot 主动给到 image_urls 时, 不应重复补。
+        if event is not None and not saved_urls:
             try:
                 chain = getattr(getattr(event, "message_obj", None), "message", None)
                 if chain:

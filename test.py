@@ -1919,6 +1919,65 @@ def test_chat_plus_compat_event_image_components_recovered():
     print("✓ test_chat_plus_compat_event_image_components_recovered")
 
 
+def test_does_not_recover_image_when_req_image_urls_already_populated():
+    """: 【防同图重复调 mmx】
+    AstrBot 框架同一张原图存成 2 份 (compressed_xxx + io_temp_img_xxx)。
+    req.image_urls 主动给 1 张 (compressed 版), event.message_obj.message
+    链里 Image 组件 convert_to_file_path() 返回另 1 个路径 (原图)。
+    修复前: saved_urls=2 → 调 mmx 2 次 (同图描述) → 浪费 13+15s
+    修复后: req.image_urls 非空时不递归补 → saved_urls=1 → 调 mmx 1 次
+    """
+    import tempfile
+    from pathlib import Path
+    p = new_plugin()
+    p._vision_semaphore = asyncio.Semaphore(1)
+    # 创建 2 份"图"文件 (不同路径同内容, 模拟 compressed + io_temp_img)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg", prefix="compressed_") as f1:
+        f1.write(b"same image bytes")
+        compressed_path = f1.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg", prefix="io_temp_img_") as f2:
+        f2.write(b"same image bytes")
+        io_temp_path = f2.name
+    try:
+        class _Image:
+            type = "image"
+            def __init__(self, path):
+                self.path = path
+            async def convert_to_file_path(self):
+                return self.path
+
+        class _Msg:
+            def __init__(self, path):
+                self.message = [_Image(path)]
+        class _Evt:
+            def __init__(self, path):
+                self.message_obj = _Msg(path)
+
+        evt = _Evt(io_temp_path)  # event 里指向原图
+        # req.image_urls 指向压缩版 (AstrBot 默认行为)
+        req = FakeReq(prompt="看图", image_urls=[compressed_path])
+
+        call_count = {"n": 0}
+        async def fake_run_mmx(*args, **kw):
+            call_count["n"] += 1
+            return make_mmx_result(f"图说{ call_count['n'] }", "", 0, True)
+        with patch.object(p, "_run_mmx", side_effect=fake_run_mmx):
+            asyncio.run(p.bridge_vision_to_text(evt, req))
+
+        # **关键断言**: mmx 只能调 1 次 (修复前会调 2 次)
+        assert call_count["n"] == 1, \
+            f"同图重复调 mmx 修复未生效! 调了 {call_count['n']} 次 (期望 1 次)"
+        # 图说仍能注入 (虽然只调 1 次 mmx)
+        assert len(req.extra_user_content_parts) == 1
+        # 接受图说内容为”图说1“ (调 1 次) 或“图说1 / 图说1” (只调 1 次但 url dedupe 返两次)
+        text = req.extra_user_content_parts[0]["text"]
+        assert "图说1" in text, f"图说内容应包含'图说1'，实际: {text!r}"
+    finally:
+        Path(compressed_path).unlink(missing_ok=True)
+        Path(io_temp_path).unlink(missing_ok=True)
+    print("✓ test_does_not_recover_image_when_req_image_urls_already_populated")
+
+
 def test_v0851_no_duplicate_mmx_call_for_same_image():
     """.1 修复：Image 组件的 url/file 字段与 convert_to_file_path() 可能指向同张图。
     之前  同时取二者，导致同张图被调 2 次 mmx（local 路径成功 + remote URL 超时）。
@@ -2453,6 +2512,7 @@ def run_all():
         test_main_hook_clears_image_urls_immediately,
         test_main_hook_clears_extra_parts_and_contexts_images,
         test_main_hook_saves_snapshots_for_process_request,
+        test_does_not_recover_image_when_req_image_urls_already_populated,
         test_to_text_part_creates_pydantic_object,
         test_mark_providers_adds_image_modality,
         test_mark_providers_skipped_when_config_off,
