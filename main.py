@@ -787,13 +787,13 @@ class VisionTextBridgePlugin(Star):
             ("/cache/stats", api_stats, ["GET"], "Cache stats"),
             ("/cache/stats/timeline", api_stats_timeline, ["GET"], "v0.8.12 按天创建量（柱状图）"),
             ("/cache/list", api_list, ["GET"], "Cache list"),
-            ("/cache/delete", api_delete, ["GET", "POST"], "Delete entry (GET 避免 CORS preflight)"),
-            ("/cache/clear", api_clear, ["GET", "POST"], "Clear all (GET 避免 CORS preflight)"),
-            ("/cache/regenerate", api_regenerate, ["GET", "POST"], "Regenerate (GET 避免 CORS preflight)"),
+            ("/cache/delete", api_delete, ["GET", "POST"], "v0.8.36 恢复 POST 主路径 (bridge.apiPost 带 body, angel_memory 同款)"),
+            ("/cache/clear", api_clear, ["GET", "POST"], "v0.8.36 恢复 POST 主路径"),
+            ("/cache/regenerate", api_regenerate, ["GET", "POST"], "v0.8.36 恢复 POST 主路径"),
             ("/cache/export", api_export, ["GET"], "Export JSON"),
             ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "缩略图：image_id 走路径参数（GET）"),
             ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
-            ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "v0.8.11 手动清理过期缓存 (GET 避免 CORS preflight)"),
+            ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "v0.8.36 恢复 POST 主路径"),
         ]:
             self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)
 

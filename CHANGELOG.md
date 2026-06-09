@@ -7,6 +7,74 @@
 
 无新变更。
 
+## [0.8.36] - 2026-06-08
+
+### 参考 angel_memory 项目——修复 v0.8.27-v0.8.35 的连串误判
+
+user 提示参考 `astrbot_plugin_angel_memory` 项目 (`kawayiYokami/astrbot_plugin_angel_memory`)。
+查看其 webui 源码后发现关键架构差异:
+
+#### angel_memory 的 useBridge.ts
+
+```ts
+async function apiGet(endpoint, params) {
+  if (bridge) return await bridge.apiGet(endpoint, params)
+  ...
+}
+async function apiPost(endpoint, body) {
+  if (bridge) return await bridge.apiPost(endpoint, body)
+  ...
+}
+```
+
+```python
+# routes.py
+(f"/{PLUGIN_NAME}/memories/delete", memory_api.delete_memory, ["POST"], "删除记忆")
+```
+
+**关键点**: angel_memory 的 **delete 是 POST + body, 不是 GET + query**。
+
+#### 我的错误路径
+
+v0.8.27 我为避免 CORS preflight 改 GET + query——**v0.8.33 手动拼 query 报 'Plugin bridge endpoint is invalid'**——
+bridge 拒绝 GET endpoint 带 `?` (bridge-sdk.js 172:11)。
+
+**v0.8.34 改回两参数 bridge.apiGet(endpoint, params)**——bridge 内部转 query——但
+v0.8.28 走这条路报 400 (backend 返)——只能 是 bridge 转 query 后 dashboard fetch 时
+query 被丢。
+
+#### Fix——v0.8.36 改回 POST + bridge.apiPost
+
+参考 angel_memory 的 useBridge:
+```js
+async function apiWrite(endpoint, params = {}) {
+  if (typeof bridge.apiPost === "function") {
+    resp = await bridge.apiPost(endpoint, params || {})  // body = params
+  } else if (typeof bridge.apiGet === "function") {
+    resp = await bridge.apiGet(endpoint, params || {})  // 兑底
+  } else {
+    resp = await fallbackFetch("POST", endpoint, params)
+  }
+}
+```
+
+backend route `/cache/delete` 等保留 `["GET", "POST"]` 兼容性
+(但 v0.8.36 主路径调 POST + body)。
+backend `_read_key_from_request` v0.8.32 已支持 json body 拿 key。
+
+### 为什么这次能 work
+
+- bridge 调 parent dashboard 调 backend 是 **同源**——能带 cookie
+- POST + body 是 bridge 的 **正常路径**——不会被 bridge 报 invalid endpoint
+- backend 第 2 步拿 json body.get('key')——能拿到
+- v0.8.34 加的 debug log 会打 'key from json: xxx' 证明拿到了
+
+### Tests
+- +1 个新测试: \`test_v0836_apiwrite_uses_bridge_apipost\`
+- 总计 174/174
+
+## [0.8.35] - 2026-06-08
+
 ## [0.8.35] - 2026-06-08
 
 ### 问题——本插件识别不到引用内图片

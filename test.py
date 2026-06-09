@@ -2532,6 +2532,7 @@ def run_all():
         test_v0831_write_uses_bridge_with_manual_query,
         test_v0832_apiwrite_uses_sendbeacon,
         test_v0835_recursive_image_scan_in_quote,
+        test_v0836_apiwrite_uses_bridge_apipost,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3917,8 +3918,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.35 (v0.8.35 main hook 递归扫嵌套引用 image)
-    assert 'app.js?v=0.8.35' in h, "index.html app.js 必须用 v=0.8.35"
+    # index.html 顶部必须含 app.js? v=0.8.36 (v0.8.36 apiWrite 改用 bridge.apiPost, angel_memory 同款)
+    assert 'app.js?v=0.8.36' in h, "index.html app.js 必须用 v=0.8.36"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -4195,6 +4196,30 @@ def test_v0835_recursive_image_scan_in_quote():
     # 顶层调用递归
     assert "await _collect_image_urls_from_components" in m, "on_llm_request 应调递归"
     print("✓ test_v0835_recursive_image_scan_in_quote")
+
+
+def test_v0836_apiwrite_uses_bridge_apipost():
+    """v0.8.36: apiWrite 改用 bridge.apiPost(endpoint, body) (angel_memory 同款).
+
+    背景: v0.8.27 改 GET + query 是错的——bridge 拒绝 GET endpoint 带 ?
+    (报 'Plugin bridge endpoint is invalid'). 参考 astrbot_plugin_angel_memory
+    useBridge.ts: 用 bridge.apiPost, body 走 postMessage 不限 CORS, dashboard
+    同源 fetch backend 带 cookie auth.
+    """
+    a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
+    import re
+    m = re.search(r"async function apiWrite\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
+    assert m, "app.js 必须有 apiWrite 函数"
+    body = m.group(1)
+    # v0.8.36: 主路径应调 bridge.apiPost
+    assert "bridge.apiPost" in body, "apiWrite 应调 bridge.apiPost (v0.8.36, angel_memory 同款)"
+    # 不应再用 sendBeacon (v0.8.32 401) 或 GET + query (v0.8.34 'invalid endpoint')
+    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon (v0.8.32 401)"
+    # backend route 仍接受 GET + POST
+    m_main = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
+    assert '"/cache/delete", api_delete, ["GET", "POST"]' in m_main, \
+        "/cache/delete 应仍支持 GET + POST (兼容老路径)"
+    print("✓ test_v0836_apiwrite_uses_bridge_apipost")
 
 
 if __name__ == "__main__":

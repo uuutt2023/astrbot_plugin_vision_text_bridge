@@ -84,15 +84,15 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19 + v0.8.34: 右上角 badge——v0.8.34 apiWrite 改回两参数 bridge.apiGet
-  // v0.8.33 手动拼 query 报 "Plugin bridge endpoint is invalid"
-  // v0.8.34 改回两参数 + backend debug log 看到底是哪步出问题
+  // v0.8.19 + v0.8.36: 右上角 badge——v0.8.36 apiWrite 改用 bridge.apiPost (angel_memory 同款)
+  // v0.8.27 改 GET + query 是错的 (bridge 拒绝 GET endpoint 带 ?)
+  // v0.8.36 恢复 POST + body, bridge 走 postMessage 不限 CORS, dashboard 同源 fetch 带 cookie
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🟢 bridge (读+写, v0.8.34)";
+      badge.textContent = "🟢 bridge (读+写 POST)";
       badge.classList.add("bridge-ok");
-      badge.title = "v0.8.34 读 + 写 都走 bridge.apiGet 两参数 (bridge 内部转 query, v0.8.33 手动拼 query 被 bridge 拒 endpoint invalid)。backend _read_key_from_request 增强 + debug log 看清哪步拿到 key。";
+      badge.title = "v0.8.36 读 + 写都走 bridge (angel_memory 同款)。写接口用 POST + body, bridge 走 postMessage 跳 sandbox origin=null, dashboard 同源 fetch backend 带 cookie auth, body 不丢 (vs v0.8.27 GET + query 被 bridge 拒 'invalid endpoint')。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -369,36 +369,41 @@ async function apiGet(endpoint, params = {}) {
   }
 }
 
-// v0.8.34: 写操作专用——bridge.apiGet 两参数 (endpoint, params)
-// v0.8.33 手动拼 query 报 "Plugin bridge endpoint is invalid"——bridge 拒绝带 ? 的 endpoint
-// v0.8.28 用两参数报 400, 但实际是 400 是 backend 返的 (auth 已过), 可能 backend _read_key_from_request 没拿到 query
-// v0.8.34 改回两参数 + backend debug log 看出哪里出的问题
+// v0.8.36: 写操作专用——bridge.apiPost(endpoint, body) (angel_memory 同款)
+// v0.8.27 改 GET + query 是错的——bridge 拒绝 GET endpoint 带 ? (报 'Plugin bridge endpoint is invalid')
+// v0.8.32 sendBeacon 跨 origin=null 不带 cookie 401 拒
+// 参考 astrbot_plugin_angel_memory 的 useBridge: 用 bridge.apiPost, body 走 postMessage 不限 CORS
+// bridge 走 postMessage 调 parent dashboard 同源 fetch backend 带 cookie auth
 async function apiWrite(endpoint, params = {}) {
   const t0 = performance.now();
   state.apiStats.calls += 1;
-  logger.debug("api", `WRITE bridge GET ${endpoint}`, params);
+  logger.debug("api", `WRITE bridge POST ${endpoint}`, params);
   try {
     let resp;
-    if (typeof bridge.apiGet === "function") {
-      // v0.8.34: 两参数——bridge 内部转 params -> query string
+    if (typeof bridge.apiPost === "function") {
+      // body 直接传 params 对象——bridge 内部转 body, dashboard xhr POST body 送 backend
+      resp = await bridge.apiPost(endpoint, params || {});
+    } else if (typeof bridge.apiGet === "function") {
+      // 兑底: 走 GET + query (v0.8.34 形式), 但被 bridge 拒的概率高
       resp = await bridge.apiGet(endpoint, params || {});
     } else {
-      resp = await fallbackFetch("GET", endpoint, params);
+      // 最终兑底: fallbackFetch
+      resp = await fallbackFetch("POST", endpoint, params);
     }
     const dt = (performance.now() - t0).toFixed(1);
     state.apiStats.lastLatencyMs = dt;
     const data = resp?.data || resp;
     const ok = resp?.ok !== false;
     if (ok) {
-      logger.info("api", `WRITE bridge GET ${endpoint} OK ${dt}ms`, _summarize(data));
+      logger.info("api", `WRITE bridge POST ${endpoint} OK ${dt}ms`, _summarize(data));
     } else {
       state.apiStats.errors += 1;
-      logger.warn("api", `WRITE bridge GET ${endpoint} 失败 ${dt}ms`, resp?.error || resp);
+      logger.warn("api", `WRITE bridge POST ${endpoint} 失败 ${dt}ms`, resp?.error || resp);
     }
     return resp;
   } catch (e) {
     state.apiStats.errors += 1;
-    logger.error("api", `WRITE bridge 异常`, e);
+    logger.error("api", `WRITE bridge POST 异常`, e);
     throw e;
   }
 }
