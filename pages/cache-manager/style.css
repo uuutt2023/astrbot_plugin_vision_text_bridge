@@ -1,19 +1,22 @@
 /* Vision Text Bridge · Webui
  *
  * 设计参考：astrbot_plugin_chat_archive 的 glassmorphism 风格
- *   - Inter 字体 + 暗色玻璃卡片
+ *   - Inter 字体 + 玻璃卡片
  *   - CSS 变量驱动主题
  *   - 顶部 + 侧面 ambient 光晕（径向渐变）
  * 但**不**引用 chat_archive 的资源，UI 元素独立
  *
+ * 主题：暗色 (默认) / 浅色  可热切换，存 localStorage
+ *
  * 配色（参考 chat_archive 的 design tokens）：
- *   --bg-color: #0b0f19    主背景
+ *   --bg-color: #0b0f19    暗色主背景
  *   --primary:  #6366f1    紫蓝主色
  *   --accent:   #10b981    绿强调
  *   --danger:   #ef4444    红色（危险操作）
  */
 
-:root {
+:root,
+[data-theme="dark"] {
     --bg-color: #0b0f19;
     --sidebar-bg: rgba(15, 23, 42, 0.55);
     --glass-bg: rgba(30, 41, 59, 0.45);
@@ -34,6 +37,48 @@
     --radius-sm: 8px;
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.35);
     --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="light"] {
+    --bg-color: #f5f7fa;
+    --sidebar-bg: rgba(241, 245, 249, 0.75);
+    --glass-bg: rgba(255, 255, 255, 0.65);
+    --glass-bg-strong: rgba(255, 255, 255, 0.85);
+    --glass-border: rgba(15, 23, 42, 0.08);
+    --glass-border-strong: rgba(15, 23, 42, 0.14);
+    --primary: #4f46e5;
+    --primary-light: #6366f1;
+    --primary-glow: rgba(79, 70, 229, 0.3);
+    --text-main: #0f172a;
+    --text-sub: #334155;
+    --text-muted: #64748b;
+    --accent: #059669;
+    --danger: #dc2626;
+    --warn: #d97706;
+    --shadow-lg: 0 8px 32px rgba(15, 23, 42, 0.08);
+    --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]):not([data-theme="light"]) {
+        --bg-color: #f5f7fa;
+        --sidebar-bg: rgba(241, 245, 249, 0.75);
+        --glass-bg: rgba(255, 255, 255, 0.65);
+        --glass-bg-strong: rgba(255, 255, 255, 0.85);
+        --glass-border: rgba(15, 23, 42, 0.08);
+        --glass-border-strong: rgba(15, 23, 42, 0.14);
+        --primary: #4f46e5;
+        --primary-light: #6366f1;
+        --primary-glow: rgba(79, 70, 229, 0.3);
+        --text-main: #0f172a;
+        --text-sub: #334155;
+        --text-muted: #64748b;
+        --accent: #059669;
+        --danger: #dc2626;
+        --warn: #d97706;
+        --shadow-lg: 0 8px 32px rgba(15, 23, 42, 0.08);
+        --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+    }
 }
 
 *, *::before, *::after {
@@ -369,6 +414,28 @@ main {
     background: rgba(255, 255, 255, 0.08);
     color: var(--text-main);
 }
+[data-theme="light"] .icon-btn:hover {
+    background: rgba(15, 23, 42, 0.06);
+}
+.theme-toggle {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text-sub);
+    font-size: 0.78rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: var(--transition);
+    font-family: inherit;
+}
+.theme-toggle:hover {
+    background: var(--glass-bg-strong);
+    border-color: var(--primary);
+    color: var(--text-main);
+}
+.theme-toggle:active {
+    transform: scale(0.96);
+}
 
 /* Table */
 .table-wrap {
@@ -528,8 +595,9 @@ main {
     padding: 3rem 1rem;
     color: var(--text-muted);
 }
-.empty-icon {
-    font-size: 2.5rem;
+.empty-state-text {
+    font-size: 1rem;
+    opacity: 0.7;
     margin-bottom: 0.5rem;
 }
 

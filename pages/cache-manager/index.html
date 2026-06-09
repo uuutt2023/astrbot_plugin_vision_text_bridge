@@ -1,198 +1,210 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-  <meta http-equiv="Pragma" content="no-cache" />
-  <meta http-equiv="Expires" content="0" />
-  <title>Vision Text Bridge · 缓存管理</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css?v=0.8.37" />
-  <!-- 重新启用 AstrBot bridge SDK。
-        放弃是因为 sandbox iframe 撞 CORS 错。
-       真因：之前用过 crossorigin="use-credentials" 撞 server wildward *。
-       正确：crossorigin="anonymous" + fetch 走 bridge（bridge 用 postMessage 跟同源 parent 通信，绕开 sandbox origin=null）.
-  -->
-  <script src="./logger.js?v=0.8.37"></script>
+ <meta charset="utf-8" />
+ <meta name="viewport"content="width=device-width, initial-scale=1" />
+ <script>
+ // 主题初始化脚本，需在 body 之前同步执行避免闪动
+ (function() {
+   try {
+     var saved = localStorage.getItem("vtb-theme");
+     if (saved === "light" || saved === "dark") {
+       document.documentElement.setAttribute("data-theme", saved);
+     }
+   } catch (e) {}
+ })();
+ </script>
+ <meta http-equiv="Cache-Control"content="no-cache, no-store, must-revalidate" />
+ <meta http-equiv="Pragma"content="no-cache" />
+ <meta http-equiv="Expires"content="0" />
+ <title>Vision Text Bridge · 缓存管理</title>
+ <link rel="preconnect"href="https://fonts.googleapis.com" />
+ <link rel="preconnect"href="https://fonts.gstatic.com"crossorigin />
+ <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"rel="stylesheet" />
+ <link rel="stylesheet"href="./style.css?v=0.8.37" />
+ <!-- 重新启用 AstrBot bridge SDK。
+ 放弃是因为 sandbox iframe 撞 CORS 错。
+ 真因：之前用过 crossorigin="use-credentials"撞 server wildward *。
+ 正确：crossorigin="anonymous" + fetch 走 bridge（bridge 用 postMessage 跟同源 parent 通信，绕开 sandbox origin=null）.
+ -->
+ <script src="./logger.js?v=0.8.37"></script>
 </head>
 <body>
-  <div class="bg-orb orb-1"></div>
-  <div class="bg-orb orb-2"></div>
-  <div class="bg-orb orb-3"></div>
+ <div class="bg-orb orb-1"></div>
+ <div class="bg-orb orb-2"></div>
+ <div class="bg-orb orb-3"></div>
 
-  <header class="topbar glass">
-    <div class="brand">
-      <div class="brand-mark">🖼️</div>
-      <div>
-        <h1>Vision Text Bridge</h1>
-        <p class="subtitle">mmx 视觉描述的 SQLite 缓存 · 命中后秒返文本</p>
-      </div>
-    </div>
-    <div class="topbar-actions">
-      <span class="badge" id="bridge-mode-badge" title="">bridge: checking…</span>
-      <span class="badge" id="db-path-badge" title="">webui version</span>
-    </div>
-  </header>
+ <header class="topbar glass">
+ <div class="brand">
+ <div class="brand-mark"></div>
+ <div>
+ <h1>Vision Text Bridge</h1>
+ <p class="subtitle">mmx 视觉描述的 SQLite 缓存 · 命中后秒返文本</p>
+ </div>
+ </div>
+ <div class="topbar-actions">
+ <button class="icon-btn theme-toggle"id="theme-toggle"title="切换主题"aria-label="切换主题">浅色</button>
+ <span class="badge"id="bridge-mode-badge"title="">bridge: checking…</span>
+ <span class="badge"id="db-path-badge"title="">webui version</span>
+ </div>
+ </header>
 
-  <main>
-    <section class="cards">
-      <div class="card glass">
-        <div class="card-label">缓存条目</div>
-        <div class="card-value" id="stat-total">-</div>
-        <div class="card-hint" id="stat-total-hint">total</div>
-      </div>
-      <div class="card glass">
-        <div class="card-label">总命中数</div>
-        <div class="card-value" id="stat-hits">-</div>
-        <div class="card-hint">hit_count 累计</div>
-      </div>
-      <div class="card glass">
-        <div class="card-label">DB 大小</div>
-        <div class="card-value" id="stat-dbsize">-</div>
-        <div class="card-hint">SQLite file</div>
-      </div>
-      <div class="card glass">
-        <div class="card-label">内存热缓存</div>
-        <div class="card-value" id="stat-memcache">-</div>
-        <div class="card-hint">in-memory</div>
-      </div>
-    </section>
+ <main>
+ <section class="cards">
+ <div class="card glass">
+ <div class="card-label">缓存条目</div>
+ <div class="card-value"id="stat-total">-</div>
+ <div class="card-hint"id="stat-total-hint">total</div>
+ </div>
+ <div class="card glass">
+ <div class="card-label">总命中数</div>
+ <div class="card-value"id="stat-hits">-</div>
+ <div class="card-hint">hit_count 累计</div>
+ </div>
+ <div class="card glass">
+ <div class="card-label">DB 大小</div>
+ <div class="card-value"id="stat-dbsize">-</div>
+ <div class="card-hint">SQLite file</div>
+ </div>
+ <div class="card glass">
+ <div class="card-label">内存热缓存</div>
+ <div class="card-value"id="stat-memcache">-</div>
+ <div class="card-hint">in-memory</div>
+ </div>
+ </section>
 
-    <section class="status-bar glass" id="status-bar">
-      <span class="status-chip" title="内存热缓存生效时间">⏱️ 内存 TTL: <b id="status-mem-ttl">-</b></span>
-      <span class="status-chip" title="内存热缓存 LRU 上限">📦 内存上限: <b id="status-mem-max">-</b></span>
-      <span class="status-chip" title="SQLite 缓存超期清理">🗓️ SQLite TTL: <b id="status-sql-ttl">-</b></span>
-      <span class="status-chip" title="后台清理间隔 / 下次预计时间">⏭️ 下次清理: <b id="status-next-clean">-</b></span>
-    </section>
+ <section class="status-bar glass"id="status-bar">
+ <span class="status-chip"title="内存热缓存生效时间">内存 TTL: <b id="status-mem-ttl">-</b></span>
+ <span class="status-chip"title="内存热缓存 LRU 上限">内存上限: <b id="status-mem-max">-</b></span>
+ <span class="status-chip"title="SQLite 缓存超期清理">SQLite TTL: <b id="status-sql-ttl">-</b></span>
+ <span class="status-chip"title="后台清理间隔 / 下次预计时间">下次清理: <b id="status-next-clean">-</b></span>
+ </section>
 
-    <section class="toolbar glass">
-      <div class="search-wrap">
-        <span class="search-icon">🔍</span>
-        <input
-          type="text"
-          id="search-input"
-          placeholder="搜索 URL 或描述..."
-          autocomplete="off"
-        />
-      </div>
-      <select id="order-by">
-        <option value="created_at_desc">最新优先</option>
-        <option value="created_at_asc">最旧优先</option>
-        <option value="hit_count_desc">命中最多</option>
-        <option value="hit_count_asc">命中最少</option>
-      </select>
-      <label class="switch" title=" 开启后按 5s 间隔自动刷新">
-        <input type="checkbox" id="auto-refresh-toggle" />
-        <span class="switch-slider"></span>
-        <span class="switch-label">自动刷新</span>
-      </label>
-      <button class="btn primary" id="refresh-btn" title="刷新 (R)">🔄 刷新</button>
-      <button class="btn" id="export-btn">⬇️ 导出 JSON</button>
-      <button class="btn" id="clean-expired-btn" title=" 清理超期未命中条目（SQLite + 内存热缓存）">🧹 清理过期</button>
-      <button class="btn" id="diag-btn" title=".1 诊断：查看 SQLite 路径/schema/最近 3 条">🔍 诊断</button>
-      <button class="btn danger" id="clear-btn">🗑️ 清空全部</button>
-    </section>
+ <section class="toolbar glass">
+ <div class="search-wrap">
+ <span class="search-icon"aria-hidden="true"></span>
+ <input
+ type="text"
+ id="search-input"
+ placeholder="搜索 URL 或描述..."
+ autocomplete="off"
+ />
+ </div>
+ <select id="order-by">
+ <option value="created_at_desc">最新优先</option>
+ <option value="created_at_asc">最旧优先</option>
+ <option value="hit_count_desc">命中最多</option>
+ <option value="hit_count_asc">命中最少</option>
+ </select>
+ <label class="switch"title="开启后按 5s 间隔自动刷新">
+ <input type="checkbox"id="auto-refresh-toggle" />
+ <span class="switch-slider"></span>
+ <span class="switch-label">自动刷新</span>
+ </label>
+ <button class="btn primary"id="refresh-btn"title="刷新 (R)">刷新</button>
+ <button class="btn"id="export-btn">导出 JSON</button>
+ <button class="btn"id="clean-expired-btn"title="清理超期未命中条目（SQLite + 内存热缓存）">清理过期</button>
+ <button class="btn"id="diag-btn"title=".1 诊断：查看 SQLite 路径/schema/最近 3 条">诊断</button>
+ <button class="btn danger"id="clear-btn">清空全部</button>
+ </section>
 
-    <section class="timeline-wrap glass">
-      <div class="timeline-header">
-        <h3>📊 按天创建量（30 天）</h3>
-        <span class="timeline-hint"> 柱状图 · hover 看日期详情</span>
-      </div>
-      <svg id="timeline-svg" viewBox="0 0 800 180" preserveAspectRatio="none" class="timeline-svg" aria-label="daily created cache count"></svg>
-    </section>
+ <section class="timeline-wrap glass">
+ <div class="timeline-header">
+ <h3>按天创建量（30 天）</h3>
+ <span class="timeline-hint">柱状图 · hover 看日期详情</span>
+ </div>
+ <svg id="timeline-svg"viewBox="0 0 800 180"preserveAspectRatio="none"class="timeline-svg"aria-label="daily created cache count"></svg>
+ </section>
 
-    <section class="table-wrap glass">
-      <table id="cache-table">
-        <thead>
-          <tr>
-            <th style="width: 96px">缩略图</th>
-            <th>URL / 路径</th>
-            <th>描述（mmx vision describe）</th>
-            <th style="width: 80px">命中</th>
-            <th style="width: 90px">尺寸</th>
-            <th style="width: 160px">创建时间</th>
-            <th style="width: 120px">操作</th>
-          </tr>
-        </thead>
-        <tbody id="cache-tbody">
-          <tr class="empty">
-            <td colspan="7">
-              <div class="empty-state">
-                <div class="empty-icon">⏳</div>
-                <div>加载中...</div>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+ <section class="table-wrap glass">
+ <table id="cache-table">
+ <thead>
+ <tr>
+ <th style="width: 96px">缩略图</th>
+ <th>URL / 路径</th>
+ <th>描述（mmx vision describe）</th>
+ <th style="width: 80px">命中</th>
+ <th style="width: 90px">尺寸</th>
+ <th style="width: 160px">创建时间</th>
+ <th style="width: 120px">操作</th>
+ </tr>
+ </thead>
+ <tbody id="cache-tbody">
+ <tr class="empty">
+ <td colspan="7">
+ <div class="empty-state">
+ <div class="empty-icon">⏳</div>
+ <div>加载中...</div>
+ </div>
+ </td>
+ </tr>
+ </tbody>
+ </table>
+ </section>
 
-    <section class="pagination glass">
-      <span id="page-info">-</span>
-      <div class="page-buttons">
-        <button class="btn ghost" id="prev-btn">← 上一页</button>
-        <button class="btn ghost" id="next-btn">下一页 →</button>
-      </div>
-    </section>
-  </main>
+ <section class="pagination glass">
+ <span id="page-info">-</span>
+ <div class="page-buttons">
+ <button class="btn ghost"id="prev-btn">← 上一页</button>
+ <button class="btn ghost"id="next-btn">下一页 →</button>
+ </div>
+ </section>
+ </main>
 
-  <!-- Modal: 查看单条记录 -->
-  <div class="modal-mask" id="detail-modal" hidden>
-    <div class="modal-card glass">
-      <div class="modal-header">
-        <h3>📄 缓存详情</h3>
-        <button class="icon-btn" id="modal-close">✕</button>
-      </div>
-      <div class="modal-body" id="modal-body"></div>
-    </div>
-  </div>
+ <!-- Modal: 查看单条记录 -->
+ <div class="modal-mask"id="detail-modal"hidden>
+ <div class="modal-card glass">
+ <div class="modal-header">
+ <h3>缓存详情</h3>
+ <button class="icon-btn"id="modal-close"></button>
+ </div>
+ <div class="modal-body"id="modal-body"></div>
+ </div>
+ </div>
 
-  <!-- Modal: 自建 confirm（ 替换 window.confirm，iframe sandbox 不允许原生 confirm） -->
-  <div class="modal-mask" id="confirm-modal" hidden>
-    <div class="modal-card glass confirm-card">
-      <div class="modal-header">
-        <h3 id="confirm-title">⚠️ 确认操作</h3>
-      </div>
-      <div class="modal-body">
-        <p id="confirm-message"></p>
-      </div>
-      <div class="confirm-actions">
-        <button class="btn ghost" id="confirm-cancel">取消</button>
-        <button class="btn danger" id="confirm-ok">确定</button>
-      </div>
-    </div>
-  </div>
+ <!-- Modal: 自建 confirm（ 替换 window.confirm，iframe sandbox 不允许原生 confirm） -->
+ <div class="modal-mask"id="confirm-modal"hidden>
+ <div class="modal-card glass confirm-card">
+ <div class="modal-header">
+ <h3 id="confirm-title">确认操作</h3>
+ </div>
+ <div class="modal-body">
+ <p id="confirm-message"></p>
+ </div>
+ <div class="confirm-actions">
+ <button class="btn ghost"id="confirm-cancel">取消</button>
+ <button class="btn danger"id="confirm-ok">确定</button>
+ </div>
+ </div>
+ </div>
 
-  <div id="toast" class="toast"></div>
+ <div id="toast"class="toast"></div>
 
-  <!-- Debug Panel (.2): 浮动控制台日志面板 -->
-  <div id="debug-panel" class="debug-panel" hidden>
-    <div class="debug-header">
-      <div class="debug-title">
-        <span class="debug-icon">🐞</span>
-        <span>控制台日志</span>
-        <span class="debug-count" id="debug-count">0</span>
-      </div>
-      <div class="debug-controls">
-        <select id="debug-level" title="日志级别" class="debug-select">
-          <option value="debug">debug</option>
-          <option value="info" selected>info</option>
-          <option value="warn">warn</option>
-          <option value="error">error</option>
-          <option value="off">off</option>
-        </select>
-        <button class="icon-btn" id="debug-copy" title="复制全部日志到剪贴板">📋</button>
-        <button class="icon-btn" id="debug-download" title="下载日志文件">⬇️</button>
-        <button class="icon-btn" id="debug-clear" title="清空日志">🗑️</button>
-        <button class="icon-btn" id="debug-toggle" title="隐藏面板">✕</button>
-      </div>
-    </div>
-    <div class="debug-body" id="debug-body"></div>
-  </div>
-  <button id="debug-show" class="debug-fab" title="显示控制台日志" hidden>🐞</button>
-  <script src="./app.js?v=0.8.37"></script>
+ <!-- Debug Panel (.2): 浮动控制台日志面板 -->
+ <div id="debug-panel"class="debug-panel"hidden>
+ <div class="debug-header">
+ <div class="debug-title">
+ <span class="debug-icon"></span>
+ <span>控制台日志</span>
+ <span class="debug-count"id="debug-count">0</span>
+ </div>
+ <div class="debug-controls">
+ <select id="debug-level"title="日志级别"class="debug-select">
+ <option value="debug">debug</option>
+ <option value="info"selected>info</option>
+ <option value="warn">warn</option>
+ <option value="error">error</option>
+ <option value="off">off</option>
+ </select>
+ <button class="icon-btn"id="debug-copy"title="复制全部日志到剪贴板">复制</button>
+ <button class="icon-btn"id="debug-download"title="下载日志文件">下载</button>
+ <button class="icon-btn"id="debug-clear"title="清空日志">清空</button>
+ <button class="icon-btn"id="debug-toggle"title="隐藏面板">隐藏</button>
+ </div>
+ </div>
+ <div class="debug-body"id="debug-body"></div>
+ </div>
+ <button id="debug-show"class="debug-fab"title="显示控制台日志"hidden>日志</button>
+ <script src="./app.js?v=0.8.37"></script>
 </body>
 </html>
