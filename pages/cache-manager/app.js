@@ -90,9 +90,9 @@
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🟢 bridge (读+写 POST)";
+      badge.textContent = "🟢 bridge (v0.8.37 quart)";
       badge.classList.add("bridge-ok");
-      badge.title = "v0.8.36 读 + 写都走 bridge (angel_memory 同款)。写接口用 POST + body, bridge 走 postMessage 跳 sandbox origin=null, dashboard 同源 fetch backend 带 cookie auth, body 不丢 (vs v0.8.27 GET + query 被 bridge 拒 'invalid endpoint')。";
+      badge.title = "v0.8.37 读写走 bridge (angel_memory 同款)。写接口用 POST + body, backend 改用 quart 全局 request (from quart import request), 修复 v0.7 commit 以来 self.context.request 一直是错的 (v0.8.7.10 commit 记), 之前 try/except 静默吞导致 key 永远空, delete 永远 400。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -403,7 +403,9 @@ async function apiWrite(endpoint, params = {}) {
     return resp;
   } catch (e) {
     state.apiStats.errors += 1;
-    logger.error("api", `WRITE bridge POST 异常`, e);
+    // v0.8.37: 错误时也打 response body——bridge 拒绝时可能返详细 message
+    const errBody = e?.body || e?.data || e?.response?.data || (typeof e?.message === 'string' ? e.message : null) || String(e);
+    logger.error("api", `WRITE bridge POST 异常 (body=${JSON.stringify(errBody).slice(0, 400)})`, e);
     throw e;
   }
 }

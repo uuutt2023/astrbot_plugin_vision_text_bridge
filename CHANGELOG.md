@@ -7,6 +7,71 @@
 
 无新变更。
 
+## [0.8.37] - 2026-06-08
+
+### 问题——v0.8.36 仍 400 (backend 真凶)
+
+v0.8.36 push 后 user log:
+
+```
+[INFO] bridge.ready() 完成, bridge: AstrBotPluginPage (SDK)
+[INFO] 请求删除: 0a3d4f5ef6c7
+POST /api/plug/.../cache/delete   400
+[ERROR] WRITE bridge POST 异常 Request failed with status code 400
+```
+
+调用栈确认走了 bridge.apiPost 路径 (v0.8.36 生效了)——
+但 **backend 仍 400 缺 key**。
+
+### 根因——self.context.request 一直是错的
+
+angel_memory 的 useBridge 提示了灵感, 看其 web_api/memory_api.py:
+
+```python
+from quart import jsonify, request
+async def delete_memory(self):
+    data = await request.get_json()
+```
+
+——angel_memory 用 **Quart 全局 request**, 不是 self.context.request!
+
+**v0.7 commit 00ddf11 用了 `self.context.request.json`**——**v0.8.7.10 commit 记
+Context 没此属性**——但被 try/except 静默吞, 没发现.
+
+历次推进:
+- GET 路径: _args() 读 self.context.request.args, 被 has_attr 静默返空 dict
+  - webui 默认参数限5/offset=0/limit=50 碰巧能跑——但 limit/offset 在 webui 传的值被忽略
+  - user log 显示 list returned 11, range 1-11——总是返默认 50, 实际 limit 20 不生效
+- POST 路径: request.json 拋 AttributeError 被 try/except 吞—— body 返空
+  - key 永远是空——返 "缺少参数 key" 400
+
+### Fix——v0.8.37 backend 改用 quart request
+
+```python
+from quart import jsonify, request as quart_request
+...
+async def _read_key_from_request():
+    query = quart_request.args or {}            # 读 query (angel_memory 形式)
+    if not key:
+        body = await quart_request.get_json(silent=True)  # 读 POST body
+        key = (body.get("key") or body.get("id") or "").strip()  # 兼容 key/id 两种名
+    if not key:
+        form = await quart_request.form          # 兑底 form data
+    if not key:
+        raw = await quart_request.get_data(as_text=True)  # 兑底 raw text
+```
+
+### 为什么这次能 work
+
+bridge.apiPost 传 body `{key: id}` 给 quart handler——
+await quart_request.get_json() 拿到 dict——key 拿到。
+
+### Tests
+- +1 个新测试: \`test_v0837_backend_uses_quart_request\`
+- 总计 175/175
+
+## [0.8.36] - 2026-06-08
+
 ## [0.8.36] - 2026-06-08
 
 ### 参考 angel_memory 项目——修复 v0.8.27-v0.8.35 的连串误判

@@ -2533,6 +2533,7 @@ def run_all():
         test_v0832_apiwrite_uses_sendbeacon,
         test_v0835_recursive_image_scan_in_quote,
         test_v0836_apiwrite_uses_bridge_apipost,
+        test_v0837_backend_uses_quart_request,
         test_cfg_int_helper_exists,
         test_cfg_str_helper_exists,
         test_app_js_no_dead_fmtDim,
@@ -3918,8 +3919,8 @@ def test_v0823_webui_version_badge():
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.36 (v0.8.36 apiWrite 改用 bridge.apiPost, angel_memory 同款)
-    assert 'app.js?v=0.8.36' in h, "index.html app.js 必须用 v=0.8.36"
+    # index.html 顶部必须含 app.js? v=0.8.37 (v0.8.37 backend 改用 quart request)
+    assert 'app.js?v=0.8.37' in h, "index.html app.js 必须用 v=0.8.37"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"
@@ -4006,7 +4007,8 @@ def test_v0827_writes_use_get_to_avoid_cors_preflight():
     assert '("/cache/clear", api_clear, ["GET", "POST"]' in m, "/cache/clear 必须支持 GET"
     assert '("/cache/clean_expired", api_clean_expired, ["GET", "POST"]' in m, "/cache/clean_expired 必须支持 GET"
     # 6. backend api_delete / api_regenerate 必须从 query 读 key (兼容 GET)
-    assert "getattr(req, \"query\", None)" in m, "api_delete/api_regenerate 必须从 query 读 key"
+    # v0.8.37: backend 改用 quart_request (angel_memory 同款), 不再 self.context.request.query
+    assert "quart_request.args" in m, "v0.8.37 backend 应读 quart_request.args (替代 self.context.request.query)"
     print("✓ test_v0827_writes_use_get_to_avoid_cors_preflight")
 
 
@@ -4220,6 +4222,24 @@ def test_v0836_apiwrite_uses_bridge_apipost():
     assert '"/cache/delete", api_delete, ["GET", "POST"]' in m_main, \
         "/cache/delete 应仍支持 GET + POST (兼容老路径)"
     print("✓ test_v0836_apiwrite_uses_bridge_apipost")
+
+
+def test_v0837_backend_uses_quart_request():
+    """v0.8.37: backend 改用 quart 全局 request (angel_memory 同款).
+
+    背景: v0.7 commit 用了 self.context.request——v0.8.7.10 commit 记 Context
+    没此属性, 之前 try/except 静默 fallback——key 永远是空, delete 永远 400。
+    quart 是 AstrBot framework 用的 web framework——register_web_api
+    注入的 handler 闭包里 'from quart import request' 是真 API。
+    """
+    m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
+    # 应有 from quart import ... 包含 request
+    assert "from quart import" in m, "main.py 应 from quart import (v0.8.37 改用 quart request)"
+    assert "quart_request" in m, "main.py 应使用 quart_request (改名前缀防覆盖)"
+    # 关键: 读 key 应走 quart_request.get_json() 而非 self.context.request.json
+    assert "quart_request.get_json" in m, "_read_key_from_request 应调 quart_request.get_json() (angel_memory 同款)"
+    assert "quart_request.args" in m, "_args 应调 quart_request.args"
+    print("✓ test_v0837_backend_uses_quart_request")
 
 
 if __name__ == "__main__":

@@ -506,10 +506,20 @@ class VisionTextBridgePlugin(Star):
     # =========================================================================
     def _register_web_apis(self) -> None:
         try:
-            from quart import jsonify
+            from quart import jsonify, request as quart_request
         except ImportError:  # 测试沙箱
             def jsonify(o):  # type: ignore
                 return o
+            # 测试沙箱里给一个 mock request
+            class _MockQuartRequest:
+                args: dict = {}
+                _json = None
+                form = {}
+                async def get_json(self, silent=True): return self._json
+                async def json(self): return self._json
+                async def post(self): return self.form
+                async def text(self): return ""
+            quart_request = _MockQuartRequest()
 
         def ok(data):
             return jsonify({"ok": True, "data": data})
@@ -518,8 +528,13 @@ class VisionTextBridgePlugin(Star):
             return jsonify({"ok": False, "error": message}), status
 
         def _args():
+            # v0.8.37: 改用 quart 全局 request——angel_memory 同款
+            # 之前 self.context.request 一直是错的 (v0.8.7.10 commit 记),
+            # 静默 fallback 到空 dict——webui 默认参数碰巧 work
             try:
-                return self.context.request.args if hasattr(self.context.request, "args") else {}
+                return quart_request.args or {}
+            except Exception:
+                return {}
             except Exception:
                 return {}
 
@@ -573,55 +588,55 @@ class VisionTextBridgePlugin(Star):
                        "items": [e.to_dict() for e in items]})
 
         async def _read_key_from_request():
-            """v0.8.32→v0.8.34: 抽取共用 key 提取。多路径防 500。
-            v0.8.34 加诊断: bridge 调时 query 是什么 / 读 key 全尝试。"""
+            """v0.8.37: 用 quart 全局 request (angel_memory 同款).
+            之前 self.context.request 是错的——v0.8.7.10 commit 记 Context 没此属性,
+            try/except 静默 fallback——key 永远是空, delete 永远 400.
+            v0.8.37 改用 from quart import request 走 quart 标准 API.
+            """
             key = ""
             debug_lines = []
             # 1. query
             try:
-                req = self.context.request
-                if req is not None:
-                    query = getattr(req, "query", None) or {}
-                    if hasattr(query, "get"):
-                        key = (query.get("key") or "").strip()
-                    elif isinstance(query, dict):
-                        key = (query.get("key") or "").strip()
-                    debug_lines.append(f"query={dict(query) if hasattr(query, 'items') else query!r}")
+                query = quart_request.args or {}
+                key = (query.get("key") or "").strip() if hasattr(query, "get") else ""
+                debug_lines.append(f"query={dict(query) if hasattr(query, 'items') else query!r}")
             except Exception as e:
                 debug_lines.append(f"query-err={e}")
             if key:
                 logger.warning(f"[vtb-debug delete] key from query: {key[:12]}  ({'; '.join(debug_lines)})")
                 return key
-            # 2. json body
+            # 2. json body (angel_memory 同款——await request.get_json())
             try:
-                body = await self.context.request.json
-                key = (body.get("key") or "").strip()
+                body = await quart_request.get_json(silent=True)
+                if body is None:
+                    body = {}
+                key = (body.get("key") or body.get("id") or "").strip()  # 兼容两种 key 名
                 debug_lines.append(f"json-body={body!r}")
                 if key:
                     logger.warning(f"[vtb-debug delete] key from json: {key[:12]}  ({'; '.join(debug_lines)})")
                     return key
             except Exception as e:
-                debug_lines.append(f"json-err={type(e).__name__}")
+                debug_lines.append(f"json-err={type(e).__name__}: {e}")
             # 3. form body
             try:
-                form = await self.context.request.post
+                form = await quart_request.form
                 if form and hasattr(form, "get"):
-                    key = (form.get("key") or "").strip()
+                    key = (form.get("key") or form.get("id") or "").strip()
                     debug_lines.append(f"form-body={dict(form) if hasattr(form, 'items') else form!r}")
                     if key:
                         logger.warning(f"[vtb-debug delete] key from form: {key[:12]}  ({'; '.join(debug_lines)})")
                         return key
             except Exception as e:
                 debug_lines.append(f"form-err={type(e).__name__}")
-            # 4. raw text body
+            # 4. raw text body (兜底)
             try:
-                raw = await self.context.request.text
+                raw = await quart_request.get_data(as_text=True)
                 if raw:
                     debug_lines.append(f"raw-text={raw[:200]!r}")
                     if "=" in raw:
                         from urllib.parse import parse_qs
                         parsed = parse_qs(raw)
-                        vals = parsed.get("key", [])
+                        vals = parsed.get("key", []) or parsed.get("id", [])
                         if vals:
                             key = vals[0].strip()
                             logger.warning(f"[vtb-debug delete] key from raw-text: {key[:12]}  ({'; '.join(debug_lines)})")
