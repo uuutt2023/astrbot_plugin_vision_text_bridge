@@ -11,9 +11,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./style.css?v=0.8.37" />
-  <!-- v0.8.24: 重新启用 AstrBot bridge SDK。
-       v0.8.18 放弃是因为 sandbox iframe 撞 CORS 错。
-       真因：v0.8.15/16 用了 crossorigin="use-credentials" 撞 server wildward *。
+  <!-- 重新启用 AstrBot bridge SDK。
+        放弃是因为 sandbox iframe 撞 CORS 错。
+       真因：之前用过 crossorigin="use-credentials" 撞 server wildward *。
        正确：crossorigin="anonymous" + fetch 走 bridge（bridge 用 postMessage 跟同源 parent 通信，绕开 sandbox origin=null）.
   -->
   <script src="./logger.js?v=0.8.37"></script>
@@ -84,22 +84,22 @@
         <option value="hit_count_desc">命中最多</option>
         <option value="hit_count_asc">命中最少</option>
       </select>
-      <label class="switch" title="v0.8.12 开启后按 5s 间隔自动刷新">
+      <label class="switch" title=" 开启后按 5s 间隔自动刷新">
         <input type="checkbox" id="auto-refresh-toggle" />
         <span class="switch-slider"></span>
         <span class="switch-label">自动刷新</span>
       </label>
       <button class="btn primary" id="refresh-btn" title="刷新 (R)">🔄 刷新</button>
       <button class="btn" id="export-btn">⬇️ 导出 JSON</button>
-      <button class="btn" id="clean-expired-btn" title="v0.8.11 清理超期未命中条目（SQLite + 内存热缓存）">🧹 清理过期</button>
-      <button class="btn" id="diag-btn" title="v0.8.7.1 诊断：查看 SQLite 路径/schema/最近 3 条">🔍 诊断</button>
+      <button class="btn" id="clean-expired-btn" title=" 清理超期未命中条目（SQLite + 内存热缓存）">🧹 清理过期</button>
+      <button class="btn" id="diag-btn" title=".1 诊断：查看 SQLite 路径/schema/最近 3 条">🔍 诊断</button>
       <button class="btn danger" id="clear-btn">🗑️ 清空全部</button>
     </section>
 
     <section class="timeline-wrap glass">
       <div class="timeline-header">
         <h3>📊 按天创建量（30 天）</h3>
-        <span class="timeline-hint">v0.8.12 柱状图 · hover 看日期详情</span>
+        <span class="timeline-hint"> 柱状图 · hover 看日期详情</span>
       </div>
       <svg id="timeline-svg" viewBox="0 0 800 180" preserveAspectRatio="none" class="timeline-svg" aria-label="daily created cache count"></svg>
     </section>
@@ -150,7 +150,7 @@
     </div>
   </div>
 
-  <!-- Modal: 自建 confirm（v0.8.8 替换 window.confirm，iframe sandbox 不允许原生 confirm） -->
+  <!-- Modal: 自建 confirm（ 替换 window.confirm，iframe sandbox 不允许原生 confirm） -->
   <div class="modal-mask" id="confirm-modal" hidden>
     <div class="modal-card glass confirm-card">
       <div class="modal-header">
@@ -168,7 +168,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <!-- Debug Panel (v0.8.7.2): 浮动控制台日志面板 -->
+  <!-- Debug Panel (.2): 浮动控制台日志面板 -->
   <div id="debug-panel" class="debug-panel" hidden>
     <div class="debug-header">
       <div class="debug-title">

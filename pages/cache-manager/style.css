@@ -699,7 +699,7 @@ main {
 }
 
 /* ========================================================
-   Debug Panel (v0.8.7.2) — 浮动控制台日志面板
+   Debug Panel (.2) — 浮动控制台日志面板
    ======================================================== */
 .debug-panel {
     position: fixed;
@@ -855,7 +855,7 @@ main {
     display: none !important;
 }
 
-/* 自建 confirm modal（v0.8.8 替代 window.confirm） */
+/* 自建 confirm modal（ 替代 window.confirm） */
 .confirm-card {
     max-width: 460px;
 }
@@ -876,7 +876,7 @@ main {
     min-width: 88px;
 }
 
-/* 状态栏（v0.8.12）：TTL / 上限 / 下次清理 */
+/* 状态栏（）：TTL / 上限 / 下次清理 */
 .status-bar {
     display: flex;
     flex-wrap: wrap;
@@ -905,7 +905,7 @@ main {
     border-color: rgba(99, 102, 241, 0.35);
 }
 
-/* Switch（v0.8.12 自动刷新 toggle） */
+/* Switch（ 自动刷新 toggle） */
 .switch {
     display: inline-flex;
     align-items: center;
@@ -951,7 +951,7 @@ main {
     color: var(--text-main);
 }
 
-/* 柱状图（v0.8.12） */
+/* 柱状图（） */
 .timeline-wrap {
     margin-bottom: 1rem;
     padding: 1rem;
@@ -1012,7 +1012,7 @@ main {
     font-family: 'JetBrains Mono', monospace;
 }
 
-/* Bridge mode badge (v0.8.19) */
+/* Bridge mode badge () */
 .badge.bridge-ok {
     background: rgba(16, 185, 129, 0.15);
     border: 1px solid rgba(16, 185, 129, 0.4);

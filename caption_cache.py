@@ -6,7 +6,7 @@ caption_cache
 
 设计要点:
 
-- **image_id 为主键**:用图片内容 md5(hashlib.md5(bytes).hexdigest())作为
+- **image_id 为主键**: 用图片内容 md5(hashlib.md5(bytes).hexdigest()) 作为
   唯一标识。同一张图不论 URL 是什么都会命中同一条缓存。
 - **image_b64 存图二进制**:base64 编码后存为 BLOB。webui 可以从这
   个字段出图缩略图,不再依赖外部 Chat Archive 等插件。
@@ -111,7 +111,7 @@ class CaptionCache:
         ON image_captions(hit_count DESC);
     """
 
-    # v0.8.6 起添加的列(用于老 DB 升级)
+    # 后续添加的列(用于老 DB 升级)
     _ALT_COLUMNS = [
         ("mime_type", "TEXT NOT NULL DEFAULT ''"),
         ("file_size", "INTEGER NOT NULL DEFAULT 0"),
@@ -127,9 +127,9 @@ class CaptionCache:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         # init schema
         with self._connect() as conn:
-            # **v0.8.6 schema 升级逻辑**：
+            # **schema 升级逻辑**：
             # 1. 检查 image_captions 表是否存在
-            # 2. 存在 → 可能是老库 (v0.8.5.x 用 image_key 为主键)，可能是新库 (v0.8.6+)
+            # 2. 存在 → 可能是老库 (用 image_key 为主键)，可能是新库 (image_id 为主键)
             # 3. 不存在 → 全新创建
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='image_captions'"
@@ -140,7 +140,7 @@ class CaptionCache:
                     r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()
                 }
                 if "image_key" in existing_cols and "image_id" not in existing_cols:
-                    # 升级路径 1：老库 v0.8.5.x (用 image_key)。重命名表后用新 schema 重建，
+                    # 升级路径 1：老库 (用 image_key)。重命名表后用新 schema 重建，
                     # 再把数据迁过来。**老库的 image_key 需要拷贝到新库的 image_id**（两者是同一个东西）。
                     conn.execute("ALTER TABLE image_captions RENAME TO image_captions__legacy")
                     conn.executescript(self.SCHEMA)
@@ -152,7 +152,7 @@ class CaptionCache:
                     )
                     conn.execute("DROP TABLE image_captions__legacy")
                 else:
-                    # 升级路径 2：已用新 schema (v0.8.6+)，但可能缺新加的列
+                    # 升级路径 2：已用新 schema (image_id 为主键)，但可能缺新加的列
                     for col_name, col_def in self._ALT_COLUMNS:
                         if col_name not in existing_cols:
                             conn.execute(
@@ -174,7 +174,7 @@ class CaptionCache:
 
     @staticmethod
     def make_id_from_url(url_or_path: str) -> str:
-        """从 URL/path 生成 image_id(v0.8.6 退化的 key 生成,
+        """从 URL/path 生成 image_id(退化的 key 生成,
         实际推荐用 make_id_from_bytes 拿 md5)。"""
         return hashlib.md5((url_or_path or "").encode("utf-8")).hexdigest()
 
@@ -228,13 +228,12 @@ class CaptionCache:
     ) -> None:
         """插入或更新一条记录(基于 image_id 主键)。
 
-        v0.8.6 起:
         - 主键 image_id 是 md5(由调用方从图片内容算出)
         - url 保留原始 URL/path
         - 额外字段:image_b64 (base64)、mime_type、file_size、width、height
         """
         if not image_id or not description:
-            # v0.8.7.3: 之前静默 return 掩盖了“为何 SQLite total=0”的问题。
+            # 之前静默 return 掩盖了“为何 SQLite total=0”的问题。
             # 现在打 warning。
             _log.warning(
                 "[caption_cache] put() 被调用但 image_id=%r description_len=%d，**未写入**。",
@@ -386,7 +385,7 @@ class CaptionCache:
             conn.commit()
 
     def clean_expired(self, max_age_days: int) -> int:
-        """v0.8.11: 清理超期未命中的条目。
+        """: 清理超期未命中的条目。
 
         语义: ``last_hit_at`` 早于 ``now - max_age_days`` 的条目视为冷数据，删掉。
         刚 put 还没被 get 过的条目用 ``created_at`` 代替 ``last_hit_at`` 判断
@@ -419,7 +418,7 @@ class CaptionCache:
         return deleted_unhit + deleted_hit
 
     def daily_buckets(self, days: int = 30) -> list[dict]:
-        """v0.8.12: 按天统计缓存创建量，返回 ``[{date: 'YYYY-MM-DD', count: N}, ...]``。
+        """: 按天统计缓存创建量，返回 ``[{date: 'YYYY-MM-DD', count: N}, ...]``。
 
         用 ``strftime('%Y-%m-%d', created_at, 'unixepoch')`` 按天分组，
         缺天补 0（让 webui 画连续的 30 天柱状图）。

@@ -1,12 +1,12 @@
 /* Vision Text Bridge · Webui Logic
  *
- * v0.8.6 重写：glassmorphism 风格 + 缩略图 + 模态详情
- * v0.8.7.2: 全面接入 logger.js（控制台双输出 + on-screen panel）
- * v0.8.14: 防御性等 window.AstrBotPluginPage 出现
- * v0.8.18: 彻底放弃 bridge SDK——AstrBot 服务端 CORS wildcard + origin=null +
+ * 重写：glassmorphism 风格 + 缩略图 + 模态详情
+ * 全面接入 logger.js（控制台双输出 + on-screen panel）
+ * 防御性等 window.AstrBotPluginPage 出现
+ * 彻底放弃 bridge SDK——AstrBot 服务端 CORS wildcard + origin=null +
  *          credentials mode=include 三者撞，bridge-sdk.js fetch 永远会拒。
  *          改用 fetch 直打 backend (fallbackFetch)——跟其他 AstrBot 插件 webui 一致。
- * v0.8.20: 去掉 ESM import——logger 改 window.webuiLogger，app.js 改成普通 <script>。
+ * 去掉 ESM import——logger 改 window.webuiLogger，app.js 改成普通 <script>。
  *          消除 module system 依赖（部分 AstrBot 版本对 type=module 处理不一致）。
  *          整个 webui 零外部依赖。
  *
@@ -14,10 +14,10 @@
  */
 
 (async function main() {
-  // v0.8.24: 重新加载 AstrBot bridge SDK——
-  //   bridge SDK 走 postMessage 跟同源 parent (dashboard) 通信，
-  //   完全绕开 sandbox iframe 的 origin=null 问题。
-  //   server 返 Access-Control-Allow-Origin: * + crossorigin=anonymous 应该不撞。
+  // 重新加载 AstrBot bridge SDK——
+  // bridge SDK 走 postMessage 跟同源 parent (dashboard) 通信，
+  // 完全绕开 sandbox iframe 的 origin=null 问题。
+  // server 返 Access-Control-Allow-Origin: * + crossorigin=anonymous 应该不撞。
   try {
     await new Promise((resolve) => {
       const s = document.createElement("script");
@@ -39,7 +39,7 @@
     console.warn("[vtb] bridge-sdk 注入异常, 继续走 fallback", e);
   }
 
-  // v0.8.21: 双保险——在 <body> 末尾加载了 app.js，但不同浏览器/插件的 HTML
+  // 双保险——在 <body> 末尾加载了 app.js，但不同浏览器/插件的 HTML
   // parse 速度不一致。显式等 DOMContentLoaded 确保 body 全部 parse 完才动手。
   if (document.readyState === "loading") {
     try {
@@ -49,12 +49,12 @@
     } catch (e) { /* ignore */ }
   }
 
-  // v0.8.20: 同步从 window 取 logger（保证不抛错）
+  // 同步从 window 取 logger（保证不抛错）
   const logger = (typeof window !== "undefined" && window.webuiLogger) || {
     debug() {}, info() {}, warn() {}, error() {},
   };
 
-  // v0.8.18: 极简 bridge stub——fallbackFetch 内部已经能跑，bridge 只为兼容旧路径存在
+  // 极简 bridge stub——fallbackFetch 内部已经能跑，bridge 只为兼容旧路径存在
   const _fallbackBridge = {
     ready: () => Promise.resolve({ source: "fallback" }),
     apiGet: null,
@@ -66,7 +66,7 @@
     logger.info("init", "bridge:", _isFallback ? "fallback (直 fetch)" : "AstrBotPluginPage (SDK)");
   } catch (e) { console.log("logger not ready:", e); }
 
-  // v0.8.23: detect actual loaded version from index.html's script src
+  // detect actual loaded version from index.html's script src
   // AstrBot may serve stale webui after restart——显式出示实际运行的版本，
   // 避免用户看到 console 报错不知道到底跑的是哪个版本
   try {
@@ -84,15 +84,15 @@
     }
   } catch (e) { console.warn("version badge init failed:", e); }
 
-  // v0.8.19 + v0.8.36: 右上角 badge——v0.8.36 apiWrite 改用 bridge.apiPost (angel_memory 同款)
-  // v0.8.27 改 GET + query 是错的 (bridge 拒绝 GET endpoint 带 ?)
-  // v0.8.36 恢复 POST + body, bridge 走 postMessage 不限 CORS, dashboard 同源 fetch 带 cookie
+  //  + : 右上角 badge—— apiWrite 改用 bridge.apiPost (angel_memory 同款)
+  //  改 GET + query 是错的 (bridge 拒绝 GET endpoint 带 ?)
+  //  恢复 POST + body, bridge 走 postMessage 不限 CORS, dashboard 同源 fetch 带 cookie
   try {
     const badge = document.getElementById("bridge-mode-badge");
     if (badge) {
-      badge.textContent = "🟢 bridge (v0.8.37 quart)";
+      badge.textContent = "🟢 bridge ( quart)";
       badge.classList.add("bridge-ok");
-      badge.title = "v0.8.37 读写走 bridge (angel_memory 同款)。写接口用 POST + body, backend 改用 quart 全局 request (from quart import request), 修复 v0.7 commit 以来 self.context.request 一直是错的 (v0.8.7.10 commit 记), 之前 try/except 静默吞导致 key 永远空, delete 永远 400。";
+      badge.title = " 读写走 bridge (angel_memory 同款)。写接口用 POST + body, backend 改用 quart 全局 request (from quart import request), 修复  commit 以来 self.context.request 一直是错的 (.10 commit 记), 之前 try/except 静默吞导致 key 永远空, delete 永远 400。";
     }
   } catch (e) { console.warn("bridge badge init failed:", e); }
 
@@ -110,7 +110,7 @@
 
   // ============= 下面是原来的 webui 逻辑 =============
   const $ = (id) => document.getElementById(id);
-  // v0.8.21: 防御性 bind——元素不存在时跳过，避免 TypeError 中断初始化
+  // 防御性 bind——元素不存在时跳过，避免 TypeError 中断初始化
   const bind = (id, evt, fn) => {
     const el = document.getElementById(id);
     if (!el) {
@@ -120,7 +120,7 @@
     el.addEventListener(evt, fn);
   };
 
-// v0.8.9: LRU 缩略图缓存——Map 维护插入顺序，set 越上限删头部
+// LRU 缩略图缓存——Map 维护插入顺序，set 越上限删头部
 class LRUCache {
   constructor(limit = 100) {
     this.limit = limit;
@@ -142,7 +142,7 @@ class LRUCache {
   get size() { return this.m.size; }
 }
 
-// v0.8.9: 缩略图并发池——限制同时发 6 路请求，避免 20 条一起打 backend/bridge
+// 缩略图并发池——限制同时发 6 路请求，避免 20 条一起打 backend/bridge
 class ThumbPool {
   constructor(max = 6) {
     this.max = max;
@@ -175,13 +175,13 @@ const state = {
   order_by: "created_at_desc",
   total: 0,
   loading: false,
-  thumbCache: new LRUCache(100),  // v0.8.9: LRU 上限 100 张防 OOM
+  thumbCache: new LRUCache(100),  // : LRU 上限 100 张防 OOM
   apiStats: { calls: 0, errors: 0, lastLatencyMs: null },
 };
 
-// ----- Debug Panel (v0.8.7.2) -----
+// ----- Debug Panel (.2) -----
 
-// v0.8.9: 增量 append——不再每次都全量 innerHTML 重写
+// 增量 append——不再每次都全量 innerHTML 重写
 const PANEL_MAX_NODES = 200;
 const panelNodes = [];  // 存的 DOM 节点
 
@@ -306,14 +306,14 @@ initDebugPanel();
 
 // ----- API 包装（统一加日志） -----
 
-// v0.8.14: bridge.apiGet/apiPost 不存在时 fallback 到直 fetch backend
-// v0.8.22: PLUGIN_PATH 末尾不加 /——下下面负责保证 endpoint 有 “/” 开头
+// bridge.apiGet/apiPost 不存在时 fallback 到直 fetch backend
+// PLUGIN_PATH 末尾不加 /——下下面负责保证 endpoint 有 “/” 开头
 const PLUGIN_PATH = `/api/plug/astrbot_plugin_vision_text_bridge`;
 async function fallbackFetch(method, endpoint, payload) {
   // 防御性：endpoint 必须以 / 开头，偷漏了 / 会拼成 ...bridgecache/stats (错)
   const ep = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
   const url = `${PLUGIN_PATH}${ep}`;
-  // v0.8.30: CORS 决胜点。sandbox iframe origin=null + server 永远不发 ACAO
+  // CORS 决胜点。sandbox iframe origin=null + server 永远不发 ACAO
   // - GET: 绝不能发自定义 Content-Type (application/json 不在 simple request 列表)——拼到 query string
   // - POST: 走 postMessage 调 parent (用 bridge.apiPost 仍能被跨)
   // 这里 fallbackFetch 仅作为写操作发用 (DELETE/REGENERATE/... 都迁到 GET) ，
@@ -343,7 +343,7 @@ async function apiGet(endpoint, params = {}) {
   state.apiStats.calls += 1;
   logger.debug("api", `GET ${endpoint}`, params);
   try {
-    // v0.8.30: 读操作走 bridge.apiGet (v0.8.24 验证过 OK, 走 postMessage 绕 sandbox origin=null)
+    // 读操作走 bridge.apiGet ( 验证过 OK, 走 postMessage 绕 sandbox origin=null)
     // 写操作 onDelete/onRegenerate/onClear/onCleanExpired 调 apiWrite() 走 fallbackFetch (GET 简单请求 不发 preflight)
     let resp;
     if (typeof bridge.apiGet === "function") {
@@ -369,9 +369,9 @@ async function apiGet(endpoint, params = {}) {
   }
 }
 
-// v0.8.36: 写操作专用——bridge.apiPost(endpoint, body) (angel_memory 同款)
-// v0.8.27 改 GET + query 是错的——bridge 拒绝 GET endpoint 带 ? (报 'Plugin bridge endpoint is invalid')
-// v0.8.32 sendBeacon 跨 origin=null 不带 cookie 401 拒
+// 写操作专用——bridge.apiPost(endpoint, body) (angel_memory 同款)
+//  改 GET + query 是错的——bridge 拒绝 GET endpoint 带 ? (报 'Plugin bridge endpoint is invalid')
+//  sendBeacon 跨 origin=null 不带 cookie 401 拒
 // 参考 astrbot_plugin_angel_memory 的 useBridge: 用 bridge.apiPost, body 走 postMessage 不限 CORS
 // bridge 走 postMessage 调 parent dashboard 同源 fetch backend 带 cookie auth
 async function apiWrite(endpoint, params = {}) {
@@ -384,7 +384,7 @@ async function apiWrite(endpoint, params = {}) {
       // body 直接传 params 对象——bridge 内部转 body, dashboard xhr POST body 送 backend
       resp = await bridge.apiPost(endpoint, params || {});
     } else if (typeof bridge.apiGet === "function") {
-      // 兑底: 走 GET + query (v0.8.34 形式), 但被 bridge 拒的概率高
+      // 兑底: 走 GET + query ( 形式), 但被 bridge 拒的概率高
       resp = await bridge.apiGet(endpoint, params || {});
     } else {
       // 最终兑底: fallbackFetch
@@ -403,7 +403,7 @@ async function apiWrite(endpoint, params = {}) {
     return resp;
   } catch (e) {
     state.apiStats.errors += 1;
-    // v0.8.37: 错误时也打 response body——bridge 拒绝时可能返详细 message
+    // 错误时也打 response body——bridge 拒绝时可能返详细 message
     const errBody = e?.body || e?.data || e?.response?.data || (typeof e?.message === 'string' ? e.message : null) || String(e);
     logger.error("api", `WRITE bridge POST 异常 (body=${JSON.stringify(errBody).slice(0, 400)})`, e);
     throw e;
@@ -415,7 +415,7 @@ async function apiPost(endpoint, body = {}) {
   state.apiStats.calls += 1;
   logger.debug("api", `POST ${endpoint}`, body);
   try {
-    // v0.8.26: 跳过 bridge.apiPost——v0.8.24 实测 bridge 把 body 转 query 导致 400
+    // 跳过 bridge.apiPost—— 实测 bridge 把 body 转 query 导致 400
     // fetch 走 fallbackFetch (同源), GET 全 OK, POST 也应该 OK
     const resp = await fallbackFetch("POST", endpoint, body);
     const dt = (performance.now() - t0).toFixed(1);
@@ -458,7 +458,7 @@ function showToast(message, type = "success", duration = 2400) {
   }, duration);
 }
 
-// v0.8.8: 自建 confirm（window.confirm 在 sandboxed iframe 里被禁用）
+// 自建 confirm（window.confirm 在 sandboxed iframe 里被禁用）
 function customConfirm(message, title = "⚠️ 确认操作") {
   return new Promise((resolve) => {
     const modal = $("confirm-modal");
@@ -536,14 +536,14 @@ async function loadStats() {
     $("stat-hits").textContent = data.total_hits ?? 0;
     $("stat-dbsize").textContent = fmtSize(data.db_size_bytes);
     $("stat-memcache").textContent = data.in_memory_cache_size ?? 0;
-    // v0.8.11: 同步设置右上角 DB 路径 badge（以前是写死的 "loading…"，现在拿到实际路径）
+    // 同步设置右上角 DB 路径 badge（以前是写死的 "loading…"，现在拿到实际路径）
     const dbBadge = $("db-path-badge");
     if (dbBadge && data.db_path) {
       const tail = data.db_path.split(/[/\\]/).pop() || data.db_path;
       dbBadge.textContent = `DB: ${tail}`;
       dbBadge.title = data.db_path;
     }
-    // v0.8.12: 状态栏
+    // 状态栏
     renderStatusBar(data);
     logger.info("data", "loadStats 完成", { total: data.total, hits: data.total_hits, dbsize: data.db_size_bytes });
   } catch (e) {
@@ -552,7 +552,7 @@ async function loadStats() {
   }
 }
 
-// v0.8.12: 状态栏渲染（TTL/上限/下次清理）
+// 状态栏渲染（TTL/上限/下次清理）
 function renderStatusBar(data) {
   const memTtl = data.memory_cache_ttl_seconds;
   $("status-mem-ttl").textContent = memTtl > 0 ? `${memTtl}s` : "永不过期";
@@ -580,7 +580,7 @@ function renderStatusBar(data) {
   }
 }
 
-// v0.8.12: 拉取 + 画柱状图
+// 拉取 + 画柱状图
 let _timelineCache = null;  // 上次拉的 buckets，供自动刷新复用
 async function loadTimeline() {
   try {
@@ -786,7 +786,7 @@ function renderList(items) {
     })
     .join("");
 
-  // 懒加载缩略图（v0.8.9: 走并发池 6 路，不再一次性 20 个打 bridge）
+  // 懒加载缩略图（: 走并发池 6 路，不再一次性 20 个打 bridge）
   const slots = Array.from(tbody.querySelectorAll(".thumb-slot"));
   slots.forEach((slot) => ensureThumb(slot.dataset.id, slot));
   logger.debug("render", `已提交 ${slots.length} 张缩略图到并发池（上限 6）`);
@@ -825,14 +825,14 @@ async function ensureThumb(imageId, slot) {
     if (cached.__err) {
       slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
     } else if (cached.__none) {
-      slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+      slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 ( 之前数据)">📦</div>`;
     } else {
       logger.debug("thumb", `命中缩略图缓存: ${imageId.slice(0, 12)}`);
       renderThumb(slot, cached);
     }
     return;
   }
-  // v0.8.26: sessionStorage 跨刷新缓存（错误/无图状态也存，避免重复请求）
+  // sessionStorage 跨刷新缓存（错误/无图状态也存，避免重复请求）
   const ssKey = `vtb_thumb:${imageId}`;
   try {
     const ss = sessionStorage.getItem(ssKey);
@@ -842,7 +842,7 @@ async function ensureThumb(imageId, slot) {
       if (cached.__err) {
         slot.innerHTML = `<div class="thumb-placeholder" title="缩略图加载失败">⚠️</div>`;
       } else if (cached.__none) {
-        slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+        slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 ( 之前数据)">📦</div>`;
       } else {
         logger.debug("thumb", `sessionStorage 命中: ${imageId.slice(0, 12)}`);
         renderThumb(slot, cached);
@@ -851,7 +851,7 @@ async function ensureThumb(imageId, slot) {
     }
   } catch (_) { /* sessionStorage 不可用或 parse 错 */ }
 
-  // v0.8.9: 走并发池（默认 6 路）避免一次性 20 个 RTT 堆 bridge
+  // 走并发池（默认 6 路）避免一次性 20 个 RTT 堆 bridge
   return thumbPool.run(async () => {
     try {
       const resp = await apiGet(`/cache/thumbnail/${encodeURIComponent(imageId)}`);
@@ -860,15 +860,15 @@ async function ensureThumb(imageId, slot) {
         const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
         state.thumbCache.set(imageId, thumb);
         renderThumb(slot, thumb);
-        // v0.8.26: 存 sessionStorage (跨刷新), 失败静默 catch (存储满)
+        // 存 sessionStorage (跨刷新), 失败静默 catch (存储满)
         try { sessionStorage.setItem(ssKey, JSON.stringify(thumb)); } catch (_) { /* quota exceeded */ }
         logger.debug("thumb", `加载缩略图成功: ${imageId.slice(0, 12)}`, { mime: thumb.mime, w: thumb.w, h: thumb.h });
       } else {
         const stub = { __none: true };
         state.thumbCache.set(imageId, stub);
-        slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 (v0.8.5 之前数据)">📦</div>`;
+        slot.innerHTML = `<div class="thumb-placeholder" title="该条目没有图片二进制 ( 之前数据)">📦</div>`;
         try { sessionStorage.setItem(ssKey, JSON.stringify(stub)); } catch (_) {}
-        logger.debug("thumb", `无缩略图（v0.8.5 之前数据）: ${imageId.slice(0, 12)}`);
+        logger.debug("thumb", `无缩略图（ 之前数据）: ${imageId.slice(0, 12)}`);
       }
     } catch (e) {
       const stub = { __err: true };
@@ -908,7 +908,7 @@ async function onView(imageId) {
     } else {
       html += `<div class="field">
         <div class="field-label">缩略图</div>
-        <div style="color: var(--text-muted);">该条目未存储图片二进制（v0.8.5 之前的数据）</div>
+        <div style="color: var(--text-muted);">该条目未存储图片二进制（旧数据）</div>
       </div>`;
     }
     html += `
@@ -966,7 +966,7 @@ async function onDelete(id) {
     return;
   }
   try {
-    // v0.8.33: bridge.apiGet 单参数 (endpoint + 拼好的 query string)
+    // bridge.apiGet 单参数 (endpoint + 拼好的 query string)
     const resp = await apiWrite("/cache/delete", { key: id });
     if (resp?.ok !== false) {
       state.thumbCache.delete(id);
@@ -988,7 +988,7 @@ async function onRegenerate(id) {
   logger.info("ui", `请求重新生成: ${id.slice(0, 12)}`);
   showToast("正在重新生成描述...");
   try {
-    // v0.8.33: bridge.apiGet 走 dashboard 调 backend (带 cookie auth)
+    // bridge.apiGet 走 dashboard 调 backend (带 cookie auth)
     const resp = await apiWrite("cache/regenerate", { key: id });
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
@@ -1017,7 +1017,7 @@ async function onClear() {
     return;
   }
   try {
-    // v0.8.33: bridge.apiGet
+    // bridge.apiGet
     const resp = await apiWrite("cache/clear");
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
@@ -1042,7 +1042,7 @@ async function onCleanExpired() {
     return;
   }
   try {
-    // v0.8.33: bridge.apiGet
+    // bridge.apiGet
     const resp = await apiWrite("cache/clean_expired");
     if (resp?.ok !== false) {
       const data = resp?.data || resp;
@@ -1133,7 +1133,7 @@ bind("clear-btn", "click", onClear);
 $("clean-expired-btn")?.addEventListener("click", onCleanExpired);
 bind("export-btn", "click", onExport);
 
-// v0.8.12: 自动刷新 toggle
+// 自动刷新 toggle
 let _autoRefreshTimer = null;
 const AUTO_REFRESH_MS = 5000;  // 5 秒间隔
 function setAutoRefresh(enabled) {

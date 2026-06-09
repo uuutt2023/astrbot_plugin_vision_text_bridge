@@ -22,20 +22,38 @@ import re
 import shutil
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+
+# 插件目录加 sys.path (AstrBot 加载器不自动加, 8 个同级模块都需要)
+_PLUGIN_DIR = Path(__file__).resolve().parent
+if str(_PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_DIR))
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 try:
-    # v0.7+: 把图说作为 Pydantic ContentPart 注入 req.extra_user_content_parts
+    # : 把图说作为 Pydantic ContentPart 注入 req.extra_user_content_parts
     from astrbot.core.agent.message import TextPart  # type: ignore
 except Exception:  # noqa: BLE001
     TextPart = None  # 测试沙箱/未来重命名兼容
+
+# : 同级模块直接 import (sys.path 已加, AstrBot + 测试沙箱都能解析)
+from config_helpers import cfg_int as _cfg_int, cfg_str as _cfg_str
+from image_utils import is_image_url_part as _is_image_url_part, extract_url_from_item as _extract_url_from_item, extract_urls_from_parts as _extract_urls_from_parts, extract_urls_from_context_list as _extract_urls_from_context_list, is_data_url as _is_data_url, strip_image_urls as _strip_image_urls
+from image_meta import to_text_part as _to_text_part, sniff_image_meta as _sniff_image_meta, is_cacheable_url as _is_cacheable_url
+from image_fetch import read_image_bytes as _read_image_bytes, _read_file_bytes_sync
+from tool_filter import match_tool_name as _match_tool_name, filter_disabled_tools as _filter_disabled_tools
+from mmx_runner import (
+    MmxResult, build_vision_command as _build_vision_command,
+    run_mmx as _run_mmx_fn, install_mmx_cli as _install_mmx_cli_fn,
+    diagnose_mmx_error as _diagnose_mmx_error_fn,
+    truncate as _truncate_text, strip_mmx_content as _strip_mmx_content_fn,
+    preview as _preview_text, redact_text as _redact_text, redact_args as _redact_args_fn,
+)
+import web_api  # web_api.register_all_routes 在 _register_web_apis 里调
 
 
 # ---------------------------------------------------------------------------
@@ -64,15 +82,11 @@ PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
 # priority 在 import 时锁定，调配置后需重启 AstrBot。
 DEFAULT_PRIORITY = 100
 
-# v0.8.10: 预编译的 markdown 清理 regex——_strip_mmx_content 热路径用
-_RE_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
-_RE_MD_HEADING = re.compile(r"^#{1,6}\s*", re.MULTILINE)
-_RE_MD_LIST = re.compile(r"^\*\s+", re.MULTILINE)
-_RE_BLANK_LINES = re.compile(r"\n{3,}")
+# : 预编译的 markdown 清理 regex 抽到 mmx_runner.py ()
 
 
 class _MemoryCache:
-    """v0.8.11: 内存热缓存——带 TTL + LRU size 上限。
+    """: 内存热缓存——带 TTL + LRU size 上限。
 
     - 防御资源泄露：之前是裸 dict，永远不会过期也不会被淘汰
     - 过期处理：get() 检查 ``expire_at``（同 _sibling_cache.CaptionCache 5 分钟去重窗口一致）
@@ -152,7 +166,7 @@ def _read_plugin_version() -> str:
         return "0.0.0"
 
 
-# v0.8.17: 配置读取 helper——原模式 ``int(self.config.get(k, d) or d)`` 重复 15+ 次
+# : 配置读取 helper——原模式 ``int(self.config.get(k, d) or d)`` 重复 15+ 次
 def _cfg_int(config, key: str, default: int) -> int:
     v = config.get(key, default)
     if v is None or v == "":
@@ -180,15 +194,8 @@ def _read_file_bytes_sync(path: str) -> bytes:
 
 
 # ===========================================================================
-# 数据结构
+# 数据结构 (MmxResult 移到 mmx_runner.py — 在 import 区域透传过来)
 # ===========================================================================
-@dataclass
-class MmxResult:
-    """mmx 子进程返回结果封装。"""
-    stdout: str
-    stderr: str
-    returncode: int
-    ok: bool
 
 
 # ===========================================================================
@@ -219,7 +226,7 @@ class VisionTextBridgePlugin(Star):
         self.mmx_path = (self.config.get("mmx_path") or "").strip() or shutil.which("mmx") or shutil.which("mmx.cmd")
         self.npm_path = shutil.which("npm") or shutil.which("npm.cmd")
         self._caption_cache: CaptionCache | None = None
-        # v0.8.11: 内存热缓存改为 _MemoryCache——带 TTL + LRU size 上限
+        # : 内存热缓存改为 _MemoryCache——带 TTL + LRU size 上限
         # ttl_seconds=0 表示不过期，max_size=0 表示不限制；默认值在配置里调
         self._description_cache: _MemoryCache = _MemoryCache(
             ttl_seconds=_cfg_int(self.config, "memory_cache_ttl_seconds", 300),
@@ -304,7 +311,7 @@ class VisionTextBridgePlugin(Star):
             logger.exception("[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc)
             self._caption_cache = None
 
-        # 1.5 v0.8.11: 启动 SQLite 过期清理后台 task
+        # 1.5 : 启动 SQLite 过期清理后台 task
         if self._caption_cache is not None:
             try:
                 ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
@@ -312,7 +319,7 @@ class VisionTextBridgePlugin(Star):
                 # 启动时先清一次（不管 interval）
                 if ttl_days > 0:
                     deleted = self._caption_cache.clean_expired(ttl_days)
-                    self._last_clean_at = time.time()  # v0.8.12: 供 webui 算下次清理
+                    self._last_clean_at = time.time()  # : 供 webui 算下次清理
                     if deleted > 0:
                         logger.info("[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
                 if interval_h > 0 and ttl_days > 0:
@@ -436,7 +443,7 @@ class VisionTextBridgePlugin(Star):
         if "astrbot_plugin_chat_archive" in names:
             logger.info(
                 "[vision_text_bridge] ℹ️ 检测到 astrbot_plugin_chat_archive。"
-                "v0.8.6 起本插件不与之联动，图片存到本插件自己的 SQLite（含 base64）。"
+                "本插件不与之联动，图片存到本插件自己的 SQLite（含 base64）。"
                 "两个插件可同装互不干扰。"
             )
         if "astrbot_plugin_angel_heart" in names:
@@ -505,312 +512,10 @@ class VisionTextBridgePlugin(Star):
     # 页面 API
     # =========================================================================
     def _register_web_apis(self) -> None:
-        try:
-            from quart import jsonify, request as quart_request
-        except ImportError:  # 测试沙箱
-            def jsonify(o):  # type: ignore
-                return o
-            # 测试沙箱里给一个 mock request
-            class _MockQuartRequest:
-                args: dict = {}
-                _json = None
-                form = {}
-                async def get_json(self, silent=True): return self._json
-                async def json(self): return self._json
-                async def post(self): return self.form
-                async def text(self): return ""
-            quart_request = _MockQuartRequest()
-
-        def ok(data):
-            return jsonify({"ok": True, "data": data})
-
-        def err(message, status=400):
-            return jsonify({"ok": False, "error": message}), status
-
-        def _args():
-            # v0.8.37: 改用 quart 全局 request——angel_memory 同款
-            # 之前 self.context.request 一直是错的 (v0.8.7.10 commit 记),
-            # 静默 fallback 到空 dict——webui 默认参数碰巧 work
-            try:
-                return quart_request.args or {}
-            except Exception:
-                return {}
-            except Exception:
-                return {}
-
-        async def api_stats():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            s = self._caption_cache.stats().to_dict()
-            s["in_memory_cache_size"] = len(self._description_cache)
-            # v0.8.12: 额外加状态参数——webui 状态栏需要
-            s["memory_cache_ttl_seconds"] = int(self.config.get("memory_cache_ttl_seconds", 300) or 0)
-            s["memory_cache_max_size"] = int(self.config.get("memory_cache_max_size", 500) or 0)
-            s["sqlite_cache_ttl_days"] = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
-            s["sqlite_clean_interval_hours"] = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
-            # 下次后台清理预计时间（UTC 戳）——用上记的 last_clean_time + interval
-            last = getattr(self, "_last_clean_at", 0.0) or 0.0
-            interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
-            if interval_h > 0 and last > 0:
-                s["next_clean_at"] = last + interval_h * 3600
-            else:
-                s["next_clean_at"] = None
-            return ok(s)
-
-        async def api_stats_timeline():
-            """v0.8.12: 返回按天创建的缓存条数（默认 30 天），webui 画柱状图用。"""
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            try:
-                a = _args()
-                days = int(a.get("days", 30) or 30)
-                days = max(1, min(365, days))  # 限定范围
-            except Exception:
-                days = 30
-            buckets = self._caption_cache.daily_buckets(days=days)
-            return ok({"days": days, "buckets": buckets})
-
-        async def api_list():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            a = _args()
-            try:
-                body = await self.context.request.json
-            except Exception:
-                body = {}
-            limit = int(a.get("limit", 50) or 50)
-            offset = int(a.get("offset", 0) or 0)
-            search = (a.get("search", "") or "").strip()
-            order_by = a.get("order_by", "created_at_desc") or "created_at_desc"
-            items = self._caption_cache.list(limit=limit, offset=offset, search=search, order_by=order_by)
-            return ok({"total": self._caption_cache.count(search=search),
-                       "limit": limit, "offset": offset,
-                       "items": [e.to_dict() for e in items]})
-
-        async def _read_key_from_request():
-            """v0.8.37: 用 quart 全局 request (angel_memory 同款).
-            之前 self.context.request 是错的——v0.8.7.10 commit 记 Context 没此属性,
-            try/except 静默 fallback——key 永远是空, delete 永远 400.
-            v0.8.37 改用 from quart import request 走 quart 标准 API.
-            """
-            key = ""
-            debug_lines = []
-            # 1. query
-            try:
-                query = quart_request.args or {}
-                key = (query.get("key") or "").strip() if hasattr(query, "get") else ""
-                debug_lines.append(f"query={dict(query) if hasattr(query, 'items') else query!r}")
-            except Exception as e:
-                debug_lines.append(f"query-err={e}")
-            if key:
-                logger.warning(f"[vtb-debug delete] key from query: {key[:12]}  ({'; '.join(debug_lines)})")
-                return key
-            # 2. json body (angel_memory 同款——await request.get_json())
-            try:
-                body = await quart_request.get_json(silent=True)
-                if body is None:
-                    body = {}
-                key = (body.get("key") or body.get("id") or "").strip()  # 兼容两种 key 名
-                debug_lines.append(f"json-body={body!r}")
-                if key:
-                    logger.warning(f"[vtb-debug delete] key from json: {key[:12]}  ({'; '.join(debug_lines)})")
-                    return key
-            except Exception as e:
-                debug_lines.append(f"json-err={type(e).__name__}: {e}")
-            # 3. form body
-            try:
-                form = await quart_request.form
-                if form and hasattr(form, "get"):
-                    key = (form.get("key") or form.get("id") or "").strip()
-                    debug_lines.append(f"form-body={dict(form) if hasattr(form, 'items') else form!r}")
-                    if key:
-                        logger.warning(f"[vtb-debug delete] key from form: {key[:12]}  ({'; '.join(debug_lines)})")
-                        return key
-            except Exception as e:
-                debug_lines.append(f"form-err={type(e).__name__}")
-            # 4. raw text body (兜底)
-            try:
-                raw = await quart_request.get_data(as_text=True)
-                if raw:
-                    debug_lines.append(f"raw-text={raw[:200]!r}")
-                    if "=" in raw:
-                        from urllib.parse import parse_qs
-                        parsed = parse_qs(raw)
-                        vals = parsed.get("key", []) or parsed.get("id", [])
-                        if vals:
-                            key = vals[0].strip()
-                            logger.warning(f"[vtb-debug delete] key from raw-text: {key[:12]}  ({'; '.join(debug_lines)})")
-                            return key
-                else:
-                    debug_lines.append("raw-text=empty")
-            except Exception as e:
-                debug_lines.append(f"raw-err={type(e).__name__}")
-            logger.warning(f"[vtb-debug delete] NO KEY FOUND ({'; '.join(debug_lines)})")
-            return key
-
-        async def api_delete():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            key = await _read_key_from_request()
-            if not key:
-                return err("缺少参数 key")
-            try:
-                self._description_cache.pop(key, None)
-            except Exception as e:
-                logger.debug("[vision_text_bridge] _description_cache.pop 失败: %s", e)
-            try:
-                deleted = self._caption_cache.delete(key)
-            except Exception as e:
-                logger.exception("[vision_text_bridge] _caption_cache.delete 异常: %s", e)
-                return err(f"删除失败: {e}", 500)
-            return ok({"deleted": deleted, "key": key})
-
-        async def api_clear():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            n = self._caption_cache.clear()
-            self._description_cache.clear()
-            try:
-                self._caption_cache.vacuum()
-            except Exception as e:
-                logger.warning("[vision_text_bridge] VACUUM 失败: %s", e)
-            return ok({"cleared": n})
-
-        async def api_regenerate():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            key = await _read_key_from_request()
-            if not key:
-                return err("缺少参数 key")
-            try:
-                self._description_cache.pop(key, None)
-                self._caption_cache.delete(key)
-            except Exception as e:
-                logger.debug("[vision_text_bridge] regenerate 清理旧缓存失败: %s", e)
-            new_desc = await self._describe_one(key)
-            return ok({"key": key, "description": new_desc, "ok": bool(new_desc)})
-
-        async def api_export():
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            entries = self._caption_cache.list(limit=10000, offset=0)
-            return ok({"exported_at": time.time(), "count": len(entries),
-                       "items": [e.to_dict() for e in entries]})
-
-        async def _do_thumbnail(image_id: str):
-            """v0.8.7.6: 缩略图核心逻辑（提取后供两个 endpoint 复用）。"""
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            image_id = (image_id or "").strip()
-            if not image_id:
-                return err("缺少参数 image_id")
-            e = self._caption_cache.get(image_id, with_b64=True)
-            if e is None:
-                return err("未找到该 image_id", 404)
-            mime = e.mime_type
-            if not e.image_b64:
-                return ok({"image_id": image_id, "mime_type": mime, "data_url": "",
-                           "width": e.width, "height": e.height,
-                           "file_size": e.file_size, "has_image": False})
-            data_mime = mime or "image/jpeg"
-            return ok({"image_id": image_id, "mime_type": data_mime,
-                       "data_url": f"data:{data_mime};base64,{e.image_b64}",
-                       "width": e.width, "height": e.height,
-                       "file_size": e.file_size, "has_image": True})
-
-        async def api_thumbnail(image_id: str = ""):
-            """路径参数版（/cache/thumbnail/<image_id>）。
-            注意：**绝对不能**读 self.context.request（Context 对象没有 request 属性，
-            读了就 AttributeError）。路径参数 image_id 已经是 kwarg 了，直接用。
-            """
-            # image_id 已是 kwarg，不需要再去 context.request 里取 view_args
-            return await _do_thumbnail(image_id)
-
-        async def api_clean_expired():
-            """v0.8.11: 手动触发过期清理（返回删除条数）。"""
-            if self._caption_cache is None:
-                return err("SQLite 缓存未初始化", 500)
-            ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
-            if ttl_days <= 0:
-                return err("sqlite_cache_ttl_days=0，未启用过期清理", 400)
-            try:
-                deleted = self._caption_cache.clean_expired(ttl_days)
-                self._last_clean_at = time.time()  # v0.8.12: 手动清理也记一下，供 webui 算下次清理
-                # 同时清一下内存热缓存过期项
-                mem_size_before = len(self._description_cache)
-                # 访问一下触发内部 lazy expire；现在 _MemoryCache get 才会 expire
-                # 但 LRU 全部 key 都需要访问，开销不必要；为了一致，遍历 purge
-                expired_keys = [
-                    k for k, (_, exp) in getattr(self._description_cache, "_m", {}).items()
-                    if self._description_cache._ttl > 0 and time.time() >= exp
-                ]
-                for k in expired_keys:
-                    self._description_cache.pop(k)
-                purged_mem = mem_size_before - len(self._description_cache)
-                logger.info("[vision_text_bridge] 手动清理过期: SQLite=%d条, 内存=%d条", deleted, purged_mem)
-                return ok({"deleted_sqlite": deleted, "purged_memory": purged_mem, "ttl_days": ttl_days})
-            except Exception as e:
-                return err(f"清理失败: {e}", 500)
-
-        async def api_diag():
-            """v0.8.7.1 新增: 诊断 endpoint。
-
-            返 SQLite 路径、条目数、最近 3 条记录摘要、schema。
-            在 webui 看不到数据时调用，验证 SQLite 里到底有没有东西。
-            """
-            if self._caption_cache is None:
-                return ok({"cache_initialized": False,
-                           "hint": "SQLite 缓存未初始化——请看 AstrBot 启动日志里 [vision_text_bridge] 初始化描述缓存"})
-            # 直接查 SQLite 拿原始 schema 和最近 3 条
-            import sqlite3
-            try:
-                conn = sqlite3.connect(self._caption_cache._db_path)
-                conn.row_factory = sqlite3.Row
-                cols = [r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()]
-                total = conn.execute("SELECT COUNT(*) FROM image_captions").fetchone()[0]
-                # 最近 3 条
-                recent = []
-                for row in conn.execute(
-                    "SELECT image_id, length(description) AS desc_len, image_b64, "
-                    "mime_type, file_size, width, height, created_at "
-                    "FROM image_captions ORDER BY created_at DESC LIMIT 3"
-                ).fetchall():
-                    recent.append({
-                        "image_id": row["image_id"],
-                        "desc_len": row["desc_len"],
-                        "has_b64": bool(row["image_b64"]),
-                        "b64_len": len(row["image_b64"]) if row["image_b64"] else 0,
-                        "mime_type": row["mime_type"],
-                        "file_size": row["file_size"],
-                        "width": row["width"],
-                        "height": row["height"],
-                        "created_at": row["created_at"],
-                    })
-                conn.close()
-            except Exception as e:
-                return ok({"cache_initialized": True, "error": str(e)})
-            return ok({
-                "cache_initialized": True,
-                "db_path": self._caption_cache._db_path,
-                "schema_columns": cols,
-                "total_entries": total,
-                "in_memory_cache_size": len(self._description_cache),
-                "recent_3": recent,
-            })
-
-        for path, fn, methods, desc in [
-            ("/cache/stats", api_stats, ["GET"], "Cache stats"),
-            ("/cache/stats/timeline", api_stats_timeline, ["GET"], "v0.8.12 按天创建量（柱状图）"),
-            ("/cache/list", api_list, ["GET"], "Cache list"),
-            ("/cache/delete", api_delete, ["GET", "POST"], "v0.8.36 恢复 POST 主路径 (bridge.apiPost 带 body, angel_memory 同款)"),
-            ("/cache/clear", api_clear, ["GET", "POST"], "v0.8.36 恢复 POST 主路径"),
-            ("/cache/regenerate", api_regenerate, ["GET", "POST"], "v0.8.36 恢复 POST 主路径"),
-            ("/cache/export", api_export, ["GET"], "Export JSON"),
-            ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"], "缩略图：image_id 走路径参数（GET）"),
-            ("/cache/diag", api_diag, ["GET"], "v0.8.7.1 诊断：DB 路径/schema/最近 3 条"),
-            ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "v0.8.36 恢复 POST 主路径"),
-        ]:
-            self.context.register_web_api(f"/{PLUGIN_NAME}{path}", fn, methods, desc)
+        """: web API 全部移到 :mod:`web_api` 模块,
+        handler 深度从 4 层 (闭包嵌闭包) 减到 1 层 (top-level handler(plugin))."""
+        import web_api
+        web_api.register_all_routes(self.context, self)
 
     async def terminate(self) -> None:
         if getattr(self, "_clean_task", None) is not None:
@@ -825,7 +530,7 @@ class VisionTextBridgePlugin(Star):
         logger.info("[vision_text_bridge] 插件已卸载，缓存已清理")
 
     async def _clean_loop(self, ttl_days: int, interval_h: int) -> None:
-        """v0.8.11: 定期清理过期 SQLite 缓存的后台 task。"""
+        """: 定期清理过期 SQLite 缓存的后台 task。"""
         interval_s = interval_h * 3600
         try:
             while True:
@@ -834,7 +539,7 @@ class VisionTextBridgePlugin(Star):
                     break
                 try:
                     deleted = self._caption_cache.clean_expired(ttl_days)
-                    self._last_clean_at = time.time()  # v0.8.12: 供 webui 算下次清理
+                    self._last_clean_at = time.time()  # : 供 webui 算下次清理
                     if deleted > 0 and self._should_log("cache_trace"):
                         logger.info("[vision_text_bridge] 后台清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
                 except Exception as e:
@@ -859,7 +564,7 @@ class VisionTextBridgePlugin(Star):
                 max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
             )
 
-        # === 0) v0.8.13: 预先过滤待注入的工具集（chat_plus 之后才 merge）===
+        # === 0) : 预先过滤待注入的工具集（chat_plus 之后才 merge）===
         # chat_plus 会在 priority=-1 从 event.get_extra() 取待注入的 tool set 合并到 req.func_tool
         # 我们 priority=100 先跑，把待合并的工具集里不该要的提前删掉
         # 这样 chat_plus merge 进去的就是干净版
@@ -874,7 +579,7 @@ class VisionTextBridgePlugin(Star):
         saved_parts = list(req.extra_user_content_parts or []) if req.extra_user_content_parts else []
         saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
 
-        # 1a-pre) v0.8.25: 诊断日志——打印 saved_urls 原始来源，
+        # 1a-pre) : 诊断日志——打印 saved_urls 原始来源，
         # 查出是否有 bot 自己的头像 / at 段被误注入
         if self._should_log("hook_trace"):
             logger.info(
@@ -883,8 +588,8 @@ class VisionTextBridgePlugin(Star):
                 [u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u for u in saved_urls],
             )
 
-        # 1a) 从 event.message_obj 补提（v0.8.5 防御 chat_plus 抽走图）
-        # v0.8.35: 递归扫描嵌套 (引用消息里包 image)
+        # 1a) 从 event.message_obj 补提（ 防御 chat_plus 抽走图）
+        # : 递归扫描嵌套 (引用消息里包 image)
         if event is not None:
             try:
                 chain = getattr(getattr(event, "message_obj", None), "message", None)
@@ -921,20 +626,20 @@ class VisionTextBridgePlugin(Star):
                         return added
 
                     added_count = await _collect_image_urls_from_components(chain)
-                    # v0.8.35: 诊断——打 chain 顶层 + 嵌套 type 看看（默认 INFO）
+                    # : 诊断——打 chain 顶层 + 嵌套 type 看看（默认 INFO）
                     type_summary = []
                     for c in chain:
                         t = getattr(c, "type", "?")
                         type_summary.append(str(t))
                     logger.info(
-                        "[vision_text_bridge] v0.8.35 chain 顶层 types=%s, 递归补提了 %d 张图",
+                        "[vision_text_bridge] chain 顶层 types=%s, 递归补提了 %d 张图",
                         type_summary, added_count,
                     )
             except Exception as e:
                 if self._should_log("hook_trace"):
                     logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)
 
-        # v0.8.25: 过滤 AstrBot 框架 user @ bot 时注入的 bot avatar
+        # : 过滤 AstrBot 框架 user @ bot 时注入的 bot avatar
         # AstrBot 框架会主动把 bot 自己的头像 URL 塞到 req.image_urls
         # (q.qlogo.cn/headimg_dl?dst_uin=... 的固定模式)
         # 视觉理解 bot 头像没意义——跳过
@@ -944,11 +649,11 @@ class VisionTextBridgePlugin(Star):
             if len(filtered) != len(saved_urls):
                 removed = set(saved_urls) - set(filtered)
                 logger.info(
-                    "[vision_text_bridge] v0.8.25 过滤 bot 头像 %d 张: %s",
+                    "[vision_text_bridge] 过滤 bot 头像 %d 张: %s",
                     len(removed), list(removed),
                 )
                 saved_urls = filtered
-        # v0.8.25: 诊断——打 saved_urls 头部看看 AstrBot 到底注入了什么
+        # : 诊断——打 saved_urls 头部看看 AstrBot 到底注入了什么
         if saved_urls:
             logger.info(
                 "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
@@ -1014,7 +719,7 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.exception("[vision_text_bridge] 链末兜底异常: %s", e)
 
-        # === v0.8.13: 链末兜底删 func_tool（chat_plus priority=-1 跑过之后）===
+        # === : 链末兜底删 func_tool（chat_plus priority=-1 跑过之后）===
         # 即使主钩子 priority=100 没清干净，链末 priority=-10000 还能在最后扫一次
         try:
             mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
@@ -1142,7 +847,7 @@ class VisionTextBridgePlugin(Star):
                 return ""
 
             # 成功
-            # v0.8.10: 拏 mmx JSON 里的 content 并去 markdown 噪音，再 truncate
+            # : 拏 mmx JSON 里的 content 并去 markdown 噪音，再 truncate
             description = self._truncate(self._strip_mmx_content(result.stdout))
             logger.info(
                 "[vision_text_bridge] mmx 完成: %s, 耗时=%.2fs, 长度=%d",
@@ -1151,7 +856,7 @@ class VisionTextBridgePlugin(Star):
             logger.info("[vision_text_bridge] 描述预览: %s", self._preview(description, 120))
             if cacheable and cache_key:
                 self._description_cache[cache_key] = description
-                # v0.8.7.1: _persist 变 async，直接 await。之前的同步版本
+                # .1: _persist 变 async，直接 await。之前的同步版本
                 # 在 async 上下文里用 `asyncio.get_event_loop().run_until_complete`
                 # 必抛 RuntimeError，fallback 到同步读 file:// 经常被静默吞掉。
                 await self._persist(cache_key, url, description)
@@ -1160,7 +865,7 @@ class VisionTextBridgePlugin(Star):
     async def _persist(self, image_id: str, url: str, description: str) -> None:
         """写 SQLite 缓存（带 base64/mime/dim 元信息）。
 
-        v0.8.7.1: 改成 async 以便在 event loop 里正常 await ``_read_image_bytes``。
+        .1: 改成 async 以便在 event loop 里正常 await ``_read_image_bytes``。
         老版本用 ``asyncio.get_event_loop().run_until_complete`` 在 async 上下文
         会抛 ``RuntimeError("This event loop is already running")``，再 fallback
         到同步读 file:// — 但临时文件可能已被清理、/AstrBot 路径可能没读权限，
@@ -1175,7 +880,7 @@ class VisionTextBridgePlugin(Star):
             if data:
                 size = len(data)
                 mime, w, h = _sniff_image_meta(data)
-                # v0.8.8: 大图跳过 b64 存储（避免 6.5MB base64 吞磁盘）
+                # : 大图跳过 b64 存储（避免 6.5MB base64 吞磁盘）
                 max_b64_kb = _cfg_int(self.config, "max_b64_size_kb", 2048)
                 if max_b64_kb > 0 and size <= max_b64_kb * 1024:
                     b64 = base64.b64encode(data).decode("ascii")
@@ -1196,7 +901,7 @@ class VisionTextBridgePlugin(Star):
             if self._should_log("id_computation"):
                 logger.debug("[vision_text_bridge] 读字节异常详情: %s", e)
         try:
-            # v0.8.7.3: 无论如何都记录一次，put 是否真写了。
+            # .3: 无论如何都记录一次，put 是否真写了。
             self._caption_cache.put(
                 image_id=image_id, url=url, description=description,
                 image_b64=b64, mime_type=mime, file_size=size, width=w, height=h,
@@ -1244,7 +949,7 @@ class VisionTextBridgePlugin(Star):
             logger.info("[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d", field, ok_n, fail_n)
 
     def _inject_guidance(self, req):
-        """v0.7+: 向 system_prompt 注入'严格引用图说'提示。
+        """: 向 system_prompt 注入'严格引用图说'提示。
 
         可选配置 ``inject_caption_text_to_system_prompt`` 把图说本身也复制
         一份（默认 False 节省 token）。
@@ -1285,45 +990,17 @@ class VisionTextBridgePlugin(Star):
                         n, len(guidance))
 
     # =========================================================================
-    # mmx CLI 封装
+    # mmx CLI 封装 (: 逻辑全抽到 mmx_runner, main.py 只留薄包装)
     # =========================================================================
+
     def _build_vision_command(self, image, prompt):
-        if image.startswith("file-"):
-            cmd = ["vision", "describe", "--file-id", image]
-        else:
-            cmd = ["vision", "describe", "--image", image]
-        if prompt:
-            cmd.extend(["--prompt", prompt])
-        return tuple(cmd)
+        return _build_vision_command(image, prompt)
 
     async def _run_mmx(self, *args, timeout) -> MmxResult:
-        if not self.mmx_path:
-            return MmxResult("", "mmx CLI 未配置或未安装", -1, False)
-        if self._should_log("mmx_subprocess"):
-            logger.info("[vision_text_bridge] mmx cmd: %s", " ".join(self._redact(args)))
-        proc = await asyncio.create_subprocess_exec(
-            self.mmx_path, *args,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        return await _run_mmx_fn(
+            self.mmx_path, args, timeout,
+            log_subprocess=self._should_log("mmx_subprocess"),
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-            logger.warning("[vision_text_bridge] mmx 子进程超时(%ss): %s", timeout, " ".join(self._redact(args)))
-            return MmxResult("", f"mmx timeout after {timeout}s", -1, False)
-        stdout_s = stdout.decode("utf-8", errors="replace")
-        stderr_s = stderr.decode("utf-8", errors="replace")
-        if self._should_log("mmx_subprocess"):
-            logger.info(
-                "[vision_text_bridge] mmx rc=%d, stdout=%dB, stderr=%dB\n%s\n%s",
-                proc.returncode, len(stdout_s), len(stderr_s),
-                self._redact_text(stdout_s[:2000]), self._redact_text(stderr_s[:2000]),
-            )
-        return MmxResult(stdout_s, stderr_s, proc.returncode, proc.returncode == 0)
 
     async def _login_mmx(self, api_key: str) -> None:
         if not self.mmx_path:
@@ -1332,6 +1009,7 @@ class VisionTextBridgePlugin(Star):
                   if self.config.get("redact_sensitive", True) else api_key)
         logger.info("[vision_text_bridge] 预登录 MiniMax CLI: %s", masked)
         try:
+            # 走 self._run_mmx 让 patch.object 仍能拦截 (老测试依赖这个 path)
             r = await self._run_mmx("auth", "login", "--api-key", api_key, timeout=30)
             if r.ok:
                 logger.info("[vision_text_bridge] 预登录成功: %s", (r.stdout or "").strip() or "(无输出)")
@@ -1344,67 +1022,10 @@ class VisionTextBridgePlugin(Star):
             logger.warning("[vision_text_bridge] 预登录异常: %s", e)
 
     async def _install_mmx_cli(self) -> None:
-        if not self.npm_path:
-            logger.warning("[vision_text_bridge] 未找到 npm，无法自动安装 mmx-cli")
-            return
-        logger.info("[vision_text_bridge] 开始自动安装 mmx-cli...")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.npm_path, "install", "-g", "mmx-cli",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                logger.warning("[vision_text_bridge] 自动安装 mmx-cli 超时")
-                return
-            if proc.returncode != 0:
-                logger.warning("[vision_text_bridge] 自动安装失败: %s", stderr.decode("utf-8", errors="replace"))
-            else:
-                logger.info("[vision_text_bridge] mmx-cli 安装完成")
-        except Exception:
-            logger.exception("[vision_text_bridge] 自动安装 mmx-cli 异常")
+        await _install_mmx_cli_fn(self.npm_path)
 
-    # =========================================================================
-    # mmx 错误诊断（首次出现警告一次）
-    # =========================================================================
     def _diagnose_mmx_error(self, err_text: str, url: str) -> None:
-        if not err_text:
-            return
-        lo = err_text.lower()
-        if "insufficient balance" in lo or "余额" in err_text or ("quota" in lo and ("exceed" in lo or "limit" in lo or "不足" in err_text)):
-            self._warn_once("balance", "[vision_text_bridge] mmx 报 'insufficient balance'。可能：\n"
-                "  (1) mmx 路由到不识别该 key 的 endpoint\n"
-                "  (2) 该 key 实际属另一环境（staging/test），未在生产 Token Plan 中\n"
-                "  (3) mmx CLI 版本过旧、调用已废弃 endpoint\n"
-                "  (4) 这个 key 仅开通 text、未开通 vision\n"
-                "排查：`mmx --version` / `mmx auth status` / `mmx quota` / "
-                "手动 `mmx vision describe --image <本地图>`\n"
-                "若 1~3 正常但 4 报错，几乎确认是 mmx 版本/endpoint 问题，"
-                "请加 `verbose_mmx_subprocess: true` 后重试。")
-            return
-        if "http 200" in lo or ("http" in lo and "error" in lo and "code" in lo):
-            self._warn_once("http200", "[vision_text_bridge] mmx 返回 HTTP 200 但 body 是 error JSON。\n"
-                "通常：mmx CLI 过旧 / key 在该 endpoint 无权限 / key 属另一环境。\n"
-                "调试：`mmx --version` / `mmx auth status` / `mmx quota` / "
-                "手动 `mmx vision describe --image <本地图>`。")
-            return
-        if "unauthenticated" in lo or "unauthorized" in lo \
-                or ("auth" in lo and ("expired" in lo or "invalid" in lo)) \
-                or "认证失败" in err_text or "未登录" in err_text:
-            self._warn_once("auth", "[vision_text_bridge] mmx 认证失败。检查 minimax_api_key / "
-                "`mmx auth status` / 手动 `mmx auth login --api-key <key>`。")
-            return
-        if "invalid argument" in lo or "no such file" in lo or "file not found" in lo or "model not found" in lo or "unknown model" in lo:
-            self._warn_once("argument", f"[vision_text_bridge] mmx 参数/模型错误。可能：\n"
-                f"  (1) 图片路径不可访问：{self._preview(url)}\n"
-                f"  (2) mmx 不识别该模型名。手动 `mmx vision describe --image <本地图>` 验证。")
-            return
-        if "timeout" in lo or "connection" in lo or "network" in lo or "eof" in lo:
-            self._warn_once("network", "[vision_text_bridge] mmx 网络异常。手动 `mmx quota` 验证。")
-            return
+        _diagnose_mmx_error_fn(err_text, url, self._preview, VisionTextBridgePlugin._DIAGNOSED)
 
     def _warn_once(self, key: str, message: str) -> None:
         if key in VisionTextBridgePlugin._DIAGNOSED:
@@ -1416,43 +1037,15 @@ class VisionTextBridgePlugin(Star):
     # 工具
     # =========================================================================
     def _truncate(self, text: str) -> str:
-        max_len = _cfg_int(self.config, "max_description_length", 800)
-        if max_len <= 0 or len(text) <= max_len:
-            return text
-        return text[:max_len] + "…"
+        return _truncate_text(text, self.config)
 
     def _strip_mmx_content(self, stdout: str) -> str:
-        """v0.8.10: 从 mmx vision describe 的 JSON 拏出 ``content`` 字段并去 markdown 噪音。
-        实测：典型响应 520→380 字符，省 ~25% token（密集加粗场景能到 40%+）。
-        """
-        if not stdout:
-            return ""
-        if not self.config.get("strip_mmx_markdown", True):
-            return stdout.strip()
-        # 1) 拏 content 字段
-        try:
-            obj = json.loads(stdout)
-            text = obj["content"] if isinstance(obj, dict) and isinstance(obj.get("content"), str) else stdout
-        except (ValueError, json.JSONDecodeError):
-            text = stdout
-        if not text:
-            return ""
-        # 2) 去 markdown 噪音
-        text = _RE_MD_BOLD.sub(r"\1", text)              # **加粗** → 文本
-        text = _RE_MD_HEADING.sub("", text)              # ### 标题 → 空
-        text = _RE_MD_LIST.sub("• ", text)               # * 列表 → • （中文友好）
-        text = _RE_BLANK_LINES.sub("\n\n", text)         # 3+ 空行 → 2
-        return text.strip()
+        return _strip_mmx_content_fn(stdout, self.config)
 
     def _preview(self, text: str, limit: int = 80) -> str:
-        if not text:
-            return ""
-        s = str(text)
-        if self.config.get("redact_sensitive", True):
-            s = self._redact_text(s)
-        return s if len(s) <= limit else s[:limit] + "…"
+        return _preview_text(text, limit, self.config)
 
-    # v0.8.13: 在主钩子入口过滤工具
+    # : 在主钩子入口过滤工具
     def _filter_tools_in_event(self, event, req) -> None:
         """提前清 ``event.get_extra(extra_key)`` 里的待合并 tool set。
 
@@ -1489,9 +1082,7 @@ class VisionTextBridgePlugin(Star):
                 logger.info("[vision_text_bridge] 从 req.func_tool 移除了 %d 个工具（mode=%s）", n, mode)
 
     def _redact(self, args):
-        if not self.config.get("redact_sensitive", True):
-            return args
-        return tuple(self._redact_text(a) for a in args)
+        return _redact_args_fn(args, self.config)
 
     _SENSITIVE = (
         re.compile(r"(sk-[A-Za-z0-9_-]{8,})"),
@@ -1500,11 +1091,10 @@ class VisionTextBridgePlugin(Star):
 
     @staticmethod
     def _redact_text(text: str) -> str:
-        if not text:
-            return text
-        for p in VisionTextBridgePlugin._SENSITIVE:
-            text = p.sub(lambda m: m.group(0)[:4] + "***REDACTED***", text)
-        return text
+        """脱敏 —  调 mmx_runner.redact_text (regex 同源), 保留这个
+        staticmethod 是因为 :class:`_old__test` 还会调它。
+        """
+        return _redact_text(text)
 
     async def _compute_image_cache_key(self, url):
         try:
@@ -1522,267 +1112,15 @@ class VisionTextBridgePlugin(Star):
         return CaptionCache.make_id_from_bytes(data)
 
     async def _read_image_bytes(self, url):
-        """v0.8.7.4: 支持裸本地路径（除 http(s)/file:// 之外，以 / 开头的绝对路径）。"""
-        lo = url.lower()
-        if lo.startswith("file://"):
-            path = unquote(url[len("file://"):])
-            if path.startswith("/") and len(path) > 2 and path[2] == ":":
-                path = path[1:]
-            return await asyncio.to_thread(_read_file_bytes_sync, path)
-        if lo.startswith("http://") or lo.startswith("https://"):
-            import aiohttp
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    r.raise_for_status()
-                    return await r.read()
-        # v0.8.7.4: 裸本地路径
-        if lo.startswith("/") or (len(lo) >= 2 and lo[1] == ":"):
-            return await asyncio.to_thread(_read_file_bytes_sync, url)
-        raise ValueError(f"unsupported scheme: {url[:50]}")
+        """.4: 支持裸本地路径——薄包装, 实际逻辑抽到 image_fetch.py。"""
+        return await _read_image_bytes(url)
 
 
 # ===========================================================================
-# 模块级 helper（不依赖 self，方便 inlining）
+# : image url 工具已抽到 image_utils, 工具过滤到 tool_filter
+# 这里是 shim 留旧名, 方便  时期测试还能 import (向后兼容过渡)
 # ===========================================================================
-def _is_image_url_part(part) -> bool:
-    if isinstance(part, dict):
-        return part.get("type") == "image_url"
-    return getattr(part, "type", None) == "image_url"
-
-
-def _extract_url_from_item(item) -> str:
-    """从 image_url 类型的 part/dict 取 URL。"""
-    if isinstance(item, dict):
-        iu = item.get("image_url")
-        if isinstance(iu, str):
-            return iu
-        if isinstance(iu, dict):
-            return iu.get("url", "") or ""
-    else:
-        iu = getattr(item, "image_url", None)
-        if iu is None:
-            return ""
-        if isinstance(iu, str):
-            return iu
-        return getattr(iu, "url", "") or ""
-    return ""
-
-
-def _extract_urls_from_parts(parts):
-    return [u for p in parts if (u := _extract_url_from_item(p))]
-
-
-def _extract_urls_from_context_list(content_list):
-    urls = []
-    for item in content_list:
-        if isinstance(item, dict) and item.get("type") == "image_url":
-            u = _extract_url_from_item(item)
-            if u:
-                urls.append(u)
-    return urls
-
-
-def _is_data_url(url: str) -> bool:
-    return bool(url) and url.startswith("data:image/") and ";base64," in url[:64]
-
-
-def _strip_image_urls(req, only_data_url: bool) -> int:
-    """从 req 三处删 image_url 组件。only_data_url=True 只删 data:base64。"""
-    removed = 0
-    if req.image_urls:
-        kept = [u for u in req.image_urls if not (only_data_url and _is_data_url(u))]
-        if only_data_url:
-            removed += len(req.image_urls) - len(kept)
-        else:
-            removed += len(req.image_urls)
-            kept = []
-        req.image_urls = kept
-    if req.extra_user_content_parts:
-        kept = []
-        for p in req.extra_user_content_parts:
-            if _is_image_url_part(p):
-                u = _extract_url_from_item(p)
-                if only_data_url and not _is_data_url(u):
-                    kept.append(p)
-                    continue
-                removed += 1
-                continue
-            kept.append(p)
-        req.extra_user_content_parts[:] = kept
-    if req.contexts:
-        for c in req.contexts:
-            if not isinstance(c, dict):
-                continue
-            content = c.get("content")
-            if not isinstance(content, list):
-                continue
-            kept = []
-            for x in content:
-                if isinstance(x, dict) and x.get("type") == "image_url":
-                    u = _extract_url_from_item(x)
-                    if only_data_url and not _is_data_url(u):
-                        kept.append(x)
-                        continue
-                    removed += 1
-                    continue
-                kept.append(x)
-            content[:] = kept
-    return removed
-
-
-# v0.8.13: 工具集名称匹配（支持 ``*`` 通配符，如 ``archive_*``）
-def _match_tool_name(name: str, patterns: list[str]) -> bool:
-    if not name or not patterns:
-        return False
-    for p in patterns:
-        if not p:
-            continue
-        if p == name:
-            return True
-        if p.endswith("*") and name.startswith(p[:-1]):
-            return True
-        if p.startswith("*") and name.endswith(p[1:]):
-            return True
-        if "*" in p and _glob_match(name, p):
-            return True
-    return False
-
-
+import fnmatch as _fnmatch
 def _glob_match(name: str, pattern: str) -> bool:
-    """极简 glob 匹配（只支持 ``*``）。"""
-    import fnmatch as _fn
-    return _fn.fnmatchcase(name, pattern)
+    return _fnmatch.fnmatchcase(name, pattern)
 
-
-# v0.8.13: 从 tool_container 里删/保留名字在 patterns 里的工具
-# 兼容多种 tool container 接口：
-#   1) ``.tools`` list（chat_plus 的 ToolSet 风格）——走 list.remove
-#   2) ``.func_list`` list（FunctionToolManager 风格）——走 list.remove
-#   3) ``.remove_func(name)`` 方法
-# 返回：实际被改动的条数
-def _filter_disabled_tools(tool_container, mode: str, names: list[str]) -> int:
-    if tool_container is None or mode == "off" or not names:
-        return 0
-    removed = 0
-    # 先收集所有 name -> 工具对象 的映射
-    items: list[tuple[str, object]] = []  # [(name, tool_obj)]
-    if hasattr(tool_container, "tools") and isinstance(tool_container.tools, list):
-        for t in tool_container.tools:
-            n = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
-            if n:
-                items.append((n, t))
-    if hasattr(tool_container, "func_list") and isinstance(tool_container.func_list, list):
-        for t in tool_container.func_list:
-            n = getattr(t, "name", None)
-            if n:
-                items.append((n, t))
-    # 判定保留集合
-    if mode == "blacklist":
-        keep = lambda n: not _match_tool_name(n, names)
-    elif mode == "whitelist":
-        keep = lambda n: _match_tool_name(n, names)
-    else:
-        return 0
-    for n, _t in items:
-        if keep(n):
-            continue
-        did_remove = False
-        # 逐个容器接口删
-        if hasattr(tool_container, "remove_func"):
-            try:
-                tool_container.remove_func(n)
-                did_remove = True
-            except Exception:
-                pass
-        if hasattr(tool_container, "tools") and isinstance(tool_container.tools, list):
-            before = len(tool_container.tools)
-            tool_container.tools[:] = [t for t in tool_container.tools if (getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)) != n]
-            if len(tool_container.tools) < before:
-                did_remove = True
-        if hasattr(tool_container, "func_list") and isinstance(tool_container.func_list, list):
-            before = len(tool_container.func_list)
-            tool_container.func_list[:] = [t for t in tool_container.func_list if getattr(t, "name", None) != n]
-            if len(tool_container.func_list) < before:
-                did_remove = True
-        if did_remove:
-            removed += 1
-    return removed
-
-
-def _to_text_part(part_dict):
-    if TextPart is not None and isinstance(part_dict, dict):
-        return TextPart(text=part_dict.get("text", ""))
-    return part_dict
-
-
-def _sniff_image_meta(data: bytes):
-    """嗅探 (mime, w, h)。优先 PIL，降级 magic-bytes。失败返 ('', 0, 0)。"""
-    if not data or len(data) < 16:
-        return "", 0, 0
-    try:
-        from PIL import Image as _PIL
-        with _PIL.open(io.BytesIO(data)) as im:
-            fmt = (im.format or "").upper()
-            mime = {"PNG": "image/png", "JPEG": "image/jpeg", "JPG": "image/jpeg",
-                    "GIF": "image/gif", "WEBP": "image/webp", "BMP": "image/bmp",
-                    "ICO": "image/x-icon"}.get(fmt, "image/jpeg")
-            return mime, int(im.width or 0), int(im.height or 0)
-    except Exception:
-        pass
-    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
-        return "image/png", int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
-    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
-        return "image/gif", int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
-    if data[:2] == b"\xff\xd8":
-        i = 2
-        while i < len(data) - 9:
-            if data[i] != 0xFF:
-                break
-            m = data[i + 1]
-            if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                h = int.from_bytes(data[i + 5:i + 7], "big")
-                w = int.from_bytes(data[i + 7:i + 9], "big")
-                return "image/jpeg", w, h
-            i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
-        return "image/jpeg", 0, 0
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        if data[12:16] == b"VP8 " and len(data) >= 30:
-            return "image/webp", int.from_bytes(data[26:28], "little") & 0x3FFF, \
-                              int.from_bytes(data[28:30], "little") & 0x3FFF
-        if data[12:16] == b"VP8L" and len(data) >= 25:
-            b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
-            w = ((b1 & 0x3F) << 8 | b0) + 1
-            h = (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6)) + 1
-            return "image/webp", w, h
-        return "image/webp", 0, 0
-    return "", 0, 0
-
-
-def _is_cacheable_url(url: str, config) -> bool:
-    """v0.8.7.4: 接受裸本地路径 (如 /AstrBot/data/temp/io_temp_img_*.jpg)。
-
-    v0.8.7.3 及之前只认 http:// / https:// / file://，但实际场景中
-    AstrBot 直接传裸路径 (无 scheme)。那种情况下 cacheable=False →
-    ``_describe_one`` 里 ``if cacheable and cache_key`` 跳过所有缓存
-    逻辑，包括最后的 ``_persist`` 写 SQLite。webui 看上去"总是空"。
-
-    现在识别的 scheme：
-      - http://, https://
-      - file://
-      - 以 / 开头（Unix 绝对路径）
-      - Windows 盘符开头 C:\\ 或 C:/
-      - data:image/... （不入缓存，base64 重复太多）
-    """
-    if not url:
-        return False
-    lo = url.lower()
-    if lo.startswith("http://") or lo.startswith("https://"):
-        return True
-    if lo.startswith("file://"):
-        return bool(config.get("cache_file_paths", True))
-    if lo.startswith("data:image/"):
-        return False
-    # 裸本地路径: Unix 绝对路径 或 Windows 盘符
-    if lo.startswith("/") or (len(lo) >= 2 and lo[1] == ":"):
-        return bool(config.get("cache_file_paths", True))
-    return False

@@ -1,4 +1,4 @@
-// Webui Logger (v0.8.20 — 改为全局脚本，不再 ESM)
+// Webui Logger (改为全局脚本，不再 ESM)
 // ============
 //
 // 浮动日志面板 + 浏览器 console 双输出。4 个级别：
@@ -108,7 +108,7 @@
   }
 
   const logger = new WebuiLogger();
-  // v0.8.20: 暴露到 window 上，app.js 直接用 window.webuiLogger 而不 import
+  // 暴露到 window 上，app.js 直接用 window.webuiLogger 而不 import
   global.webuiLogger = logger;
   if (typeof module !== "undefined" && module.exports) {
     module.exports = logger;

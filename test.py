@@ -115,7 +115,7 @@ def new_plugin(**overrides):
     p._priority_locked_warning_emitted = False
     # 默认 None，让 _describe_one 在 SQLite 缓存表走 None 路径
     p._caption_cache = None
-    # v0.8.7: 主钩子快照字段。__init__ 里会设，这里用 __new__ 创建的实例也要设
+    # : 主钩子快照字段。__init__ 里会设，这里用 __new__ 创建的实例也要设
     p._pending_urls = None
     p._pending_parts = None
     p._pending_contexts = None
@@ -127,7 +127,7 @@ def new_plugin(**overrides):
     return p
 
 
-# v0.8.17: mock context helper——以住 12 个测试手写 ``class _R`` + ``mock_register`` 现在抽取出来
+# : mock context helper——以住 12 个测试手写 ``class _R`` + ``mock_register`` 现在抽取出来
 class _MockContext:
     """模拟 AstrBot Context 对象——``request`` 上的任意属性返 AttributeError（抹掉 self.context.request.* 误读）。"""
 
@@ -201,13 +201,13 @@ def wrap_run(fn):
 # ------------------------------------------------------------------ 单测：工具方法
 
 def test_is_cacheable_url():
-    # v0.8.7.4: 接受裸本地路径（/ 开头的绝对路径），因为 AstrBot 实际传的就是裸路径
+    # .4: 接受裸本地路径（/ 开头的绝对路径），因为 AstrBot 实际传的就是裸路径
     p = new_plugin()
     assert main._is_cacheable_url("http://x.com/a.jpg", p.config) is True
     assert main._is_cacheable_url("https://x.com/a.jpg", p.config) is True
     assert main._is_cacheable_url("base64://abc", p.config) is False
     assert main._is_cacheable_url("file:///tmp/a.jpg", p.config) is True
-    assert main._is_cacheable_url("/tmp/a.jpg", p.config) is True  # v0.8.7.4 变 True
+    assert main._is_cacheable_url("/tmp/a.jpg", p.config) is True  # .4 变 True
     assert main._is_cacheable_url("/AstrBot/data/temp/x.jpg", p.config) is True
     assert main._is_cacheable_url("C:/Users/x.jpg", p.config) is True  # Windows 盘符
     assert main._is_cacheable_url("data:image/jpeg;base64,xxx", p.config) is False  # data URL 不缓存
@@ -238,7 +238,7 @@ def test_redact_text():
 
 
 def test_extract_image_url_from_part_dict():
-    # v0.8.7: 抽到 module-level _extract_url_from_item
+    # : 抽到 module-level _extract_url_from_item
     part = {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}}
     assert main._extract_url_from_item(part) == "https://x.com/a.jpg"
     text = {"type": "text", "text": "hello"}
@@ -255,7 +255,7 @@ def test_extract_image_url_from_part_object():
 
 
 def test_remove_image_parts():
-    # v0.8.7: 抽到 module-level helper。直接 inlined 测试
+    # : 抽到 module-level helper。直接 inlined 测试
     parts = [
         {"type": "text", "text": "hi"},
         {"type": "image_url", "image_url": {"url": "https://x.com/a.jpg"}},
@@ -294,8 +294,8 @@ def test_build_vision_command_no_prompt():
 # ------------------------------------------------------------------ 单测：_attach_descriptions_to_prompt
 
 def test_attach_with_prompt():
-    """v0.7+ 新行为：图说作为 content block 注入到 extra_user_content_parts，不修改 prompt。
-    v0.8.7: 方法名从 _attach_descriptions_to_prompt 简化为 _attach。"""
+    """ 新行为：图说作为 content block 注入到 extra_user_content_parts，不修改 prompt。
+    : 方法名从 _attach_descriptions_to_prompt 简化为 _attach。"""
     p = new_plugin()
     req = FakeReq(prompt="用户问：这是什么", image_urls=["https://x.com/a.jpg"])
     p._attach(
@@ -306,7 +306,7 @@ def test_attach_with_prompt():
     )
     assert req.prompt == "用户问：这是什么"
     assert len(req.extra_user_content_parts) == 1
-    # v0.8.7: _to_text_part 优先用 TextPart Pydantic 对象（带 .text 属性），也兼容 dict
+    # : _to_text_part 优先用 TextPart Pydantic 对象（带 .text 属性），也兼容 dict
     ep0 = req.extra_user_content_parts[0]
     text = ep0["text"] if isinstance(ep0, dict) else ep0.text
     assert text == "[Image 1 描述] 一只橘猫趴在沙发上"
@@ -376,7 +376,7 @@ def test_attach_index_continues():
 # ------------------------------------------------------------------ 单测：缓存
 
 def test_cache_hit():
-    """v0.8.2: 缓存用 md5 作 key。同 url 重复调用应命中内存缓存。"""
+    """: 缓存用 md5 作 key。同 url 重复调用应命中内存缓存。"""
     p = new_plugin(cache_descriptions=True)
     # 直接调一次写入内存缓存（mock mmx）
     called = {"count": 0}
@@ -416,9 +416,9 @@ def test_e2e_image_urls_only():
     event = SimpleNamespace()
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(req))  # v0.8.7: 不再要 event 参数
+        asyncio.run(p._process_request(req))  # : 不再要 event 参数
 
-    # **v0.7 新行为**：prompt 保持原样
+    # ** 新行为**：prompt 保持原样
     assert req.prompt == "帮我看看"
     # 图说作为 content blocks 加入
     assert len(req.extra_user_content_parts) == 2
@@ -443,7 +443,7 @@ def test_e2e_extra_parts():
         return "x图说", ""
 
     with patch.object(p, "_run_mmx", side_effect=wrap_run(fake_run)):
-        asyncio.run(p._process_request(req))  # v0.8.7: 不再要 event
+        asyncio.run(p._process_request(req))  # : 不再要 event
 
     # 原 text part 保留 + image_url 被删除 + 图说 content block 加上
     assert len(req.extra_user_content_parts) == 2
@@ -516,7 +516,7 @@ def test_e2e_history_in_contexts():
     new_content = contexts[0]["content"]
     assert len(new_content) == 1
     assert new_content[0]["type"] == "text"
-    # **v0.7**：prompt 字符串不变
+    # ****：prompt 字符串不变
     assert req.prompt == "现在的问题"
     # 描述作为 content block 注入
     assert len(req.extra_user_content_parts) == 1
@@ -702,7 +702,7 @@ def test_resolve_priority_invalid_falls_back():
 
 
 def test_priority_mismatch_warns_and_updates_global():
-    """v0.8.7: priority 不一致时仅告警（设 _priority_locked_warning_emitted），
+    """: priority 不一致时仅告警（设 _priority_locked_warning_emitted），
     不再改 global DEFAULT_PRIORITY（因为 on_llm_request decorator 已锁定）。"""
     original = main.DEFAULT_PRIORITY
     try:
@@ -710,7 +710,7 @@ def test_priority_mismatch_warns_and_updates_global():
         p = new_plugin(priority=500)
         assert p._priority_locked_warning_emitted is False
         p._warn_if_priority_mismatch()
-        # v0.8.7 改语义：只设了 _priority_locked_warning_emitted 防止重报
+        #  改语义：只设了 _priority_locked_warning_emitted 防止重报
         assert p._priority_locked_warning_emitted is True
         # global DEFAULT_PRIORITY 不再被改（警告一次即可）
         assert main.DEFAULT_PRIORITY == 100
@@ -740,7 +740,7 @@ def test_priority_out_of_range_warns():
         main.DEFAULT_PRIORITY = 100
         p = new_plugin(priority=99999)  # 超出 10000
         p._warn_if_priority_mismatch()
-        # v0.8.7: 不再更新 global DEFAULT_PRIORITY，只设 _priority_locked_warning_emitted
+        # : 不再更新 global DEFAULT_PRIORITY，只设 _priority_locked_warning_emitted
         assert main.DEFAULT_PRIORITY == 100  # 保持不变
         assert p._priority_locked_warning_emitted is True
     finally:
@@ -1020,7 +1020,7 @@ def test_fallback_strip_all_when_configured():
 
 
 def test_fallback_strip_only_data_url_by_default():
-    """v0.8.4 行为变更：链末兑底**总是**清空 req.image_urls（防 chat_plus 等中间插件
+    """ 行为变更：链末兑底**总是**清空 req.image_urls（防 chat_plus 等中间插件
     重新填图）。默认 strip_all_image_urls_in_fallback=False 也清空。"""
     p = new_plugin()  # 默认 strip_all_image_urls_in_fallback=False
     req = FakeReq(
@@ -1032,7 +1032,7 @@ def test_fallback_strip_only_data_url_by_default():
         }],
     )
     asyncio.run(p.strip_residual_base64(SimpleNamespace(), req))
-    # v0.8.4 起：**总是**清空 image_urls（即使 https URL）
+    #  起：**总是**清空 image_urls（即使 https URL）
     assert req.image_urls == []
     # contexts 里的 image_url 也被清掉
     assert len(req.contexts[0]["content"]) == 0
@@ -1117,7 +1117,7 @@ def test_caption_cache_basic_crud():
         assert entry is not None
         assert entry.description == "一只猫"
         assert entry.hit_count == 1
-        # v0.8.8: 5 分钟内连续 hit 去重（防 webui 详情页点 10 次就 hit_count=10）
+        # : 5 分钟内连续 hit 去重（防 webui 详情页点 10 次就 hit_count=10）
         entry2 = cache.get("https://x.com/a.jpg")
         assert entry2.hit_count == 1  # 去重后还是 1
         # 手动调成 6 分钟前，命中后递增
@@ -1137,7 +1137,7 @@ def test_caption_cache_basic_crud():
 
 
 def test_caption_cache_v0_8_6_image_id_and_b64():
-    """v0.8.6: image_id 主键 + 存 base64 / mime / 宽高 / size 元信息。"""
+    """: image_id 主键 + 存 base64 / mime / 宽高 / size 元信息。"""
     import tempfile
     import base64
     from pathlib import Path
@@ -1177,7 +1177,7 @@ def test_caption_cache_v0_8_6_image_id_and_b64():
 
 
 def test_caption_cache_v0_8_6_schema_upgrade():
-    """v0.8.6 schema 升级：老库 (无 image_b64 等列) 启动后能补上。"""
+    """ schema 升级：老库 (无 image_b64 等列) 启动后能补上。"""
     import tempfile
     import sqlite3
     from pathlib import Path
@@ -1225,7 +1225,7 @@ def test_caption_cache_v0_8_6_schema_upgrade():
 
 
 def test_caption_cache_make_id_helpers():
-    """v0.8.6: 静态 id 生成器。"""
+    """: 静态 id 生成器。"""
     # make_id_from_bytes：同 bytes 返同 id
     id1 = main.CaptionCache.make_id_from_bytes(b"hello")
     id2 = main.CaptionCache.make_id_from_bytes(b"hello")
@@ -1299,7 +1299,7 @@ def test_caption_cache_stats():
         cache.get("a")
         s2 = cache.stats()
         assert s2.total == 1
-        # v0.8.8: 5 分钟内 hit 去重 → 2 次连续 get 只 +1
+        # : 5 分钟内 hit 去重 → 2 次连续 get 只 +1
         assert s2.total_hits == 1
         assert s2.oldest_at is not None
         assert s2.newest_at is not None
@@ -1324,7 +1324,7 @@ def test_describe_one_uses_sqlite_cache():
     import hashlib
     from pathlib import Path
     url = "https://x.com/cached.jpg"
-    # v0.8.6: image_id 退路是 md5(url 字符串)
+    # : image_id 退路是 md5(url 字符串)
     expected_key = hashlib.md5(url.encode("utf-8")).hexdigest()
     with tempfile.TemporaryDirectory() as tmp:
         p = new_plugin()
@@ -1354,7 +1354,7 @@ def test_describe_one_writes_to_sqlite_cache():
     import hashlib
     from pathlib import Path
     url = "https://x.com/fresh.jpg"
-    expected_key = hashlib.md5(url.encode("utf-8")).hexdigest()  # v0.8.6: 退路 md5(url)
+    expected_key = hashlib.md5(url.encode("utf-8")).hexdigest()  # : 退路 md5(url)
     with tempfile.TemporaryDirectory() as tmp:
         p = new_plugin()
         p._caption_cache = main.CaptionCache(Path(tmp) / "c.sqlite3")
@@ -1372,7 +1372,7 @@ def test_describe_one_writes_to_sqlite_cache():
     print("✓ test_describe_one_writes_to_sqlite_cache")
 
 
-# ------------------------------------------------------------------ 单测：Chat Archive 联动已移除 (v0.8.6)
+# ------------------------------------------------------------------ 单测：Chat Archive 联动已移除 ()
 
 
 
@@ -1381,7 +1381,7 @@ def test_describe_one_writes_to_sqlite_cache():
 
 
 def test_register_web_apis_called():
-    """v0.8.6: _register_web_apis 应注册 6 个 web API（v0.8.5 之前 7 个，删了 chat-archive/refresh）。"""
+    """: _register_web_apis 应注册 6 个 web API（ 之前 7 个，删了 chat-archive/refresh）。"""
     p = new_plugin()
     calls = []
 
@@ -1400,7 +1400,7 @@ def test_register_web_apis_called():
     assert any("cache/clear" in r for r in routes)
     assert any("cache/regenerate" in r for r in routes)
     assert any("cache/export" in r for r in routes)
-    assert any("cache/thumbnail" in r for r in routes)  # v0.8.6 新增
+    assert any("cache/thumbnail" in r for r in routes)  #  新增
     # 确认 chat-archive/refresh 已删
     assert not any("chat-archive" in r for r in routes)
     print("✓ test_register_web_apis_called")
@@ -1425,7 +1425,7 @@ def test_end_to_end_full_flow():
             return_value=make_mmx_result("一只狗", "", 0, True),
         ):
             asyncio.run(p.bridge_vision_to_text(SimpleNamespace(), req))
-        # v0.7: prompt 不变，图说在 extra_user_content_parts
+        # : prompt 不变，图说在 extra_user_content_parts
         assert req.prompt == "看图"
         assert len(req.extra_user_content_parts) == 1
         assert req.extra_user_content_parts[0]["text"] == "[Image 1 描述] 一只狗"
@@ -1451,7 +1451,7 @@ def test_end_to_end_full_flow():
 
         # 5. 页面删除 (先清内存)
         p._description_cache.clear()
-        # v0.8.6: image_id 是 32 位 hex（md5(url)）
+        # : image_id 是 32 位 hex（md5(url)）
         import hashlib
         key = hashlib.md5("https://x.com/x.jpg".encode("utf-8")).hexdigest()
         ok = p._caption_cache.delete(key)
@@ -1473,7 +1473,7 @@ def test_end_to_end_full_flow():
 
 
 def test_inject_system_prompt_guidance_default_on():
-    """v0.7 新行为：图说本身在 user message 的 extra_user_content_parts 里，
+    """ 新行为：图说本身在 user message 的 extra_user_content_parts 里，
     system_prompt 只追加"严格引用"提示。"""
     p = new_plugin()
     req = FakeReq(
@@ -1512,7 +1512,7 @@ def test_inject_disabled_when_config_off():
 
 
 def test_inject_no_images_in_prompt_no_op():
-    """v0.7: extra_user_content_parts 中没有 [Image N 描述] 标记就不注入。"""
+    """: extra_user_content_parts 中没有 [Image N 描述] 标记就不注入。"""
     p = new_plugin()
     req = FakeReq(prompt="没有图")
     req.system_prompt = "你是一个助手。"
@@ -1522,7 +1522,7 @@ def test_inject_no_images_in_prompt_no_op():
 
 
 def test_main_hook_clears_image_urls_immediately():
-    """v0.8: 主钩子入口**立即**清空 image_urls，防 AstrBot 切 provider。
+    """: 主钩子入口**立即**清空 image_urls，防 AstrBot 切 provider。
 
     背景: AstrBot 在 astr_main_agent._select_image_chat_provider() 根据
         `if not req.image_urls or _provider_supports_modality(provider, "image")`
@@ -1625,7 +1625,7 @@ def test_main_hook_saves_snapshots_for_process_request():
 
 
 def test_to_text_part_creates_pydantic_object():
-    """验证 _to_text_part 返回的对象有 model_dump_for_context 方法（防止 v0.7 崩溃）。"""
+    """验证 _to_text_part 返回的对象有 model_dump_for_context 方法（防止  崩溃）。"""
     p = new_plugin()
     obj = main._to_text_part({"type": "text", "text": "hello"})
     # 必须有 model_dump_for_context 方法
@@ -1692,7 +1692,7 @@ def test_mark_providers_skipped_when_config_off():
 
 
 def test_cache_key_uses_md5_for_file_url():
-    """v0.8.6: file:// 路径的缓存 image_id 应为图片内容 md5。"""
+    """: file:// 路径的缓存 image_id 应为图片内容 md5。"""
     import tempfile
     from pathlib import Path
     import hashlib
@@ -1715,7 +1715,7 @@ def test_cache_key_uses_md5_for_file_url():
 
 
 def test_cache_key_falls_back_to_url_on_read_failure():
-    """v0.8.6: 读图片字节失败时，key 退到 md5(url 字符串)。"""
+    """: 读图片字节失败时，key 退到 md5(url 字符串)。"""
     import hashlib
     p = new_plugin()
     # 调一个不存在的文件
@@ -1728,7 +1728,7 @@ def test_cache_key_falls_back_to_url_on_read_failure():
 
 
 def test_same_image_different_path_hits_cache():
-    """**v0.8.6 关键场景**：同一张图不同路径能命中缓存（QQ 群聊的痛点）。"""
+    """** 关键场景**：同一张图不同路径能命中缓存（QQ 群聊的痛点）。"""
     import tempfile
     import hashlib
     from pathlib import Path
@@ -1756,7 +1756,7 @@ def test_same_image_different_path_hits_cache():
 
 
 def test_login_mmx_handles_mmxresult_not_tuple():
-    """v0.8.3 修复：_login_mmx 之前误以为 _run_mmx 返回 tuple，实际返回 MmxResult dataclass。
+    """ 修复：_login_mmx 之前误以为 _run_mmx 返回 tuple，实际返回 MmxResult dataclass。
 
     'stdout, stderr = await self._run_mmx(...)' 会在 _run_mmx 返回 dataclass 时
     抛 'cannot unpack non-iterable _Result object'。现在改成 result = await ...,
@@ -1831,7 +1831,7 @@ def test_check_compatibility_warns_on_uni_nickname_low_priority():
 
 
 def test_chat_plus_style_image_reinjection_is_cleaned():
-    """v0.8.4: 模拟 chat_plus 风格的中间插件在主钩子之后重新填图，链末兜底应清掉。
+    """: 模拟 chat_plus 风格的中间插件在主钩子之后重新填图，链末兜底应清掉。
 
     场景: 插件链执行顺序
       1. 我 priority=500 跑（清空 image_urls + 注入图说 content block）
@@ -1870,7 +1870,7 @@ def test_chat_plus_style_image_reinjection_is_cleaned():
 
 
 def test_chat_plus_compat_event_image_components_recovered():
-    """v0.8.5: chat_plus 默认 enable_image_processing=False，导致它调
+    """: chat_plus 默认 enable_image_processing=False，导致它调
     event.request_llm(image_urls=[]) 不传图。LLM 看到 0 图。
 
     本插件不应被这个默认配置劫持——从 event.message_obj.message 里
@@ -1920,8 +1920,8 @@ def test_chat_plus_compat_event_image_components_recovered():
 
 
 def test_v0851_no_duplicate_mmx_call_for_same_image():
-    """v0.8.5.1 修复：Image 组件的 url/file 字段与 convert_to_file_path() 可能指向同张图。
-    之前 v0.8.5 同时取二者，导致同张图被调 2 次 mmx（local 路径成功 + remote URL 超时）。
+    """.1 修复：Image 组件的 url/file 字段与 convert_to_file_path() 可能指向同张图。
+    之前  同时取二者，导致同张图被调 2 次 mmx（local 路径成功 + remote URL 超时）。
     现在只取 convert_to_file_path()，确保不重复。
     """
     import tempfile
@@ -1977,7 +1977,7 @@ def test_v0851_no_duplicate_mmx_call_for_same_image():
 
 
 def test_survives_prompt_overwrite_by_other_plugin():
-    """v0.7 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
+    """ 终极解：图说在 user message 的 content block 里，不依赖 prompt 字符串。
     任何插件重写 prompt 都不会丢失。"""
     p = new_plugin()
     # 1. 主钩子处理 image_urls → 把图说作为 content block 加入
@@ -2085,7 +2085,7 @@ def test_default_vision_prompt_is_conservative():
 
 
 def test_default_image_placeholder_marks_as_vision_model():
-    """v0.7 默认 placeholder 是 [Image N 描述] xxx 格式，提示 LLM 这是“描述”不是“原图”。"""
+    """ 默认 placeholder 是 [Image N 描述] xxx 格式，提示 LLM 这是“描述”不是“原图”。"""
     import json
     schema = json.load(open("/workspace/astrbot_plugin_vision_text_bridge/_conf_schema.json"))
     default = schema["image_placeholder_template"]["default"]
@@ -2100,7 +2100,7 @@ def test_default_image_placeholder_marks_as_vision_model():
 
 
 def test_api_cache_thumbnail_returns_data_url():
-    """v0.8.6: /cache/thumbnail?image_id=... 返回 data URL。"""
+    """: /cache/thumbnail?image_id=... 返回 data URL。"""
     import asyncio as _aio
     import base64
     from pathlib import Path
@@ -2129,7 +2129,7 @@ def test_api_cache_thumbnail_returns_data_url():
             register_web_api=mock_register,
         )
         p._register_web_apis()
-        # v0.8.7.8: 改用路径参数路由，image_id 走 kwarg
+        # .8: 改用路径参数路由，image_id 走 kwarg
         thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"]
 
         result = _aio.run(thumb_fn(image_id="id1"))
@@ -2161,7 +2161,7 @@ def test_api_cache_thumbnail_returns_data_url():
 
 
 def test_api_cache_thumbnail_no_image():
-    """v0.8.6: 缓存中存在但未存 image_b64（如老 v0.8.5 迁移过来）时返 has_image=False。"""
+    """: 缓存中存在但未存 image_b64（如老  迁移过来）时返 has_image=False。"""
     import asyncio as _aio
     import tempfile
     from pathlib import Path
@@ -2181,7 +2181,7 @@ def test_api_cache_thumbnail_no_image():
             register_web_api=mock_register,
         )
         p._register_web_apis()
-        # v0.8.7.8: 改用路径参数路由
+        # .8: 改用路径参数路由
         thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"]
         result = _aio.run(thumb_fn(image_id="id2"))
         assert result.get("ok") is True
@@ -2193,7 +2193,7 @@ def test_api_cache_thumbnail_no_image():
 
 
 def test_thumbnail_endpoint_accepts_get():
-    """v0.8.8: thumbnail 路由纯 GET + 路径参数，image_id 走 kwarg（不再有 POST/query/body 复杂逻辑）。"""
+    """: thumbnail 路由纯 GET + 路径参数，image_id 走 kwarg（不再有 POST/query/body 复杂逻辑）。"""
     import asyncio as _aio
     import tempfile
     import pathlib
@@ -2220,7 +2220,7 @@ def test_thumbnail_endpoint_accepts_get():
             p._register_web_apis()
             thumb_fn = captured[f"/{main.PLUGIN_NAME}/cache/thumbnail/<image_id>"]
 
-            # v0.8.8: 直接 image_id="id_y" 走 kwarg
+            # : 直接 image_id="id_y" 走 kwarg
             r = _aio.run(thumb_fn(image_id="id_y"))
             if isinstance(r, tuple):
                 body, _ = r
@@ -2236,8 +2236,8 @@ def test_thumbnail_endpoint_accepts_get():
 
 
 def test_thumbnail_path_param_endpoint():
-    """v0.8.7.6+: /cache/thumbnail/<image_id>（GET，image_id 走路径参数）。
-    v0.8.7.8 修复：必须用 werkzeug 尖括号语法 <image_id>，不是 FastAPI 花括号 {image_id}。
+    """.6+: /cache/thumbnail/<image_id>（GET，image_id 走路径参数）。
+    .8 修复：必须用 werkzeug 尖括号语法 <image_id>，不是 FastAPI 花括号 {image_id}。
     验证：路由注册后，用 werkzeug Map 实际匹配一次请求路径，证 AstrBot server 能 match 上。"""
     import asyncio as _aio
     import tempfile
@@ -2268,7 +2268,7 @@ def test_thumbnail_path_param_endpoint():
             thumb_fn, methods = captured[route_path]
             assert methods == ["GET"], f"路径参数路由应用 GET 不用 POST，actual={methods}"
 
-            # 验证 1：模拟 AstrBot server 的 werkzeug Map 匹配（这是 v0.8.7.8 之前漏掉的）
+            # 验证 1：模拟 AstrBot server 的 werkzeug Map 匹配（这是 .8 之前漏掉的）
             from werkzeug.routing import Map, Rule
             url_map = Map([Rule(route_path, endpoint="plugin_api", methods=methods)])
             request_path = f"/{main.PLUGIN_NAME}/cache/thumbnail/id_y"
@@ -2297,7 +2297,7 @@ def test_thumbnail_path_param_endpoint():
 
 
 def test_sniff_image_meta():
-    """v0.8.6: _sniff_image_meta 能识别常见图片格式的 mime/宽高。"""
+    """: _sniff_image_meta 能识别常见图片格式的 mime/宽高。"""
     p = new_plugin()
     # 1x1 transparent PNG
     png_bytes = bytes.fromhex(
@@ -2322,8 +2322,8 @@ def test_sniff_image_meta():
 
 
 def test_sibling_modules_loaded():
-    """main.py 启动时应能动态加载同级 caption_cache.py（v0.8.6 起 chat_archive_link.py 已删除）。"""
-    # v0.8.17: CacheStats 改为 _sibling_cache.CacheStats 内部用，main.py 不再 re-export
+    """main.py 启动时应能动态加载同级 caption_cache.py（ 起 chat_archive_link.py 已删除）。"""
+    # : CacheStats 改为 _sibling_cache.CacheStats 内部用，main.py 不再 re-export
     import caption_cache as _cc  # noqa
     assert hasattr(main, "CaptionCache")
     assert hasattr(main, "CaptionEntry")
@@ -2354,12 +2354,12 @@ def test_main_imports_without_sys_path_modification():
             "main_under_test", f"{plugin_dir}/main.py"
         )
         mod = _ilu.module_from_spec(spec)
-        # v0.8.7 修复：Python 3.11 @dataclass 在 exec_module 时会用 sys.modules
+        #  修复：Python 3.11 @dataclass 在 exec_module 时会用 sys.modules
         # 查 module 的 __dict__，但 spec loader 加载的 module 默认不注册。
         # 这里显式注册，模拟 AstrBot 实际加载路径。
         _sys.modules["main_under_test"] = mod
         spec.loader.exec_module(mod)
-        # 验证 _load_sibling_module 工作：main.py 模块中应有这些绑定（v0.8.6 起
+        # 验证 _load_sibling_module 工作：main.py 模块中应有这些绑定（ 起
         # chat_archive_link.py 已删除，不再验证 ChatArchiveLink）
         assert hasattr(mod, "CaptionCache"), "CaptionCache 未绑定"
         assert mod.CaptionCache.__name__ == "CaptionCache"
@@ -2465,7 +2465,7 @@ def run_all():
         test_chat_plus_style_image_reinjection_is_cleaned,
         test_chat_plus_compat_event_image_components_recovered,
         test_v0851_no_duplicate_mmx_call_for_same_image,
-        # v0.8.7 新增
+        #  新增
         test_verbose_granular_toggles,
         test_verbose_total_switch_enables_all,
         test_mmx_result_dataclass,
@@ -2565,11 +2565,11 @@ def run_all():
     sys.exit(0 if failed == 0 else 1)
 
 
-# ------------------------------------------------------------------ v0.8.7 新增
+# ------------------------------------------------------------------  新增
 
 
 def test_verbose_granular_toggles():
-    """v0.8.7: verbose_hook_trace / verbose_mmx_subprocess / verbose_cache_trace / verbose_id_computation 任一为 true 即开。"""
+    """: verbose_hook_trace / verbose_mmx_subprocess / verbose_cache_trace / verbose_id_computation 任一为 true 即开。"""
     p = new_plugin(verbose_hook_trace=True)
     assert p._should_log("hook_trace") is True
     assert p._should_log("mmx_subprocess") is False  # 只开 hook_trace
@@ -2591,7 +2591,7 @@ def test_verbose_granular_toggles():
 
 
 def test_verbose_total_switch_enables_all():
-    """v0.8.7: verbose_logging=true 是总开关，覆盖所有细粒度。"""
+    """: verbose_logging=true 是总开关，覆盖所有细粒度。"""
     p = new_plugin(verbose_logging=True)
     assert p._should_log("hook_trace") is True
     assert p._should_log("mmx_subprocess") is True
@@ -2601,7 +2601,7 @@ def test_verbose_total_switch_enables_all():
 
 
 def test_mmx_result_dataclass():
-    """v0.8.7: MmxResult 拍到模块顶层的 dataclass，不再是 _run_mmx 内部 class。"""
+    """: MmxResult 拍到模块顶层的 dataclass，不再是 _run_mmx 内部 class。"""
     from dataclasses import fields
     f = fields(main.MmxResult)
     names = {x.name for x in f}
@@ -2612,7 +2612,7 @@ def test_mmx_result_dataclass():
 
 
 def test_helper_module_level_functions_exist():
-    """v0.8.7: 多个小 helper 抽到模块顶层，验证它们存在。"""
+    """: 多个小 helper 抽到模块顶层，验证它们存在。"""
     expected = [
         "_is_image_url_part", "_extract_url_from_item",
         "_extract_urls_from_parts", "_extract_urls_from_context_list",
@@ -2626,9 +2626,9 @@ def test_helper_module_level_functions_exist():
 
 
 def test_persist_writes_b64_in_async_context():
-    """v0.8.7.1 修复: _persist 在 async 上下文能正常写 base64。
+    """.1 修复: _persist 在 async 上下文能正常写 base64。
 
-    之前 v0.8.7 同步版本用 asyncio.get_event_loop().run_until_complete，
+    之前  同步版本用 asyncio.get_event_loop().run_until_complete，
     在 async 上下文必抛 RuntimeError，fallback 到同步读 file:// 经常被
     except 静默吞掉 → SQLite 写入了 description 但 base64 为空。
     """
@@ -2647,7 +2647,7 @@ def test_persist_writes_b64_in_async_context():
             p._caption_cache = main.CaptionCache(pathlib.Path(tmp) / "p.sqlite3")
             url = f"file://{real}"
             asyncio.run(p._persist("img_test_aaa", url, "描述X"))
-            # v0.8.6+ list() 默认不返 image_b64（减小 body），验证必须传 include_b64=True
+            #  list() 默认不返 image_b64（减小 body），验证必须传 include_b64=True
             items = p._caption_cache.list(limit=10, include_b64=True)
             assert len(items) == 1
             e = items[0]
@@ -2681,7 +2681,7 @@ def test_persist_handles_read_failure_gracefully():
 
 
 def test_api_diag_returns_db_info():
-    """v0.8.7.1: /cache/diag 诊断端点返 DB 路径 + schema + 最近 3 条。"""
+    """.1: /cache/diag 诊断端点返 DB 路径 + schema + 最近 3 条。"""
     import asyncio as _aio
     import tempfile
     import pathlib
@@ -2730,7 +2730,7 @@ def test_api_diag_returns_db_info():
 
 
 def test_webui_logger_module_exists():
-    """v0.8.7.2: webui logger 模块存在且语法正确。v0.8.20 改为全局脚本，无 export default。"""
+    """.2: webui logger 模块存在且语法正确。 改为全局脚本，无 export default。"""
     import subprocess
     result = subprocess.run(["node", "--check", "pages/cache-manager/logger.js"],
                             capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
@@ -2739,7 +2739,7 @@ def test_webui_logger_module_exists():
                             "pages/cache-manager/logger.js"), encoding="utf-8") as f:
         content = f.read()
     assert "class WebuiLogger" in content
-    assert "window.webuiLogger" in content or "global.webuiLogger" in content, "v0.8.20 logger 须暴露到 window"
+    assert "window.webuiLogger" in content or "global.webuiLogger" in content, " logger 须暴露到 window"
     assert "_log" in content
     for lvl in ["debug", "info", "warn", "error"]:
         assert f"{lvl}(" in content, f"logger.js 未实现 {lvl}()"
@@ -2747,19 +2747,19 @@ def test_webui_logger_module_exists():
 
 
 def test_webui_app_uses_logger():
-    """v0.8.7.2: app.js 全面接入 logger。v0.8.20 改用 window.webuiLogger，不再 import。"""
+    """.2: app.js 全面接入 logger。 改用 window.webuiLogger，不再 import。"""
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "pages/cache-manager/app.js"), encoding="utf-8") as f:
         content = f.read()
-    # v0.8.20: 不再 import，改用 window.webuiLogger
-    assert "import logger from " not in content, "v0.8.20 app.js 不应再 import logger"
-    assert "window.webuiLogger" in content, "v0.8.20 必须用 window.webuiLogger"
+    # : 不再 import，改用 window.webuiLogger
+    assert "import logger from " not in content, " app.js 不应再 import logger"
+    assert "window.webuiLogger" in content, " 必须用 window.webuiLogger"
     for lvl in ["debug", "info", "warn", "error"]:
         assert f"logger.{lvl}(" in content, f"app.js 未调 logger.{lvl}"
     assert "async function apiGet" in content
     assert "async function apiPost" in content
     import re
-    # 找出 import 之后的所有 bridge.apiGet/apiPost 调用（v0.8.20 不再有 import）
+    # 找出 import 之后的所有 bridge.apiGet/apiPost 调用（ 不再有 import）
     parts = content.split("import logger", 1)
     after_import = parts[1] if len(parts) > 1 else content
     # 但包装函数本身（apiGet/apiPost）当然会调 bridge.apiGet/apiPost——排除这两个函数体
@@ -2784,7 +2784,7 @@ def test_webui_app_uses_logger():
 
 
 def test_webui_index_has_debug_panel():
-    """v0.8.7.2: index.html 包含 debug panel 元素。"""
+    """.2: index.html 包含 debug panel 元素。"""
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "pages/cache-manager/index.html"), encoding="utf-8") as f:
         content = f.read()
@@ -2799,7 +2799,7 @@ def test_webui_index_has_debug_panel():
 
 
 def test_describe_one_persists_bare_path_url():
-    """v0.8.7.4 修复: AstrBot 传裸本地路径 (无 file://) 也能写 SQLite。
+    """.4 修复: AstrBot 传裸本地路径 (无 file://) 也能写 SQLite。
 
     之前 _is_cacheable_url 只认 http(s)/file://，裸路径 cacheable=False
     → 跳过 cacheable 块 → _persist 不调 → SQLite total=0。
@@ -2831,7 +2831,7 @@ def test_describe_one_persists_bare_path_url():
 
 
 def test_caption_cache_put_warns_on_empty_fields():
-    """v0.8.7.3 修复: put() 跳过空字段时现在 log warning，不再静默。
+    """.3 修复: put() 跳过空字段时现在 log warning，不再静默。
 
     之前静默 return 隐藏了 "为何 SQLite total=0" 的根因 (image_id 或 description 为空)。
     """
@@ -2867,19 +2867,19 @@ def test_caption_cache_put_warns_on_empty_fields():
 
 
 def test_main_py_slim_under_1300_lines():
-    """v0.8.7+: main.py 瘦身到 1300 行以下（v0.8.6 是 2019 行）。
-    v0.8.7.4 接受裸本地路径 + 文档，阈值放宽到 1300。"""
+    """: main.py 瘦身到 1300 行以下（ 是 2019 行）。
+    .4 接受裸本地路径 + 文档，阈值放宽到 1300。"""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
     with open(path, "r", encoding="utf-8") as f:
         n = sum(1 for _ in f)
-    # v0.8.13 加了 tool_filter（_filter_disabled_tools / _filter_tools_in_event + 链末兜底），阈值放宽到 1700
-    # v0.8.35: 加递归扫嵌套 image 后 1773 行, 阈值放宽到 1800
+    #  加了 tool_filter（_filter_disabled_tools / _filter_tools_in_event + 链末兜底），阈值放宽到 1700
+    # : 加递归扫嵌套 image 后 1773 行, 阈值放宽到 1800
     assert n < 1800, f"main.py 现在 {n} 行，未达到瘦身目标 (<1800)"
     print(f"✓ test_main_py_slim_under_1300_lines (main.py = {n} 行)")
 
 
 def test_register_version_sync():
-    """v0.8.8: @register 装饰器版本号必须跟 metadata.yaml 一致，不能脱节。"""
+    """: @register 装饰器版本号必须跟 metadata.yaml 一致，不能脱节。"""
     import re
     main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
     with open(main_path, "r", encoding="utf-8") as f:
@@ -2901,7 +2901,7 @@ def test_register_version_sync():
 
 
 def test_caption_cache_dead_code_removed():
-    """v0.8.8: caption_cache.py 死代码清理（to_dict_with_b64 / normalize_key）。"""
+    """: caption_cache.py 死代码清理（to_dict_with_b64 / normalize_key）。"""
     from caption_cache import CaptionCache
     cap = CaptionCache.__dict__
     assert "to_dict_with_b64" not in cap, "to_dict_with_b64 是死代码，已删"
@@ -2917,7 +2917,7 @@ def test_caption_cache_dead_code_removed():
 
 
 def test_b64_size_cap_skips_storage():
-    """v0.8.8: 超过 max_b64_size_kb 的图不存 base64（description 仍存）。"""
+    """: 超过 max_b64_size_kb 的图不存 base64（description 仍存）。"""
     import asyncio, tempfile, pathlib
     from PIL import Image
     import io, base64
@@ -2944,7 +2944,7 @@ def test_b64_size_cap_skips_storage():
 
 
 def test_hit_count_5min_dedup():
-    """v0.8.8: 5 分钟内重复 get 不递增 hit_count。"""
+    """: 5 分钟内重复 get 不递增 hit_count。"""
     import tempfile, pathlib, sqlite3
     with tempfile.TemporaryDirectory() as tmp:
         cache = main.CaptionCache(pathlib.Path(tmp) / "h.sqlite3")
@@ -2960,7 +2960,7 @@ def test_hit_count_5min_dedup():
 
 
 def test_webui_no_native_confirm():
-    """v0.8.8: webui 不再用 window.confirm（sandboxed iframe 禁用），改用自建 modal。"""
+    """: webui 不再用 window.confirm（sandboxed iframe 禁用），改用自建 modal。"""
     import re
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js")
     with open(path, "r", encoding="utf-8") as f:
@@ -2978,11 +2978,11 @@ def test_webui_no_native_confirm():
 
 
 # ===========================================================================
-# v0.8.9 vanilla webui 性能优化
+#  vanilla webui 性能优化
 # ===========================================================================
 
 def test_lru_cache_eviction():
-    """v0.8.9: LRUCache.set 越上限删头部，has/get/delete/clear 全部 API 兼容 Map。
+    """: LRUCache.set 越上限删头部，has/get/delete/clear 全部 API 兼容 Map。
     (纯 Python 等价验证逻辑——app.js 里的 JS class 不能在 Python exec 跑）"""
     class LRUCache:
         def __init__(self, limit=100):
@@ -3041,7 +3041,7 @@ def test_lru_cache_eviction():
 
 
 def test_thumb_pool_concurrency_limit():
-    """v0.8.9: ThumbPool 同时最多 N 路任务，越限进入队列。Python 等价验证。"""
+    """: ThumbPool 同时最多 N 路任务，越限进入队列。Python 等价验证。"""
     class ThumbPool:
         def __init__(self, max=6):
             self.max = max
@@ -3092,7 +3092,7 @@ def test_thumb_pool_concurrency_limit():
 
 
 def test_thumb_pool_reject_does_not_break_queue():
-    """v0.8.9: 任务抛异常后 active--,后续任务仍能跑。"""
+    """: 任务抛异常后 active--,后续任务仍能跑。"""
     class ThumbPool:
         def __init__(self, max=6):
             self.max = max
@@ -3141,7 +3141,7 @@ def test_thumb_pool_reject_does_not_break_queue():
 
 
 def test_ensure_thumb_caches_failure():
-    """v0.8.9: 缩略图请求失败/没数据也要 cache（避免无限重试）。"""
+    """: 缩略图请求失败/没数据也要 cache（避免无限重试）。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # 验确保失败路径上 set 了带 __err / __none 的 cache entry
     assert '__err: true' in src, "失败路径必须写 {__err: true} 到 thumbCache"
@@ -3153,7 +3153,7 @@ def test_ensure_thumb_caches_failure():
 
 
 def test_debug_panel_append_only():
-    """v0.8.9: 日志 panel 走 append-only 模式（PANEL_MAX_NODES=200 软上限），不再全量重写。"""
+    """: 日志 panel 走 append-only 模式（PANEL_MAX_NODES=200 软上限），不再全量重写。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     assert "PANEL_MAX_NODES" in src, "app.js 必须有 PANEL_MAX_NODES 上限常量"
     assert "appendPanelNode" in src, "app.js 必须有 appendPanelNode 增量添加函数"
@@ -3167,7 +3167,7 @@ def test_debug_panel_append_only():
 
 
 def test_app_js_class_declarations_ordered():
-    """v0.8.9: app.js 里 LRUCache/ThumbPool 必须在 state 之前声明（否则 TDZ ReferenceError）。"""
+    """: app.js 里 LRUCache/ThumbPool 必须在 state 之前声明（否则 TDZ ReferenceError）。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     lru_pos = src.find("class LRUCache")
     pool_pos = src.find("class ThumbPool")
@@ -3181,7 +3181,7 @@ def test_app_js_class_declarations_ordered():
 
 
 def test_strip_mmx_content_extracts_content_field():
-    """v0.8.10: 从 mmx vision describe 的 JSON 拏出 content 字段。"""
+    """: 从 mmx vision describe 的 JSON 拏出 content 字段。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = True
@@ -3195,7 +3195,7 @@ def test_strip_mmx_content_extracts_content_field():
 
 
 def test_strip_mmx_content_strips_bold():
-    """v0.8.10: **加粗** → 文本（省 token）。"""
+    """: **加粗** → 文本（省 token）。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = True
@@ -3207,7 +3207,7 @@ def test_strip_mmx_content_strips_bold():
 
 
 def test_strip_mmx_content_strips_heading_and_list():
-    """v0.8.10: ### 标题、* 列表 → • 项目符号。"""
+    """: ### 标题、* 列表 → • 项目符号。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = True
@@ -3221,7 +3221,7 @@ def test_strip_mmx_content_strips_heading_and_list():
 
 
 def test_strip_mmx_content_collapses_blank_lines():
-    """v0.8.10: 连续 3+ 空行压成 2。"""
+    """: 连续 3+ 空行压成 2。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = True
@@ -3233,7 +3233,7 @@ def test_strip_mmx_content_collapses_blank_lines():
 
 
 def test_strip_mmx_content_real_world_savings():
-    """v0.8.10: 真实 mmx 响应场景——870 字符 → ~420 字符，省 50%+。"""
+    """: 真实 mmx 响应场景——870 字符 → ~420 字符，省 50%+。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = True
@@ -3253,7 +3253,7 @@ def test_strip_mmx_content_real_world_savings():
 
 
 def test_strip_mmx_content_fallback_on_non_json():
-    """v0.8.10: mmx 偶尔返非 JSON 错误信息，parse 失败时退回原 stdout。"""
+    """: mmx 偶尔返非 JSON 错误信息，parse 失败时退回原 stdout。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = True
@@ -3265,7 +3265,7 @@ def test_strip_mmx_content_fallback_on_non_json():
 
 
 def test_strip_mmx_disabled_returns_raw():
-    """v0.8.10: 关闭 strip_mmx_markdown → 返回原 stdout。"""
+    """: 关闭 strip_mmx_markdown → 返回原 stdout。"""
     p = new_plugin()
     p.config = dict(p.config)
     p.config["strip_mmx_markdown"] = False
@@ -3277,11 +3277,11 @@ def test_strip_mmx_disabled_returns_raw():
 
 
 # ===========================================================================
-# v0.8.11 内存热缓存 TTL + LRU
+#  内存热缓存 TTL + LRU
 # ===========================================================================
 
 def test_memory_cache_basic():
-    """v0.8.11: _MemoryCache 基础 put/get/pop/clear/__len__/__contains__。"""
+    """: _MemoryCache 基础 put/get/pop/clear/__len__/__contains__。"""
     import time
     mc = main._MemoryCache(ttl_seconds=60, max_size=10)
     mc.put("a", "1")
@@ -3300,7 +3300,7 @@ def test_memory_cache_basic():
 
 
 def test_memory_cache_ttl_expiration():
-    """v0.8.11: 超 TTL 的 get 返回 None 并懒删除。"""
+    """: 超 TTL 的 get 返回 None 并懒删除。"""
     import time
     mc = main._MemoryCache(ttl_seconds=1, max_size=10)
     mc.put("a", "1")
@@ -3313,7 +3313,7 @@ def test_memory_cache_ttl_expiration():
 
 
 def test_memory_cache_lru_eviction():
-    """v0.8.11: 超 max_size 淘汰最久未访问项。"""
+    """: 超 max_size 淘汰最久未访问项。"""
     mc = main._MemoryCache(ttl_seconds=60, max_size=3)
     mc.put("a", "1")
     mc.put("b", "2")
@@ -3331,7 +3331,7 @@ def test_memory_cache_lru_eviction():
 
 
 def test_memory_cache_ttl_zero_means_never_expire():
-    """v0.8.11: ttl=0 表示不过期。"""
+    """: ttl=0 表示不过期。"""
     mc = main._MemoryCache(ttl_seconds=0, max_size=10)
     mc.put("a", "1")
     import time
@@ -3341,7 +3341,7 @@ def test_memory_cache_ttl_zero_means_never_expire():
 
 
 def test_memory_cache_dict_syntax_compat():
-    """v0.8.11: __setitem__/__getitem__ 兼容老 cache[k]=v 语法。"""
+    """: __setitem__/__getitem__ 兼容老 cache[k]=v 语法。"""
     mc = main._MemoryCache(ttl_seconds=60, max_size=10)
     mc["a"] = "1"
     assert mc["a"] == "1"
@@ -3355,11 +3355,11 @@ def test_memory_cache_dict_syntax_compat():
 
 
 # ===========================================================================
-# v0.8.11 SQLite clean_expired
+#  SQLite clean_expired
 # ===========================================================================
 
 def test_clean_expired_removes_old_entries():
-    """v0.8.11: clean_expired 删除超期未命中的条目。"""
+    """: clean_expired 删除超期未命中的条目。"""
     import tempfile, pathlib, sqlite3, time
     with tempfile.TemporaryDirectory() as tmp:
         cap = main.CaptionCache(pathlib.Path(tmp) / "exp.sqlite3")
@@ -3377,7 +3377,7 @@ def test_clean_expired_removes_old_entries():
 
 
 def test_clean_expired_keeps_recent_entries():
-    """v0.8.11: clean_expired 不删未过期条目。"""
+    """: clean_expired 不删未过期条目。"""
     import tempfile, pathlib
     with tempfile.TemporaryDirectory() as tmp:
         cap = main.CaptionCache(pathlib.Path(tmp) / "keep.sqlite3")
@@ -3391,7 +3391,7 @@ def test_clean_expired_keeps_recent_entries():
 
 
 def test_clean_expired_uses_last_hit_at_when_present():
-    """v0.8.11: 有 last_hit_at 的条目以 last_hit_at 为准（不是 created_at）。"""
+    """: 有 last_hit_at 的条目以 last_hit_at 为准（不是 created_at）。"""
     import tempfile, pathlib, sqlite3, time
     with tempfile.TemporaryDirectory() as tmp:
         cap = main.CaptionCache(pathlib.Path(tmp) / "hit.sqlite3")
@@ -3415,7 +3415,7 @@ def test_clean_expired_uses_last_hit_at_when_present():
 
 
 def test_clean_expired_zero_days_is_noop():
-    """v0.8.11: max_age_days<=0 跳过清理。"""
+    """: max_age_days<=0 跳过清理。"""
     import tempfile, pathlib, sqlite3, time
     with tempfile.TemporaryDirectory() as tmp:
         cap = main.CaptionCache(pathlib.Path(tmp) / "zero.sqlite3")
@@ -3430,11 +3430,11 @@ def test_clean_expired_zero_days_is_noop():
 
 
 # ===========================================================================
-# v0.8.11 webui DB badge + clean_expired 路由
+#  webui DB badge + clean_expired 路由
 # ===========================================================================
 
 def test_webui_db_badge_text_in_app_js():
-    """v0.8.11: app.js loadStats() 必须更新 db-path-badge textContent。"""
+    """: app.js loadStats() 必须更新 db-path-badge textContent。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     assert "db-path-badge" in src, "app.js 必须引用 db-path-badge"
     # 验证赋值逻辑
@@ -3443,7 +3443,7 @@ def test_webui_db_badge_text_in_app_js():
 
 
 def test_clean_expired_endpoint_registered():
-    """v0.8.11: /cache/clean_expired 路由必须注册。"""
+    """: /cache/clean_expired 路由必须注册。"""
     import asyncio, tempfile, pathlib
     p = new_plugin()
     # 保持 DB 在 cleanup 前可用——在 TemporaryDirectory 里走 cache 实例
@@ -3489,7 +3489,7 @@ def test_clean_expired_endpoint_registered():
 
 
 def test_clean_expired_endpoint_disabled_when_ttl_zero():
-    """v0.8.11: sqlite_cache_ttl_days=0 时 /cache/clean_expired 返 400。"""
+    """: sqlite_cache_ttl_days=0 时 /cache/clean_expired 返 400。"""
     import tempfile, pathlib, shutil
     p = new_plugin()
     p.config = dict(p.config)
@@ -3527,11 +3527,11 @@ def test_clean_expired_endpoint_disabled_when_ttl_zero():
 
 
 # ===========================================================================
-# v0.8.12 统计 + 状态栏 + 按天柱状图
+#  统计 + 状态栏 + 按天柱状图
 # ===========================================================================
 
 def test_daily_buckets_basic():
-    """v0.8.12: daily_buckets 返回 30 天×每天条数。"""
+    """: daily_buckets 返回 30 天×每天条数。"""
     import tempfile, pathlib
     with tempfile.TemporaryDirectory() as tmp:
         cap = main.CaptionCache(pathlib.Path(tmp) / "b.sqlite3")
@@ -3549,7 +3549,7 @@ def test_daily_buckets_basic():
 
 
 def test_daily_buckets_old_entries():
-    """v0.8.12: 创建于 60 天前的条目不进 30 天窗口。"""
+    """: 创建于 60 天前的条目不进 30 天窗口。"""
     import tempfile, pathlib, sqlite3, time
     with tempfile.TemporaryDirectory() as tmp:
         cap = main.CaptionCache(pathlib.Path(tmp) / "old.sqlite3")
@@ -3565,7 +3565,7 @@ def test_daily_buckets_old_entries():
 
 
 def test_api_stats_returns_status_fields():
-    """v0.8.12: api_stats 返回状态栏需要的所有字段。"""
+    """: api_stats 返回状态栏需要的所有字段。"""
     import asyncio, tempfile, pathlib, shutil
     p = new_plugin()
     tmpdir = tempfile.mkdtemp()
@@ -3598,7 +3598,7 @@ def test_api_stats_returns_status_fields():
 
 
 def test_api_stats_timeline_endpoint():
-    """v0.8.12: /cache/stats/timeline 返回 30 天桶。"""
+    """: /cache/stats/timeline 返回 30 天桶。"""
     import asyncio
     import tempfile, pathlib
     tmpdir = tempfile.mkdtemp()
@@ -3635,7 +3635,7 @@ def test_api_stats_timeline_endpoint():
 
 
 def test_webui_status_bar_and_timeline_in_html():
-    """v0.8.12: index.html 必须有 status-bar / timeline-svg / auto-refresh-toggle 元素。"""
+    """: index.html 必须有 status-bar / timeline-svg / auto-refresh-toggle 元素。"""
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     for sel in ("status-bar", "status-mem-ttl", "status-mem-max", "status-sql-ttl",
                 "status-next-clean", "timeline-svg", "auto-refresh-toggle"):
@@ -3644,7 +3644,7 @@ def test_webui_status_bar_and_timeline_in_html():
 
 
 def test_webui_auto_refresh_and_timeline_in_app_js():
-    """v0.8.12: app.js 必须实现 auto-refresh toggle + loadTimeline + drawTimeline。"""
+    """: app.js 必须实现 auto-refresh toggle + loadTimeline + drawTimeline。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     for fn in ("setAutoRefresh", "loadTimeline", "drawTimeline", "renderStatusBar"):
         assert fn in src, f"app.js 缺函数 {fn}"
@@ -3654,7 +3654,7 @@ def test_webui_auto_refresh_and_timeline_in_app_js():
 
 
 def test_last_clean_at_recorded():
-    """v0.8.12: clean_expired 后 _last_clean_at 会被记录（供 webui 算下次清理）。"""
+    """: clean_expired 后 _last_clean_at 会被记录（供 webui 算下次清理）。"""
     import asyncio, tempfile, pathlib, shutil, time
     p = new_plugin()
     p.config = dict(p.config)
@@ -3679,11 +3679,11 @@ def test_last_clean_at_recorded():
 
 
 # ===========================================================================
-# v0.8.13 工具过滤器——干扰 chat_plus 注入
+#  工具过滤器——干扰 chat_plus 注入
 # ===========================================================================
 
 def test_tool_filter_off_returns_zero():
-    """v0.8.13: tool_filter_mode=off 不动工具集。"""
+    """: tool_filter_mode=off 不动工具集。"""
     class FakeTool:
         def __init__(self, name): self.name = name
     class FakeContainer:
@@ -3695,7 +3695,7 @@ def test_tool_filter_off_returns_zero():
 
 
 def test_tool_filter_blacklist_removes_named():
-    """v0.8.13: blacklist 模式删 names 里匹配的工具（含 * 通配符）。"""
+    """: blacklist 模式删 names 里匹配的工具（含 * 通配符）。"""
     class FakeTool:
         def __init__(self, name): self.name = name
     class FakeContainer:
@@ -3713,7 +3713,7 @@ def test_tool_filter_blacklist_removes_named():
 
 
 def test_tool_filter_whitelist_keeps_named_only():
-    """v0.8.13: whitelist 模式只保留 names 里匹配的工具。"""
+    """: whitelist 模式只保留 names 里匹配的工具。"""
     class FakeTool:
         def __init__(self, name): self.name = name
     class FakeContainer:
@@ -3731,7 +3731,7 @@ def test_tool_filter_whitelist_keeps_named_only():
 
 
 def test_tool_filter_with_remove_func_method():
-    """v0.8.13: 兼容 FunctionToolManager 风格的 remove_func(name) 接口。"""
+    """: 兼容 FunctionToolManager 风格的 remove_func(name) 接口。"""
     class FakeTool:
         def __init__(self, name): self.name = name
     class FakeContainer:
@@ -3751,7 +3751,7 @@ def test_tool_filter_with_remove_func_method():
 
 
 def test_tool_filter_with_func_list():
-    """v0.8.13: 兼容 .func_list 字段。"""
+    """: 兼容 .func_list 字段。"""
     class FakeTool:
         def __init__(self, name): self.name = name
     class FakeContainer:
@@ -3763,7 +3763,7 @@ def test_tool_filter_with_func_list():
 
 
 def test_tool_filter_handles_none_container():
-    """v0.8.13: 传 None / 空 names 不崩。"""
+    """: 传 None / 空 names 不崩。"""
     assert main._filter_disabled_tools(None, "blacklist", ["a"]) == 0
     class C: pass
     c = C()  # 没 .tools / .func_list / .remove_func
@@ -3772,7 +3772,7 @@ def test_tool_filter_handles_none_container():
 
 
 def test_tool_filter_in_event_via_extra_key():
-    """v0.8.13: 主钩子入口能从 event.get_extra(extra_key) 拿 tool set 并清。"""
+    """: 主钩子入口能从 event.get_extra(extra_key) 拿 tool set 并清。"""
     class FakeTool:
         def __init__(self, name): self.name = name
     class FakeContainer:
@@ -3794,7 +3794,7 @@ def test_tool_filter_in_event_via_extra_key():
 
 
 def test_strip_residual_base64_clears_func_tool():
-    """v0.8.13: 链末兜底钩子删 req.func_tool 里在 names 列表的工具。"""
+    """: 链末兜底钩子删 req.func_tool 里在 names 列表的工具。"""
     import asyncio
     from types import SimpleNamespace
 
@@ -3825,11 +3825,11 @@ def test_strip_residual_base64_clears_func_tool():
 
 
 # ===========================================================================
-# v0.8.14 webui bridge 防御性 fallback
+#  webui bridge 防御性 fallback
 # ===========================================================================
 
 def test_webui_no_direct_bridge_await_in_app_js():
-    """v0.8.18: app.js 顶层不应有 ``const bridge = window.AstrBotPluginPage;`` 裸读——必须走 fallbackBridge stub。"""
+    """: app.js 顶层不应有 ``const bridge = window.AstrBotPluginPage;`` 裸读——必须走 fallbackBridge stub。"""
     import re
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     bad = re.search(r"^const bridge = window\.AstrBotPluginPage;?\s*$", src, re.MULTILINE)
@@ -3841,62 +3841,62 @@ def test_webui_no_direct_bridge_await_in_app_js():
 
 
 def test_index_html_no_bridge_sdk_loading():
-    """v0.8.18: index.html 不再主动 inject bridge-sdk.js——AstrBot 服务端 CORS wildcard
+    """: index.html 不再主动 inject bridge-sdk.js——AstrBot 服务端 CORS wildcard
     + origin=null + credentials mode=include 三者撞。改走 fallbackFetch 直打 backend。
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     import re
     code_only = re.sub(r"<!--[\s\S]*?-->", "", h)  # 去掉注释
     # 不应该再 inject bridge-sdk.js（允许在注释里解释为什么）
-    assert "/api/plugin/page/bridge-sdk.js" not in code_only, "v0.8.18 不应再主动加载 bridge-sdk.js"
+    assert "/api/plugin/page/bridge-sdk.js" not in code_only, " 不应再主动加载 bridge-sdk.js"
     print("✓ test_index_html_no_bridge_sdk_loading")
 
 
 def test_app_js_uses_fallback_bridge_stub():
-    """v0.8.18 + v0.8.29: app.js 应该用 fallback bridge stub。
-    v0.8.29 apiGet 永远走 fallbackFetch (bridge.apiGet 调 delete 丢 key 报 400)。
+    """ + : app.js 应该用 fallback bridge stub。
+     apiGet 永远走 fallbackFetch (bridge.apiGet 调 delete 丢 key 报 400)。
     bridge stub 仍然保留 (兼容旧代码, 将来如果 AstrBot 修复中间层可以打开)。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     assert "_fallbackBridge" in src, "app.js 必须定义 _fallbackBridge stub"
     assert "const bridge = window.AstrBotPluginPage || _fallbackBridge" in src, "bridge 必须是 fallback"
-    # v0.8.29: apiGet 仍保留 bridge stub 调用位 (走 fallbackFetch)
+    # : apiGet 仍保留 bridge stub 调用位 (走 fallbackFetch)
     # bridge mode badge 让用户能视觉上看出 webui 加载状态
     assert "bridge-mode-badge" in src, "app.js 必须更新 bridge-mode-badge 状态"
     print("✓ test_app_js_uses_fallback_bridge_stub")
 
 
 def test_index_html_has_bridge_mode_badge():
-    """v0.8.19: index.html 顶部必须添加 #bridge-mode-badge 元素。"""
+    """: index.html 顶部必须添加 #bridge-mode-badge 元素。"""
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     assert "bridge-mode-badge" in h, "index.html 必须有 #bridge-mode-badge 元素"
     print("✓ test_index_html_has_bridge_mode_badge")
 
 
 def test_v0820_drops_esm_module():
-    """v0.8.20: app.js / logger.js / index.html 不再使用 ESM type=module。
+    """: app.js / logger.js / index.html 不再使用 ESM type=module。
     部分 AstrBot 版本对 <script type=module> 处理不一致，导致 app.js 顶层代码不跑。
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     # 1. 不能再用 type=module
-    assert "type=\"module\"" not in h, "v0.8.20 index.html 不应再使用 type=module"
+    assert "type=\"module\"" not in h, " index.html 不应再使用 type=module"
     # 2. logger.js / app.js 都用普通 <script>
     assert '<script src="./logger.js' in h, "logger.js 必须用普通 <script> 加载"
     assert '<script src="./app.js' in h, "app.js 必须用普通 <script> 加载"
     # 3. logger.js 不再 export default
     lj = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/logger.js"), encoding="utf-8").read()
-    assert "export default" not in lj, "v0.8.20 logger.js 不再 export default"
+    assert "export default" not in lj, " logger.js 不再 export default"
     # 4. app.js 不再 import logger
     aj = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    assert "import logger from " not in aj, "v0.8.20 app.js 不再 import logger"
+    assert "import logger from " not in aj, " app.js 不再 import logger"
     # 5. app.js 必须包裹为 IIFE 解决 top-level await
-    assert "(async function main() {" in aj, "v0.8.20 app.js 必须包裹为 IIFE"
+    assert "(async function main() {" in aj, " app.js 必须包裹为 IIFE"
     # 6. 必须在末尾 catch 启动崩溃，全屏显示错
-    assert "})().catch(" in aj, "v0.8.20 app.js 必须在 IIFE 末尾 catch 启动错误"
+    assert "})().catch(" in aj, " app.js 必须在 IIFE 末尾 catch 启动错误"
     print("✓ test_v0820_drops_esm_module")
 
 
 def test_v0822_endpoints_have_leading_slash():
-    """v0.8.22: app.js 调 apiGet/apiPost 时 endpoint 必须以 '/' 开头，
+    """: app.js 调 apiGet/apiPost 时 endpoint 必须以 '/' 开头，
     避免和 PLUGIN_PATH 直接拼接产生 '/api/plug/<plugin>cache/stats' (错)
     """
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
@@ -3914,12 +3914,12 @@ def test_v0822_endpoints_have_leading_slash():
 
 
 def test_v0823_webui_version_badge():
-    """v0.8.23: webui 启动时读 script src 的 ?v=X.Y.Z 写入 db-path-badge，
+    """: webui 启动时读 script src 的 ?v=X.Y.Z 写入 db-path-badge，
     让用户一眼看出 AstrBot 实际加载了什么版本（避免 AstrBot cache 误示）
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
-    # index.html 顶部必须含 app.js? v=0.8.37 (v0.8.37 backend 改用 quart request)
+    # index.html 顶部必须含 app.js? v=0.8.37 ( backend 改用 quart request)
     assert 'app.js?v=0.8.37' in h, "index.html app.js 必须用 v=0.8.37"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
@@ -3929,7 +3929,7 @@ def test_v0823_webui_version_badge():
 
 
 def test_v0824_bridge_sdk_reload():
-    """v0.8.24: 重新启用 AstrBot bridge SDK——
+    """: 重新启用 AstrBot bridge SDK——
     走 postMessage 跟同源 parent 通信, 绕开 sandbox iframe origin=null 问题。
     crossOrigin='anonymous' (不是 'use-credentials') 才能让 server ACAO: * 被接受.
     """
@@ -3946,7 +3946,7 @@ def test_v0824_bridge_sdk_reload():
 
 
 def test_v0825_filter_bot_avatar_in_hook():
-    """v0.8.25: 在 on_llm_request hook 入口过滤 AstrBot 框架注入的 bot 头像
+    """: 在 on_llm_request hook 入口过滤 AstrBot 框架注入的 bot 头像
     (q.qlogo.cn/headimg_dl?dst_uin=... 模式), 视觉理解 bot 头像没意义。
     """
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
@@ -3954,15 +3954,15 @@ def test_v0825_filter_bot_avatar_in_hook():
     assert "q.qlogo.cn/headimg_dl" in src, "main.py 必须过滤 q.qlogo.cn bot avatar"
     assert "_bot_avatar_pat" in src, "main.py 必须有 _bot_avatar_pat 正则"
     # 2. 必须过滤后 log 一下跳过了多少
-    assert "v0.8.25 过滤 bot 头像" in src, "main.py 必须 log 过滤结果"
+    assert "过滤 bot 头像" in src, "main.py 必须 log 过滤结果"
     # 3. 加 saved_urls 诊断 log——后续调试用
     assert "hook 入口 saved_urls" in src, "main.py 必须加 hook 入口诊断 log"
     print("✓ test_v0825_filter_bot_avatar_in_hook")
 
 
 def test_v0826_post_skips_bridge_and_thumb_sessionstorage():
-    """v0.8.26:
-    1. apiPost 跳过 bridge.apiPost (v0.8.24 发现 bridge 把 body 转 query 导致 400)
+    """:
+    1. apiPost 跳过 bridge.apiPost ( 发现 bridge 把 body 转 query 导致 400)
     2. ensureThumb 加 sessionStorage 跨刷新缓存
     """
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
@@ -3979,7 +3979,7 @@ def test_v0826_post_skips_bridge_and_thumb_sessionstorage():
 
 
 def test_v0827_writes_use_get_to_avoid_cors_preflight():
-    """v0.8.27: sandbox iframe 里 POST + Content-Type: application/json 触发 CORS preflight
+    """: sandbox iframe 里 POST + Content-Type: application/json 触发 CORS preflight
     (server 不发 ACAO → 拒)。把 write 操作改用 GET + query string
     (GET 是 simple request, 不发 preflight, 可过)。
     """
@@ -3990,8 +3990,8 @@ def test_v0827_writes_use_get_to_avoid_cors_preflight():
     m_d = re.search(r"async function onDelete\(id\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m_d, "app.js 必须有 onDelete 函数"
     assert "apiPost(\"/cache/delete\"" not in m_d.group(1), "onDelete 不应再用 apiPost"
-    # v0.8.30: 写操作调 apiWrite (fallbackFetch GET, 不 preflight)
-    assert "apiWrite(\"/cache/delete\"" in m_d.group(1), "onDelete 应改用 apiWrite (v0.8.30)"
+    # : 写操作调 apiWrite (fallbackFetch GET, 不 preflight)
+    assert "apiWrite(\"/cache/delete\"" in m_d.group(1), "onDelete 应改用 apiWrite ()"
     # 2. onRegenerate 必须用 apiGet
     m_r = re.search(r"async function onRegenerate\(id\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m_r and "apiWrite(\"cache/regenerate\"" in m_r.group(1), "onRegenerate 应改用 apiWrite"
@@ -4001,23 +4001,25 @@ def test_v0827_writes_use_get_to_avoid_cors_preflight():
     # 4. onCleanExpired 必须用 apiGet
     m_x = re.search(r"async function onCleanExpired\(\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m_x and "apiWrite(\"cache/clean_expired\"" in m_x.group(1), "onCleanExpired 应改用 apiWrite"
-    # 5. backend 路由必须同时支持 GET (避免 CORS preflight)
-    assert '("/cache/delete", api_delete, ["GET", "POST"]' in m, "/cache/delete 必须支持 GET"
-    assert '("/cache/regenerate", api_regenerate, ["GET", "POST"]' in m, "/cache/regenerate 必须支持 GET"
-    assert '("/cache/clear", api_clear, ["GET", "POST"]' in m, "/cache/clear 必须支持 GET"
-    assert '("/cache/clean_expired", api_clean_expired, ["GET", "POST"]' in m, "/cache/clean_expired 必须支持 GET"
+    # 5. backend 路由必须同时支持 GET (避免 CORS preflight) — : web_api.py 路由表
+    m_webapi = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_api.py"), encoding="utf-8").read()
+    assert '"/cache/delete"' in m_webapi and '"POST"' in m_webapi, "/cache/delete 必须支持 GET + POST"
+    assert '"/cache/regenerate"' in m_webapi, "/cache/regenerate 必须支持 GET + POST"
+    assert '"/cache/clear"' in m_webapi, "/cache/clear 必须支持 GET + POST"
+    assert '"/cache/clean_expired"' in m_webapi, "/cache/clean_expired 必须支持 GET + POST"
     # 6. backend api_delete / api_regenerate 必须从 query 读 key (兼容 GET)
-    # v0.8.37: backend 改用 quart_request (angel_memory 同款), 不再 self.context.request.query
-    assert "quart_request.args" in m, "v0.8.37 backend 应读 quart_request.args (替代 self.context.request.query)"
+    # : backend 改用 quart_request (angel_memory 同款), 不再 self.context.request.query
+    # : quart 在 web_api.py
+    assert "quart_request.args" in m_webapi, " backend 应读 quart_request.args (替代 self.context.request.query)"
     print("✓ test_v0827_writes_use_get_to_avoid_cors_preflight")
 
 
 def test_v0830_read_uses_bridge_write_uses_fallback():
-    """v0.8.30: 分派架构。
-    读 (apiGet) 走 bridge.apiGet (v0.8.24 验证过 OK, postMessage 绕 sandbox origin=null)。
+    """: 分派架构。
+    读 (apiGet) 走 bridge.apiGet ( 验证过 OK, postMessage 绕 sandbox origin=null)。
     写 (apiWrite = onDelete/onRegenerate/onClear/onCleanExpired) 走 fallbackFetch
     GET (sandbox iframe simple request, 不发 Content-Type, 不 preflight, 可过 CORS)。
-    bridge.apiGet 调 delete 会丢 key (v0.8.28 实测)——所以写不能走 bridge。
+    bridge.apiGet 调 delete 会丢 key ( 实测)——所以写不能走 bridge。
     fallbackFetch 不设 'Content-Type: application/json'——这个 header 不在 simple
     request 列表, 即使 GET 也会 preflight。
     """
@@ -4035,7 +4037,7 @@ def test_v0830_read_uses_bridge_write_uses_fallback():
     get_body = a[idx:next_fn]
     code_lines = [l for l in get_body.splitlines() if not l.strip().startswith("//")]
     code_body = "\n".join(code_lines)
-    assert "await bridge.apiGet" in code_body, "apiGet 应走 bridge.apiGet (v0.8.30 读路径)"
+    assert "await bridge.apiGet" in code_body, "apiGet 应走 bridge.apiGet ( 读路径)"
     # 2. apiWrite 函数存在
     assert "function apiWrite(" in a, "app.js 必须有 apiWrite 函数"
     # 3. onDelete/onRegenerate/onClear/onCleanExpired 调 apiWrite 不是 apiGet
@@ -4052,7 +4054,7 @@ def test_v0830_read_uses_bridge_write_uses_fallback():
     if m_x:
         assert "apiWrite(\"cache/clean_expired\"" in m_x.group(1), "onCleanExpired 应改用 apiWrite"
     # 4. fallbackFetch 不能再有 Content-Type: application/json
-    #    (POST 老路径兑底改 text/plain, GET 路径不要 headers)
+    # (POST 老路径兑底改 text/plain, GET 路径不要 headers)
     m_f = re.search(r"async function fallbackFetch\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m_f, "app.js 必须有 fallbackFetch 函数"
     f_code = "\n".join(l for l in m_f.group(1).splitlines() if not l.strip().startswith("//"))
@@ -4061,7 +4063,7 @@ def test_v0830_read_uses_bridge_write_uses_fallback():
 
 
 def test_v0821_app_js_loaded_after_body():
-    """v0.8.21: <script src='./app.js'> 必须在 </body> 之前加载，
+    """: <script src='./app.js'> 必须在 </body> 之前加载，
     避免在 <head> 里提前执行（DOM 还没 parse 完）时调 $('xxx') 返回 null。
     """
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
@@ -4084,11 +4086,11 @@ def test_v0821_app_js_loaded_after_body():
 
 
 # ===========================================================================
-# v0.8.17 代码瘦身 helper
+#  代码瘦身 helper
 # ===========================================================================
 
 def test_cfg_int_helper_exists():
-    """v0.8.17: main._cfg_int 抽出来统一 int config 读取。"""
+    """: main._cfg_int 抽出来统一 int config 读取。"""
     p = new_plugin()
     p.config = {"foo": "42", "bar": 0, "baz": None, "qux": "abc", "missing": None}
     assert main._cfg_int(p.config, "foo", 0) == 42
@@ -4100,7 +4102,7 @@ def test_cfg_int_helper_exists():
 
 
 def test_cfg_str_helper_exists():
-    """v0.8.17: main._cfg_str 抽出来统一 str config 读取。"""
+    """: main._cfg_str 抽出来统一 str config 读取。"""
     p = new_plugin()
     p.config = {"foo": "bar", "baz": None, "num": 42}
     assert main._cfg_str(p.config, "foo", "x") == "bar"
@@ -4110,7 +4112,7 @@ def test_cfg_str_helper_exists():
 
 
 def test_app_js_no_dead_fmtDim():
-    """v0.8.17: app.js 死代码清理——fmtDim 未被引用，删。"""
+    """: app.js 死代码清理——fmtDim 未被引用，删。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # 允许出现在注释 / 字面量字符串里，但不允许是函数定义
     import re
@@ -4120,7 +4122,7 @@ def test_app_js_no_dead_fmtDim():
 
 
 def test_caption_cache_datetime_top_level():
-    """v0.8.17: caption_cache.datetime 提到模块顶部，不再方法内 import。"""
+    """: caption_cache.datetime 提到模块顶部，不再方法内 import。"""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "caption_cache.py"), encoding="utf-8").read()
     assert "import datetime\n" in src or "import datetime as" in src, "caption_cache 顶部必须 import datetime"
     # 验证方法内没有再 import datetime as _dt
@@ -4134,12 +4136,12 @@ def test_caption_cache_datetime_top_level():
 
 
 def test_v0831_write_uses_bridge_with_manual_query():
-    """v0.8.31: 写操作 (apiWrite) 也走 bridge, 但 endpoint 手动拼 query string。
+    """: 写操作 (apiWrite) 也走 bridge, 但 endpoint 手动拼 query string。
 
     背景: sandbox iframe origin=null, 直 fetch 永远 CORS 拒 (服务端不发 ACAO)。
-    v0.8.30 走 fallbackFetch GET simple request 仍被拒。
+     走 fallbackFetch GET simple request 仍被拒。
     唯一通道是 bridge.postMessage (同源 parent dashboard)。
-    v0.8.28 实测 bridge.apiGet 传 params 转 query 会丢 key 报 400。
+     实测 bridge.apiGet 传 params 转 query 会丢 key 报 400。
     手动把 query 拼到 endpoint, 不依赖 bridge 转换。
     """
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
@@ -4147,10 +4149,10 @@ def test_v0831_write_uses_bridge_with_manual_query():
     m = re.search(r"function apiWrite\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m, "app.js 必须有 apiWrite 函数"
     body = m.group(1)
-    # v0.8.34: 改回两参数 bridge.apiGet(endpoint, params)
-    # v0.8.33 手动拼 query 报 'Plugin bridge endpoint is invalid' (bridge 拒绝带 ? 的 endpoint)
+    # : 改回两参数 bridge.apiGet(endpoint, params)
+    #  手动拼 query 报 'Plugin bridge endpoint is invalid' (bridge 拒绝带 ? 的 endpoint)
     assert "bridge.apiGet(endpoint, params" in body or "bridge.apiGet(endpoint,params" in body, \
-        "apiWrite 应调 bridge.apiGet(endpoint, params) 两参数 (v0.8.34 修 v0.8.33 'invalid endpoint')"
+        "apiWrite 应调 bridge.apiGet(endpoint, params) 两参数 (修 'invalid endpoint')"
     assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon"
     # bridge.apiGet 应在 fallbackFetch 之前 (主优先)
     bridge_pos = body.find("bridge.apiGet")
@@ -4161,26 +4163,26 @@ def test_v0831_write_uses_bridge_with_manual_query():
 
 
 def test_v0832_apiwrite_uses_sendbeacon():
-    """v0.8.32→v0.8.33: sendBeacon 401 (不带 cookie), 改回 bridge.apiGet。
+    """→: sendBeacon 401 (不带 cookie), 改回 bridge.apiGet。
 
     背景: sendBeacon fire-and-forget 跨 origin=null 不带 cookie,
-    backend auth 401 拒。v0.8.28 bridge.apiGet 报 400 不是 401 (auth 已过),
+    backend auth 401 拒。 bridge.apiGet 报 400 不是 401 (auth 已过),
     说明 bridge 调 dashboard 调 backend 是带 cookie 的。
-    v0.8.33 改回 bridge.apiGet + 手动拼 query, 跨同源 parent 调 backend 带 cookie。
+     改回 bridge.apiGet + 手动拼 query, 跨同源 parent 调 backend 带 cookie。
     """
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     import re
     m = re.search(r"function apiWrite\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m, "app.js 必须有 apiWrite 函数"
     body = m.group(1)
-    # v0.8.33: 改回 bridge.apiGet + 手动拼 query
-    assert "bridge.apiGet" in body, "apiWrite 应调 bridge.apiGet (v0.8.33 走 bridge 带 cookie)"
-    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon (v0.8.32 401)"
+    # : 改回 bridge.apiGet + 手动拼 query
+    assert "bridge.apiGet" in body, "apiWrite 应调 bridge.apiGet ( 走 bridge 带 cookie)"
+    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon ( 401)"
     print("✓ test_v0832_apiwrite_uses_sendbeacon")
 
 
 def test_v0835_recursive_image_scan_in_quote():
-    """v0.8.35: 引用消息里的 image component 在嵌套 comp 内, v0.8.5 只扫顶层
+    """: 引用消息里的 image component 在嵌套 comp 内,  只扫顶层
     会遗漏. 递归扫 reply/reference/forward/json/node 等嵌套结构.
 
     背景: user log 显示
@@ -4201,9 +4203,9 @@ def test_v0835_recursive_image_scan_in_quote():
 
 
 def test_v0836_apiwrite_uses_bridge_apipost():
-    """v0.8.36: apiWrite 改用 bridge.apiPost(endpoint, body) (angel_memory 同款).
+    """: apiWrite 改用 bridge.apiPost(endpoint, body) (angel_memory 同款).
 
-    背景: v0.8.27 改 GET + query 是错的——bridge 拒绝 GET endpoint 带 ?
+    背景:  改 GET + query 是错的——bridge 拒绝 GET endpoint 带 ?
     (报 'Plugin bridge endpoint is invalid'). 参考 astrbot_plugin_angel_memory
     useBridge.ts: 用 bridge.apiPost, body 走 postMessage 不限 CORS, dashboard
     同源 fetch backend 带 cookie auth.
@@ -4213,32 +4215,33 @@ def test_v0836_apiwrite_uses_bridge_apipost():
     m = re.search(r"async function apiWrite\([^)]*\)\s*\{(.*?)\n\}", a, re.DOTALL)
     assert m, "app.js 必须有 apiWrite 函数"
     body = m.group(1)
-    # v0.8.36: 主路径应调 bridge.apiPost
-    assert "bridge.apiPost" in body, "apiWrite 应调 bridge.apiPost (v0.8.36, angel_memory 同款)"
-    # 不应再用 sendBeacon (v0.8.32 401) 或 GET + query (v0.8.34 'invalid endpoint')
-    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon (v0.8.32 401)"
-    # backend route 仍接受 GET + POST
-    m_main = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
-    assert '"/cache/delete", api_delete, ["GET", "POST"]' in m_main, \
+    # : 主路径应调 bridge.apiPost
+    assert "bridge.apiPost" in body, "apiWrite 应调 bridge.apiPost (, angel_memory 同款)"
+    # 不应再用 sendBeacon ( 401) 或 GET + query ( 'invalid endpoint')
+    assert "navigator.sendBeacon" not in body, "apiWrite 不应再用 sendBeacon ( 401)"
+    # backend route 仍接受 GET + POST — : 路由表在 web_api.py
+    m_webapi = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_api.py"), encoding="utf-8").read()
+    assert '"/cache/delete"' in m_webapi and '"POST"' in m_webapi, \
         "/cache/delete 应仍支持 GET + POST (兼容老路径)"
     print("✓ test_v0836_apiwrite_uses_bridge_apipost")
 
 
 def test_v0837_backend_uses_quart_request():
-    """v0.8.37: backend 改用 quart 全局 request (angel_memory 同款).
+    """: backend 改用 quart 全局 request (angel_memory 同款).
 
-    背景: v0.7 commit 用了 self.context.request——v0.8.7.10 commit 记 Context
+    背景:  commit 用了 self.context.request——.10 commit 记 Context
     没此属性, 之前 try/except 静默 fallback——key 永远是空, delete 永远 400。
     quart 是 AstrBot framework 用的 web framework——register_web_api
     注入的 handler 闭包里 'from quart import request' 是真 API。
     """
-    m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
+    # : quart import 在 web_api.py (api handler 移出 main.py 闭包)
+    m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_api.py"), encoding="utf-8").read()
     # 应有 from quart import ... 包含 request
-    assert "from quart import" in m, "main.py 应 from quart import (v0.8.37 改用 quart request)"
-    assert "quart_request" in m, "main.py 应使用 quart_request (改名前缀防覆盖)"
+    assert "from quart import" in m, "web_api.py 应 from quart import ( 改用 quart request)"
+    assert "quart_request" in m, "web_api.py 应使用 quart_request (改名前缀防覆盖)"
     # 关键: 读 key 应走 quart_request.get_json() 而非 self.context.request.json
-    assert "quart_request.get_json" in m, "_read_key_from_request 应调 quart_request.get_json() (angel_memory 同款)"
-    assert "quart_request.args" in m, "_args 应调 quart_request.args"
+    assert "quart_request.get_json" in m, "read_key_from_request 应调 quart_request.get_json() (angel_memory 同款)"
+    assert "quart_request.args" in m, "read_args 应调 quart_request.args"
     print("✓ test_v0837_backend_uses_quart_request")
 
 
