@@ -1,4 +1,4 @@
-/* Vision Text Bridge · Webui
+/* 图片转文字 · Mavis 图像理解 · Webui
  *
  * 设计参考：astrbot_plugin_chat_archive 的 glassmorphism 风格
  *   - Inter 字体 + 玻璃卡片
@@ -334,7 +334,7 @@ main {
 }
 
 #order-by {
-    background: rgba(15, 23, 42, 0.5);
+    background: var(--glass-bg-strong);
     border: 1px solid var(--glass-border);
     color: var(--text-main);
     padding: 8px 12px;
@@ -342,11 +342,18 @@ main {
     font-size: 0.9rem;
     font-family: inherit;
     cursor: pointer;
+    transition: var(--transition);
+}
+
+#order-by:hover {
+    border-color: var(--primary);
+    background: var(--glass-bg-strong);
 }
 
 #order-by:focus {
     outline: none;
     border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-glow);
 }
 
 /* Buttons */

@@ -173,6 +173,19 @@ def test_switch_off_bg_has_light_variant():
     print("test_switch_off_bg_has_light_variant: PASS")
 
 
+def test_order_by_select_uses_glass_bg_strong():
+    """排序 select 背景必须同 input 框 (var(--glass-bg-strong)), 不写死 rgba 15/23/42。"""
+    css = _read("style.css")
+    m = re.search(r'#order-by\s*\{([^}]+)\}', css, re.DOTALL)
+    assert m, "#order-by 块必须存在"
+    body = m.group(1)
+    assert "var(--glass-bg-strong)" in body, \
+        "#order-by 背景必须用 var(--glass-bg-strong) (同 input 框, 浅色主题下白色)"
+    assert "rgba(15, 23, 42" not in body, \
+        "#order-by 背景不能硬编码 rgba(15, 23, 42 ...) (浅色主题下深色背景+深字看不清)"
+    print("test_order_by_select_uses_glass_bg_strong: PASS")
+
+
 if __name__ == "__main__":
     test_theme_dark_default_in_css()
     test_theme_light_defines_all_variables()
@@ -185,5 +198,6 @@ if __name__ == "__main__":
     test_light_theme_thead_uses_glass_bg()
     test_primary_button_white_text()
     test_switch_off_bg_has_light_variant()
+    test_order_by_select_uses_glass_bg_strong()
     print("---")
     print("ALL THEME TESTS PASSED")

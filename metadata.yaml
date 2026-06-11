@@ -1,5 +1,5 @@
 name: astrbot_plugin_vision_text_bridge
-display_name: Vision → Text Bridge (MiniMax CLI)
+display_name: 图片转文字 · Mavis 图像理解
 desc: 拦截 LLM 请求中的图片，调用 MiniMax CLI 图像理解后以【图片：理解内容】格式替换，再转发给对话模型。
 short_desc: 把图片转成文本再喂给 LLM。
 version: 0.8.37
