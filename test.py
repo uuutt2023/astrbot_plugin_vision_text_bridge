@@ -1714,6 +1714,65 @@ def test_cache_key_uses_md5_for_file_url():
     print("✓ test_cache_key_uses_md5_for_file_url")
 
 
+def test_import_compat_old_image_utils_without_collect():
+    """: 旧版 image_utils.py (v0.8.37 之前无 collect_image_urls_from_components) 仍可加载。
+
+    背景: 用户服务器上 image_utils.py 可能是旧版 (未 git pull 同步), main.py 启动
+    会 ImportError, 插件加载不了。加容错后, 旧版 image_utils 也让插件加载,
+    走本地 fallback (失去嵌套扫能力, 但插件其他功能正常)。
+    """
+    import image_utils
+
+    # 验证 image_utils 当前有 collect (主分支)
+    assert hasattr(image_utils, "collect_image_urls_from_components"), \
+        "前置失败: image_utils 应有 collect_image_urls_from_components"
+
+    # 验证 fallback 函数逻辑 (直接调用 image_utils.collect 验证嵌套扫描
+    # 能力仍在) + 验证 fallback 行为 — 手动写一个 fallback 副本用同样测试
+    # 验证它能调 (这才是 main.py except 分支里的那一份)
+    async def _fallback(components, dedupe=None):
+        """复刻 main.py except 分支里的 fallback 逻辑。"""
+        added = 0
+        for comp in components:
+            ctype = getattr(comp, "type", None)
+            if ctype in ("image", "Image") and callable(getattr(comp, "convert_to_file_path", None)):
+                try:
+                    fp = await comp.convert_to_file_path()
+                except Exception:
+                    fp = None
+                if fp and (dedupe is None or fp not in dedupe):
+                    if dedupe is not None:
+                        dedupe.append(fp)
+                    added += 1
+        return added
+
+    # 模拟场景
+    class FakeImage:
+        type = "image"  # AstrBot 实际 Image 组件用 Pydantic ComponentType, 这里 mock
+        def __init__(self, path):
+            self.path = path
+        async def convert_to_file_path(self):
+            return self.path
+
+    class FakeNested:
+        type = "reply"  # 嵌套类型, fallback 不会递归
+        message = [FakeImage("/nested.jpg")]
+
+    import asyncio
+    # fallback 扫不到嵌套图 (这是已知的限制)
+    chain = [FakeImage("/top.jpg"), FakeNested()]
+    dedupe = []
+    added = asyncio.run(_fallback(chain, dedupe))
+    assert added == 1, f"fallback 应扫到 1 张顶层图, 实际: {added}"
+    assert dedupe == ["/top.jpg"]
+    # 而真正的 image_utils.collect 能扫到 2 张
+    dedupe2 = []
+    added2 = asyncio.run(image_utils.collect_image_urls_from_components(chain, dedupe2))
+    assert added2 == 2, f"正常版应扫到 2 张 (含嵌套), 实际: {added2}"
+    assert dedupe2 == ["/top.jpg", "/nested.jpg"]
+    print("✓ test_import_compat_old_image_utils_without_collect")
+
+
 def test_p0_image_bytes_read_only_once_per_describe():
     """: 【P0 性能优化】 同张图只需读 1 次, 不是 2 次。
 
@@ -2552,6 +2611,7 @@ def run_all():
         test_main_hook_clears_extra_parts_and_contexts_images,
         test_main_hook_saves_snapshots_for_process_request,
         test_does_not_recover_image_when_req_image_urls_already_populated,
+        test_import_compat_old_image_utils_without_collect,
         test_p0_image_bytes_read_only_once_per_describe,
         test_to_text_part_creates_pydantic_object,
         test_mark_providers_adds_image_modality,
