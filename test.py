@@ -1706,12 +1706,50 @@ def test_cache_key_uses_md5_for_file_url():
         # 读取文件应该能读到这些字节
         bytes_read = Path(tmp_path).read_bytes()
         expected_md5 = hashlib.md5(bytes_read).hexdigest()
-        # 调 _compute_image_cache_key
-        key = asyncio.run(p._compute_image_cache_key(file_url))
+        # 调 _compute_image_cache_key (返 (key, bytes) tuple)
+        key, _preloaded = asyncio.run(p._compute_image_cache_key(file_url))
         assert key == expected_md5, f"expected {expected_md5}, got {key}"
     finally:
         Path(tmp_path).unlink(missing_ok=True)
     print("✓ test_cache_key_uses_md5_for_file_url")
+
+
+def test_p0_image_bytes_read_only_once_per_describe():
+    """: 【P0 性能优化】 同张图只需读 1 次, 不是 2 次。
+
+    优化前: _compute_image_cache_key 读 1 次 + _fetch_image_meta 读 1 次 = 2 次
+    优化后: _compute_image_cache_key 读 1 次, 预读 bytes 存 _last_image_bytes,
+           _persist 复用预读 bytes, 0 次额外 I/O
+    """
+    import tempfile
+    from pathlib import Path
+    p = new_plugin()
+    p._vision_semaphore = asyncio.Semaphore(1)
+    # 手动设 _caption_cache, 让 _persist 真走完 (不早返)
+    p._caption_cache = main.CaptionCache(tempfile.mkdtemp() + "/test.db")
+    # 准备本地临时图
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+        f.write(b"performance test image bytes")
+        tmp_path = f.name
+    try:
+        file_url = f"file://{tmp_path}"
+        # 拦截 _read_image_bytes, 计数调多少次
+        original = p._read_image_bytes
+        call_count = {"n": 0}
+        async def counting_read(url):
+            call_count["n"] += 1
+            return await original(url)
+        with patch.object(p, "_read_image_bytes", side_effect=counting_read):
+            with patch.object(p, "_run_mmx", return_value=make_mmx_result("测试描述", "", 0, True)):
+                asyncio.run(p._describe_one(file_url))
+        # 优化后: 同一张图从 mmx 调完后到 _persist 复用预读 bytes, _read_image_bytes 只调 1 次
+        # 优化前: 2 次
+        assert call_count["n"] == 1, \
+            f"P0 优化未生效! _read_image_bytes 被调 {call_count['n']} 次 (期望 1 次) — " \
+            "_compute_image_cache_key 应复用预读 bytes, _persist 不应再读"
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    print("✓ test_p0_image_bytes_read_only_once_per_describe")
 
 
 def test_cache_key_falls_back_to_url_on_read_failure():
@@ -1720,10 +1758,11 @@ def test_cache_key_falls_back_to_url_on_read_failure():
     p = new_plugin()
     # 调一个不存在的文件
     url = "file:///nonexistent/file.jpg"
-    key = asyncio.run(p._compute_image_cache_key(url))
+    key, preloaded = asyncio.run(p._compute_image_cache_key(url))
     # 应为 32 位 hex，且等于 md5(url)
     assert len(key) == 32
     assert key == hashlib.md5(url.encode("utf-8")).hexdigest()
+    assert preloaded == b"", "读失败时预读 bytes 应为 b\"\""
     print("✓ test_cache_key_falls_back_to_url_on_read_failure")
 
 
@@ -1745,8 +1784,8 @@ def test_same_image_different_path_hits_cache():
         url1 = f"file://{path1}"
         url2 = f"file://{path2}"
         # 两次调 _compute_image_cache_key，md5 应一样
-        key1 = asyncio.run(p._compute_image_cache_key(url1))
-        key2 = asyncio.run(p._compute_image_cache_key(url2))
+        key1, _ = asyncio.run(p._compute_image_cache_key(url1))
+        key2, _ = asyncio.run(p._compute_image_cache_key(url2))
         assert key1 == key2, f"expected same md5 key, got {key1} vs {key2}"
         assert key1 == hashlib.md5(img_bytes).hexdigest()
     finally:
@@ -2513,6 +2552,7 @@ def run_all():
         test_main_hook_clears_extra_parts_and_contexts_images,
         test_main_hook_saves_snapshots_for_process_request,
         test_does_not_recover_image_when_req_image_urls_already_populated,
+        test_p0_image_bytes_read_only_once_per_describe,
         test_to_text_part_creates_pydantic_object,
         test_mark_providers_adds_image_modality,
         test_mark_providers_skipped_when_config_off,
@@ -4012,7 +4052,8 @@ def test_v0825_filter_bot_avatar_in_hook():
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
     # 1. 必须在 saved_urls 那段加 q.qlogo.cn 过滤
     assert "q.qlogo.cn/headimg_dl" in src, "main.py 必须过滤 q.qlogo.cn bot avatar"
-    assert "_bot_avatar_pat" in src, "main.py 必须有 _bot_avatar_pat 正则"
+    # v1.0: 预编译到 module-level 避免每个 hook 都 re.compile
+    assert "_BOT_AVATAR_PAT" in src, "main.py 必须有 _BOT_AVATAR_PAT module-level 常量"
     # 2. 必须过滤后 log 一下跳过了多少
     assert "过滤 bot 头像" in src, "main.py 必须 log 过滤结果"
     # 3. 加 saved_urls 诊断 log——后续调试用
@@ -4249,16 +4290,20 @@ def test_v0835_recursive_image_scan_in_quote():
         [vision_text_bridge] hook 入口 saved_urls (size=0): []
         [vision_text_bridge] on_llm_request: image_urls=0, parts=2, contexts=0
     user 引用了一条带图片的消息, 但 hook 拿不到——因为 image 在引用 comp 内部.
+
+    v1.0: 递归函数抽到 image_utils.collect_image_urls_from_components。
     """
-    m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py"), encoding="utf-8").read()
-    # 找 _collect_image_urls_from_components 函数 + 递归逻辑
-    assert "_collect_image_urls_from_components" in m, "main.py 应有递归函数"
-    # 递归处理嵌套结构
-    assert '"reply"' in m or "'reply'" in m, "递归应处理 reply 类型"
-    assert "Reference" in m, "递归应处理 Reference 类型"
-    assert "Forward" in m or "forward" in m, "递归应处理 forward 类型"
-    # 顶层调用递归
-    assert "await _collect_image_urls_from_components" in m, "on_llm_request 应调递归"
+    base = os.path.dirname(os.path.abspath(__file__))
+    iu = open(os.path.join(base, "image_utils.py"), encoding="utf-8").read()
+    m = open(os.path.join(base, "main.py"), encoding="utf-8").read()
+    # image_utils.py 里有递归函数 + 嵌套类型常量
+    assert "collect_image_urls_from_components" in iu, "image_utils.py 应有递归函数"
+    assert "Reply" in iu, "image_utils.py 应有 reply/Reference 类型常量"
+    assert "Reference" in iu
+    assert "Forward" in iu or "forward" in iu, "image_utils.py 应有 forward 类型"
+    # main.py 调这个 helper (import 为别名 _collect_image_urls_from_components)
+    assert "_collect_image_urls_from_components" in m, "main.py 应 import 并调递归 helper"
+    assert "await _collect_image_urls_from_components" in m, "on_llm_request 应 await 调递归"
     print("✓ test_v0835_recursive_image_scan_in_quote")
 
 

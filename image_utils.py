@@ -158,3 +158,51 @@ def strip_image_urls(req: Any, only_data_url: bool) -> int:
         content[:] = kept
 
     return removed
+
+
+# ---------------------------------------------------------------------------
+# 从 message chain 里取图 (event.message_obj.message)
+# ---------------------------------------------------------------------------
+
+_NESTED_TYPES = frozenset((
+    "reply", "Reply", "reference", "Reference",
+    "forward", "Forward", "json", "Json", "node", "Node",
+))
+_NESTED_ATTRS = ("message", "messages", "content", "data", "nodes", "_message", "_data")
+
+
+async def _extract_image_url_from_component(comp) -> str | None:
+    """从一个 component 取图片本地路径 (调 convert_to_file_path)。失败返 None。"""
+    if not callable(getattr(comp, "convert_to_file_path", None)):
+        return None
+    try:
+        return await comp.convert_to_file_path()
+    except Exception:
+        return None
+
+
+async def collect_image_urls_from_components(components, dedupe: list[str] | None = None) -> int:
+    """递归从 message chain (顶层 + 嵌套 reply/Reference/forward/node) 拿图片。
+
+    参数:
+        components: message chain (list of components)
+        dedupe: 已有的 URL 列表, 收集时会跳过 (用于 "event.message_obj
+                里的图不要和 req.image_urls 重复")
+    返回: 新增的图片数。
+    """
+    added = 0
+    for comp in components:
+        ctype = getattr(comp, "type", None)
+        if ctype in _NESTED_TYPES:
+            for attr in _NESTED_ATTRS:
+                inner = getattr(comp, attr, None)
+                if isinstance(inner, list):
+                    added += await collect_image_urls_from_components(inner, dedupe)
+                    break
+            continue
+        if ctype in ("image", "Image"):
+            fp = await _extract_image_url_from_component(comp)
+            if fp and (dedupe is None or fp not in dedupe):
+                dedupe.append(fp)
+                added += 1
+    return added
