@@ -292,12 +292,18 @@ async def api_regenerate(plugin):
     key = await read_key_from_request(plugin.context)
     if not key:
         return err("缺少参数 key")
+    # 【修复】 key 是 image_id (md5 hex), 不是 URL/路径. mmx 要 URL, 不接受 image_id.
+    # 先查 SQLite 拿原始 url, 再 调 _describe_one(url) 走正常 mmx 路径.
+    entry = plugin._caption_cache.get(key)
+    if entry is None:
+        return err(f"未找到 image_id={key[:16]}... 的缓存条目 (已被删除?)", 404)
+    url = entry.image_url
     try:
         plugin._description_cache.pop(key, None)
         plugin._caption_cache.delete(key)
     except Exception as e:
         logger.debug("[vision_text_bridge] regenerate 清理旧缓存失败: %s", e)
-    new_desc = await plugin._describe_one(key)
+    new_desc = await plugin._describe_one(url)
     return ok({"key": key, "description": new_desc, "ok": bool(new_desc)})
 
 
