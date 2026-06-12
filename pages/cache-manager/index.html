@@ -57,11 +57,6 @@
  <div class="card-hint"id="stat-total-hint">total</div>
  </div>
  <div class="card glass">
- <div class="card-label">总命中数</div>
- <div class="card-value"id="stat-hits">-</div>
- <div class="card-hint">hit_count 累计</div>
- </div>
- <div class="card glass">
  <div class="card-label">DB 大小</div>
  <div class="card-value"id="stat-dbsize">-</div>
  <div class="card-hint">SQLite file</div>
@@ -93,8 +88,8 @@
  <select id="order-by">
  <option value="created_at_desc">最新优先</option>
  <option value="created_at_asc">最旧优先</option>
- <option value="hit_count_desc">命中最多</option>
- <option value="hit_count_asc">命中最少</option>
+ 
+ 
  </select>
  <label class="switch"title="开启后按 5s 间隔自动刷新">
  <input type="checkbox"id="auto-refresh-toggle" />
@@ -103,7 +98,7 @@
  </label>
  <button class="btn primary"id="refresh-btn"title="刷新 (R)">刷新</button>
  <button class="btn"id="export-btn">导出 JSON</button>
- <button class="btn"id="clean-expired-btn"title="清理超期未命中条目（SQLite + 内存热缓存）">清理过期</button>
+ <button class="btn"id="clean-expired-btn"title="清理超期未访问条目（SQLite + 内存热缓存）">清理过期</button>
  <button class="btn"id="diag-btn"title=".1 诊断：查看 SQLite 路径/schema/最近 3 条">诊断</button>
  <button class="btn danger"id="clear-btn">清空全部</button>
  </section>
@@ -123,7 +118,6 @@
  <th style="width: 96px">缩略图</th>
  <th>URL / 路径</th>
  <th>描述（mmx vision describe）</th>
- <th style="width: 80px">命中</th>
  <th style="width: 90px">尺寸</th>
  <th style="width: 160px">创建时间</th>
  <th style="width: 120px">操作</th>

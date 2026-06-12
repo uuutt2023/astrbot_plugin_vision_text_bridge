@@ -42,8 +42,6 @@ class CaptionEntry:
     image_url: str  # 原始 URL / 本地路径
     description: str  # mmx 图像理解结果
     created_at: float
-    hit_count: int
-    last_hit_at: float | None
     mime_type: str = ""  # image/jpeg, image/png, image/webp, image/gif
     file_size: int = 0  # 原始字节数
     width: int = 0  # 图片宽(从字节解析)
@@ -57,8 +55,6 @@ class CaptionEntry:
             "image_url": self.image_url,
             "description": self.description,
             "created_at": self.created_at,
-            "hit_count": self.hit_count,
-            "last_hit_at": self.last_hit_at,
             "mime_type": self.mime_type,
             "file_size": self.file_size,
             "width": self.width,
@@ -73,7 +69,6 @@ class CacheStats:
     """缓存统计。"""
 
     total: int
-    total_hits: int
     oldest_at: float | None
     newest_at: float | None
     db_size_bytes: int
@@ -81,7 +76,6 @@ class CacheStats:
     def to_dict(self) -> dict:
         return {
             "total": self.total,
-            "total_hits": self.total_hits,
             "oldest_at": self.oldest_at,
             "newest_at": self.newest_at,
             "db_size_bytes": self.db_size_bytes,
@@ -101,14 +95,10 @@ class CaptionCache:
         width INTEGER NOT NULL DEFAULT 0,
         height INTEGER NOT NULL DEFAULT 0,
         image_b64 TEXT NOT NULL DEFAULT '',
-        created_at REAL NOT NULL,
-        hit_count INTEGER NOT NULL DEFAULT 0,
-        last_hit_at REAL
+        created_at REAL NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_captions_created_at
         ON image_captions(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_captions_hit_count
-        ON image_captions(hit_count DESC);
     """
 
     # 后续添加的列(用于老 DB 升级)
@@ -146,8 +136,8 @@ class CaptionCache:
                     conn.executescript(self.SCHEMA)
                     conn.execute(
                         "INSERT INTO image_captions "
-                        "(image_id, image_url, description, created_at, hit_count, last_hit_at) "
-                        "SELECT image_key, image_url, description, created_at, hit_count, last_hit_at "
+                        "(image_id, image_url, description, created_at) "
+                        "SELECT image_key, image_url, description, created_at "
                         "FROM image_captions__legacy"
                     )
                     conn.execute("DROP TABLE image_captions__legacy")
@@ -186,7 +176,7 @@ class CaptionCache:
     # ------------------------------------------------------------------ CRUD
 
     def get(self, image_id: str, with_b64: bool = False) -> CaptionEntry | None:
-        """根据 image_id 查询一条记录,命中后增加 hit_count（上次 hit 5 分钟内不重复加）。
+        """根据 image_id 查询一条记录(纯读, 不增统计)。
 
         Args:
             image_id: 图片唯一标识
@@ -200,19 +190,7 @@ class CaptionCache:
             ).fetchone()
             if row is None:
                 return None
-            now = time.time()
-            last_hit = row["last_hit_at"] or 0
-            # 去重：5 分钟内的连续 hit 不计（避免 webui 详情页点 10 次就 10）
-            if now - last_hit >= 300:
-                conn.execute(
-                    "UPDATE image_captions SET hit_count = hit_count + 1, last_hit_at = ? "
-                    "WHERE image_id = ?",
-                    (now, image_id),
-                )
-                conn.commit()
-                return self._row_to_entry(row, hit_count_delta=1, last_hit_at=now, with_b64=with_b64)
-            # 5 分钟内重复 hit：不增计数，但更新内存返回值里的 last_hit_at 反映最近查询
-            return self._row_to_entry(row, last_hit_at=now, with_b64=with_b64)
+            return self._row_to_entry(row, with_b64=with_b64)
 
     def put(
         self,
@@ -246,8 +224,8 @@ class CaptionCache:
                 """
                 INSERT INTO image_captions
                     (image_id, image_url, description, mime_type, file_size,
-                     width, height, image_b64, created_at, hit_count, last_hit_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                     width, height, image_b64, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(image_id) DO UPDATE SET
                     image_url = excluded.image_url,
                     description = excluded.description,
@@ -298,8 +276,6 @@ class CaptionCache:
         order_sql = {
             "created_at_desc": "created_at DESC",
             "created_at_asc": "created_at ASC",
-            "hit_count_desc": "hit_count DESC",
-            "hit_count_asc": "hit_count ASC",
         }.get(order_by, "created_at DESC")
 
         with self._lock, self._connect() as conn:
@@ -320,15 +296,13 @@ class CaptionCache:
             self._row_to_entry(r, with_b64=include_b64) for r in rows
         ]
 
-    def _row_to_entry(self, r, hit_count_delta: int = 0, last_hit_at: float | None = None, with_b64: bool = False) -> CaptionEntry:
+    def _row_to_entry(self, r, with_b64: bool = False) -> CaptionEntry:
         b64 = r["image_b64"] if with_b64 else ""
         return CaptionEntry(
             image_id=r["image_id"],
             image_url=r["image_url"],
             description=r["description"],
             created_at=r["created_at"],
-            hit_count=r["hit_count"] + hit_count_delta,
-            last_hit_at=last_hit_at if last_hit_at is not None else r["last_hit_at"],
             mime_type=r["mime_type"],
             file_size=r["file_size"],
             width=r["width"],
@@ -355,14 +329,12 @@ class CaptionCache:
                 """
                 SELECT
                     COUNT(*) AS total,
-                    COALESCE(SUM(hit_count), 0) AS total_hits,
                     MIN(created_at) AS oldest,
                     MAX(created_at) AS newest
                 FROM image_captions
                 """
             ).fetchone()
             total = int(row["total"])
-            total_hits = int(row["total_hits"])
             oldest = row["oldest"]
             newest = row["newest"]
         size = 0
@@ -372,7 +344,6 @@ class CaptionCache:
             pass
         return CacheStats(
             total=total,
-            total_hits=total_hits,
             oldest_at=oldest,
             newest_at=newest,
             db_size_bytes=size,
@@ -385,11 +356,7 @@ class CaptionCache:
             conn.commit()
 
     def clean_expired(self, max_age_days: int) -> int:
-        """: 清理超期未命中的条目。
-
-        语义: ``last_hit_at`` 早于 ``now - max_age_days`` 的条目视为冷数据，删掉。
-        刚 put 还没被 get 过的条目用 ``created_at`` 代替 ``last_hit_at`` 判断
-        （刚 put 的话 ``last_hit_at=0``，会被误判为过期——这是 bug，不能用 last_hit_at）。
+        """: 清理超过 max_age_days 天未更新的条目(按 created_at 判断)。
 
         Args:
             max_age_days: 最大保留天数。<=0 不清理。
@@ -399,23 +366,15 @@ class CaptionCache:
         """
         if max_age_days <= 0:
             return 0
-        # ``last_hit_at IS NULL OR last_hit_at < 0`` 意味着从未被 get——以 created_at 为准
         cutoff = time.time() - max_age_days * 86400
         with self._lock, self._connect() as conn:
             cur = conn.execute(
-                "DELETE FROM image_captions "
-                "WHERE (last_hit_at IS NULL OR last_hit_at = 0) "
-                "  AND created_at < ?",
+                "DELETE FROM image_captions WHERE created_at < ?",
                 (cutoff,),
             )
-            deleted_unhit = cur.rowcount
-            cur = conn.execute(
-                "DELETE FROM image_captions WHERE last_hit_at > 0 AND last_hit_at < ?",
-                (cutoff,),
-            )
-            deleted_hit = cur.rowcount
+            deleted = cur.rowcount
             conn.commit()
-        return deleted_unhit + deleted_hit
+        return deleted
 
     def daily_buckets(self, days: int = 30) -> list[dict]:
         """: 按天统计缓存创建量，返回 ``[{date: 'YYYY-MM-DD', count: N}, ...]``。

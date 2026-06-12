@@ -569,14 +569,6 @@ main {
     text-decoration: underline;
 }
 
-/* 数字列 */
-.hit-cell {
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    color: var(--accent);
-    text-align: right;
-}
-
 .dim-cell {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.82rem;

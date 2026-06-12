@@ -557,7 +557,6 @@ async function loadStats() {
  const resp = await apiGet("/cache/stats");
  const data = resp?.data || resp;
  $("stat-total").textContent = data.total ?? 0;
- $("stat-hits").textContent = data.total_hits ?? 0;
  $("stat-dbsize").textContent = fmtSize(data.db_size_bytes);
  $("stat-memcache").textContent = data.in_memory_cache_size ?? 0;
  // 同步设置右上角 DB 路径 badge（以前是写死的 "loading…"，现在拿到实际路径）
@@ -797,7 +796,6 @@ function renderList(items) {
  ? `<button class= "desc-toggle"data-target= "${descId}">展开 ↓</button>`
  : ""}
  </td>
- <td class= "hit-cell">${it.hit_count}</td>
  <td class= "dim-cell">${dim}</td>
  <td class= "time-cell">${fmtTime(it.created_at)}</td>
  <td class= "action-cell">

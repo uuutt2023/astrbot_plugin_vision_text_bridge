@@ -1104,7 +1104,7 @@ def test_diagnose_warn_once():
 
 
 def test_caption_cache_basic_crud():
-    """CaptionCache 增删改查。"""
+    """CaptionCache 增删改查(纯 CRUD, 不验证 hit_count —— 已删除)。"""
     import tempfile
     from pathlib import Path
     with tempfile.TemporaryDirectory() as tmp:
@@ -1116,17 +1116,10 @@ def test_caption_cache_basic_crud():
         entry = cache.get("https://x.com/a.jpg")
         assert entry is not None
         assert entry.description == "一只猫"
-        assert entry.hit_count == 1
-        # : 5 分钟内连续 hit 去重（防 webui 详情页点 10 次就 hit_count=10）
+        # 重复 get 返同样 desc, 不变计数
         entry2 = cache.get("https://x.com/a.jpg")
-        assert entry2.hit_count == 1  # 去重后还是 1
-        # 手动调成 6 分钟前，命中后递增
-        import sqlite3 as _sq
-        with _sq.connect(str(Path(tmp) / "test.sqlite3") + "_db" if False else str(cache._db_path)) as _c:
-            _c.execute("UPDATE image_captions SET last_hit_at = ? WHERE image_id = ?", (entry2.last_hit_at - 360, "https://x.com/a.jpg"))
-            _c.commit()
-        entry3 = cache.get("https://x.com/a.jpg")
-        assert entry3.hit_count == 2  # 超过去重窗口才递增
+        assert entry2.description == "一只猫"
+        assert entry2.created_at == entry.created_at
         # delete
         assert cache.delete("https://x.com/a.jpg") is True
         assert cache.count() == 0
@@ -1278,12 +1271,8 @@ def test_caption_cache_list_and_search():
         # limit 测试
         page1 = cache.list(limit=1, offset=0, order_by="created_at_asc")
         assert len(page1) == 1
-        # 排序测试
-        cache.get("id_a")  # 增加 hit_count
-        cache.get("id_a")
-        cache.get("id_a")
-        most_hit = cache.list(limit=10, offset=0, order_by="hit_count_desc")
-        assert most_hit[0].image_id == "id_a"
+        # 顺序按 created_at_asc 验证
+        assert page1[0].image_id == "id_a"
     print("✓ test_caption_cache_list_and_search")
 
 
@@ -1299,8 +1288,6 @@ def test_caption_cache_stats():
         cache.get("a")
         s2 = cache.stats()
         assert s2.total == 1
-        # : 5 分钟内 hit 去重 → 2 次连续 get 只 +1
-        assert s2.total_hits == 1
         assert s2.oldest_at is not None
         assert s2.newest_at is not None
     print("✓ test_caption_cache_stats")
@@ -1434,7 +1421,6 @@ def test_end_to_end_full_flow():
         # 2. 页面查询 stats
         stats = p._caption_cache.stats()
         assert stats.total == 1
-        assert stats.total_hits == 0  # 刚 put, 没 get 过
 
         # 3. 页面查询 list
         items = p._caption_cache.list(limit=10)
@@ -2634,7 +2620,6 @@ def run_all():
         test_register_version_sync,
         test_caption_cache_dead_code_removed,
         test_b64_size_cap_skips_storage,
-        test_hit_count_5min_dedup,
         test_webui_no_native_confirm,
         test_lru_cache_eviction,
         test_thumb_pool_concurrency_limit,
@@ -2656,7 +2641,6 @@ def run_all():
         test_memory_cache_dict_syntax_compat,
         test_clean_expired_removes_old_entries,
         test_clean_expired_keeps_recent_entries,
-        test_clean_expired_uses_last_hit_at_when_present,
         test_clean_expired_zero_days_is_noop,
         test_webui_db_badge_text_in_app_js,
         test_clean_expired_endpoint_registered,
@@ -3103,22 +3087,6 @@ def test_b64_size_cap_skips_storage():
     print("✓ test_b64_size_cap_skips_storage")
 
 
-def test_hit_count_5min_dedup():
-    """: 5 分钟内重复 get 不递增 hit_count。"""
-    import tempfile, pathlib, sqlite3
-    with tempfile.TemporaryDirectory() as tmp:
-        cache = main.CaptionCache(pathlib.Path(tmp) / "h.sqlite3")
-        cache.put("k", "https://a", "猫")
-        assert cache.get("k").hit_count == 1
-        assert cache.get("k").hit_count == 1  # 5 分钟内去重
-        # 手改 last_hit_at 到 6 分钟前，下次 get 应该 +1
-        with sqlite3.connect(cache._db_path) as c:
-            c.execute("UPDATE image_captions SET last_hit_at = last_hit_at - 360 WHERE image_id = 'k'")
-            c.commit()
-        assert cache.get("k").hit_count == 2
-    print("✓ test_hit_count_5min_dedup")
-
-
 def test_webui_no_native_confirm():
     """: webui 不再用 window.confirm（sandboxed iframe 禁用），改用自建 modal。"""
     import re
@@ -3549,29 +3517,6 @@ def test_clean_expired_keeps_recent_entries():
         assert cap.count() == 2
     print("✓ test_clean_expired_keeps_recent_entries")
 
-
-def test_clean_expired_uses_last_hit_at_when_present():
-    """: 有 last_hit_at 的条目以 last_hit_at 为准（不是 created_at）。"""
-    import tempfile, pathlib, sqlite3, time
-    with tempfile.TemporaryDirectory() as tmp:
-        cap = main.CaptionCache(pathlib.Path(tmp) / "hit.sqlite3")
-        cap.put("k1", "https://a.com/1", "猫")
-        cap.get("k1")  # 产生 last_hit_at
-        # 手改 created_at 到 100 天前，last_hit_at 是刚刚（现在）
-        with sqlite3.connect(cap._db_path) as c:
-            c.execute("UPDATE image_captions SET created_at = ? WHERE image_id = 'k1'", (time.time() - 100*86400,))
-            c.commit()
-        # 清理 7 天前的：last_hit_at 刚刚，没过期
-        deleted = cap.clean_expired(max_age_days=7)
-        assert deleted == 0, f"刚被 hit 的不该被删，实际删了 {deleted}"
-        assert cap.count() == 1
-        # 再手改 last_hit_at 到 30 天前
-        with sqlite3.connect(cap._db_path) as c:
-            c.execute("UPDATE image_captions SET last_hit_at = ? WHERE image_id = 'k1'", (time.time() - 30*86400,))
-            c.commit()
-        deleted = cap.clean_expired(max_age_days=7)
-        assert deleted == 1, f"30 天前 hit 的应被删，实际删了 {deleted}"
-    print("✓ test_clean_expired_uses_last_hit_at_when_present")
 
 
 def test_clean_expired_zero_days_is_noop():

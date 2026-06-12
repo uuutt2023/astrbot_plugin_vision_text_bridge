@@ -5,7 +5,18 @@
 
 ## [Unreleased]
 
-无新变更。
+### 删除
+- **完全移除 hit_count 统计**：webui 打开时不再递增命中次数
+  - `CaptionCache.get()` 改为纯读,不再写 `hit_count` / `last_hit_at`
+  - `CaptionEntry` 删除 `hit_count` / `last_hit_at` 字段
+  - `CacheStats` 删除 `total_hits` 字段
+  - `clean_expired()` 简化为仅看 `created_at` (不再区分有无 hit)
+  - SQLite 新 schema 不再含 `hit_count` / `last_hit_at` 列 (老库迁移后保留列但不写入)
+  - webui 删除「总命中数」卡片、「命中」列表列、「命中最多/最少」排序选项
+  - webui `app.js` 删 `stat-hits` / `it.hit_count` 渲染
+  - `README.md` 删「命中总数」「命中最多/最少」描述
+  - 删 test: `test_hit_count_5min_dedup` / `test_clean_expired_uses_last_hit_at_when_present`
+  - 新 test: `test_no_hit_count.py` (5 个反向验证)
 
 ## [0.8.37] - 2026-06-08
 
