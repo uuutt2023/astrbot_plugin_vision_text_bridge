@@ -4051,7 +4051,7 @@ def test_v0823_webui_version_badge():
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # index.html 顶部必须含 app.js? v=0.8.37 ( backend 改用 quart request)
-    assert 'app.js?v=1.0.0' in h, "index.html app.js 必须用 v=0.8.37"
+    assert 'app.js?v=1.1.0' in h, "index.html app.js 必须用 v=0.8.37"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"

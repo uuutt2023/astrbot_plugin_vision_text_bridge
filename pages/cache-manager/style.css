@@ -512,6 +512,61 @@ main {
     box-shadow: 0 0 12px var(--primary-glow);
 }
 
+/* 缩略图包裹层 + 来源标签 (联动物标) */
+.thumb-wrap {
+    position: relative;
+    width: 72px;
+    height: 72px;
+    line-height: 0;
+}
+
+.source-tag {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: #fff;
+    pointer-events: auto;
+    cursor: help;
+    letter-spacing: 0.5px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    z-index: 1;
+}
+
+.source-tag.src-local {
+    background: rgba(99, 102, 241, 0.85);  /* 靛蓝 = 本插件 */
+    border: 1px solid rgba(129, 140, 248, 0.6);
+}
+
+.source-tag.src-chat {
+    background: rgba(16, 185, 129, 0.85);  /* 翠绿 = 协同 chat_archive */
+    border: 1px solid rgba(52, 211, 153, 0.6);
+}
+
+/* 顶部联动状态 badge */
+#integration-badge.int-ok {
+    background: rgba(16, 185, 129, 0.15);
+    color: rgb(52, 211, 153);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+#integration-badge.int-mixed {
+    background: rgba(245, 158, 11, 0.15);
+    color: rgb(251, 191, 36);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+#integration-badge.int-off {
+    background: rgba(148, 163, 184, 0.15);
+    color: rgb(203, 213, 225);
+    border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
 .thumb-placeholder {
     width: 72px;
     height: 72px;

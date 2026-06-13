@@ -568,10 +568,48 @@ async function loadStats() {
  }
  // 状态栏
  renderStatusBar(data);
+ // 跨插件协同状态 (chat_archive 联动)
+ await loadIntegrationBadge();
  logger.info("data", "loadStats 完成", { total: data.total, hits: data.total_hits, dbsize: data.db_size_bytes });
  } catch (e) {
  logger.error("data", "loadStats 失败", e);
  showToast("加载统计失败: "+ (e?.message || e),"error");
+ }
+}
+
+// 跨插件协同状态 (chat_archive 联动) — 顶部 badge
+async function loadIntegrationBadge() {
+ const badge = $("integration-badge");
+ if (!badge) return;
+ try {
+ const resp = await apiGet("/cache/integration_status");
+ const d = resp?.data || resp;
+ if (!d) return;
+ const installed = d.chat_archive_installed === true;
+ const mode = d.storage_mode || "local";
+ const policy = d.policy || {};
+ badge.classList.remove("int-ok", "int-mixed", "int-off");
+ if (!installed) {
+ badge.classList.add("int-off");
+ badge.textContent = "协同: 单插件";
+ badge.title = "未检测到 astrbot_plugin_chat_archive。缩略图走本插件 SQLite, 清理也是本插件负责。";
+ } else if (mode === "chat_archive") {
+ badge.classList.add("int-ok");
+ badge.textContent = "协同: chat_archive";
+ badge.title = "缩略图走 chat_archive web_cache。\n清理: chat_archive 每天扫 web_cache 自动删除过期图片。\n本插件仅负责文本描述 (description) 的清理。";
+ } else if (mode === "mixed") {
+ badge.classList.add("int-mixed");
+ badge.textContent = "协同: chat_archive (有老本地缓存)";
+ badge.title = "缩略图: 新条目走 chat_archive, 老条目 (chat_archive 装之前存的) 仍在本插件 SQLite。\n清理: chat_archive 管图片, 本插件管描述文本。";
+ } else {
+ badge.classList.add("int-off");
+ badge.textContent = `协同: ${mode}`;
+ badge.title = JSON.stringify(d, null, 2);
+ }
+ } catch (e) {
+ badge.classList.add("int-off");
+ badge.textContent = "协同: 未知";
+ badge.title = `检测 chat_archive 失败: ${e?.message || e}`;
  }
 }
 
@@ -879,18 +917,22 @@ async function ensureThumb(imageId, slot) {
  const resp = await apiGet(`/cache/thumbnail/${encodeURIComponent(imageId)}`);
  const data = resp?.data || resp;
  if (data?.has_image && data.data_url) {
- const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height };
+ const thumb = { data_url: data.data_url, mime: data.mime_type, w: data.width, h: data.height, source: data.source || "local" };
  state.thumbCache.set(imageId, thumb);
  renderThumb(slot, thumb);
  // 存 sessionStorage (跨刷新), 失败静默 catch (存储满)
  try { sessionStorage.setItem(ssKey, JSON.stringify(thumb)); } catch (_) { /* quota exceeded */ }
- logger.debug("thumb", `加载缩略图成功: ${imageId.slice(0, 12)}`, { mime: thumb.mime, w: thumb.w, h: thumb.h });
+ logger.debug("thumb", `加载缩略图成功: ${imageId.slice(0, 12)}`, { mime: thumb.mime, w: thumb.w, h: thumb.h, source: thumb.source });
  } else {
- const stub = { __none: true };
+ const stub = { __none: true, source: data?.source || "none" };
  state.thumbCache.set(imageId, stub);
- slot.innerHTML = `<div class= "thumb-placeholder"title= "该条目没有图片二进制 (之前数据)"></div>`;
+ // 区分占位: source=chat_archive 表示该图理论该在 chat_archive 但找不到
+ const noImgTitle = data?.source === "chat_archive"
+ ? "chat_archive 未缓存该图 (可能清理了 / URL 哈希不匹配)"
+ : "该条目没有图片二进制 (之前数据)";
+ slot.innerHTML = `<div class= "thumb-placeholder"title= "${noImgTitle}"></div>`;
  try { sessionStorage.setItem(ssKey, JSON.stringify(stub)); } catch (_) {}
- logger.debug("thumb", `无缩略图（ 之前数据）: ${imageId.slice(0, 12)}`);
+ logger.debug("thumb", `无缩略图: ${imageId.slice(0, 12)}`, { source: stub.source });
  }
  } catch (e) {
  const stub = { __err: true };
@@ -903,7 +945,17 @@ async function ensureThumb(imageId, slot) {
 }
 
 function renderThumb(slot, thumb) {
- slot.innerHTML = `<img class= "thumb"src= "${thumb.data_url}"alt= "thumb"loading= "lazy" />`;
+ // source 标签: "本" = 本插件 SQLite b64, "协" = chat_archive web_cache
+ // tooltip 说明清理机制
+ const source = thumb.source || "local";
+ const sourceBadge = source === "chat_archive"
+ ? `<span class= "source-tag src-chat"title= "缩略图走 chat_archive web_cache。清理: chat_archive 每天扫 web_cache">协</span>`
+ : `<span class= "source-tag src-local"title= "缩略图存本插件 SQLite。清理: 本插件 clean_expired 后台任务">本</span>`;
+ slot.innerHTML = `
+ <div class= "thumb-wrap">
+ <img class= "thumb"src= "${thumb.data_url}"alt= "thumb"loading= "lazy" />
+ ${sourceBadge}
+ </div>`;
  const img = slot.querySelector("img");
  if (img) {
  img.addEventListener("click", () => {

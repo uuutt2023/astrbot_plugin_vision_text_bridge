@@ -87,11 +87,14 @@ def _require_caption_cache(plugin):
     return None
 
 
-def _build_thumbnail_payload(image_id: str, mime: str, b64: str, w: int, h: int, size: int):
+def _build_thumbnail_payload(image_id: str, mime: str, b64: str, w: int, h: int, size: int, source: str = "local"):
     """: 统一组装缩略图 dict —— 避免 3 个分支手搓重复字段。
 
     b64 为空时 mime 保留原值 (老条目可能未存 mime, 返回空串);
     b64 非空时 mime 退到 "image/jpeg"。
+
+    source: "local" (本插件 SQLite b64) / "chat_archive" (走 chat_archive web_cache) / "none" (都没有)
+    webui 用此字段显"本"/"协"小标签, 提示用户缩略图来源.
     """
     effective_mime = (mime or "image/jpeg") if b64 else mime
     return {
@@ -100,6 +103,7 @@ def _build_thumbnail_payload(image_id: str, mime: str, b64: str, w: int, h: int,
         "data_url": f"data:{effective_mime};base64,{b64}" if b64 else "",
         "width": w, "height": h, "file_size": size,
         "has_image": bool(b64),
+        "source": source,
     }
 
 
@@ -227,6 +231,7 @@ async def _do_thumbnail(plugin, image_id: str):
     if e.image_b64:
         return ok(_build_thumbnail_payload(
             image_id, e.mime_type, e.image_b64, e.width, e.height, e.file_size,
+            source="local",
         ))
 
     # 路径 2: 走 chat_archive
@@ -239,6 +244,7 @@ async def _do_thumbnail(plugin, image_id: str):
                 b64 = base64.b64encode(data).decode("ascii")
                 return ok(_build_thumbnail_payload(
                     image_id, mime, b64, w or e.width, h or e.height, len(data),
+                    source="chat_archive",
                 ))
     except Exception as ex:
         logger.debug(f"[vision_text_bridge] chat_archive 读图失败: {ex}")
@@ -246,6 +252,7 @@ async def _do_thumbnail(plugin, image_id: str):
     # 路径 3: 都没有
     return ok(_build_thumbnail_payload(
         image_id, e.mime_type, "", e.width, e.height, e.file_size,
+        source="none",
     ))
 
 
@@ -271,6 +278,56 @@ async def api_stats(plugin):
     else:
         s["next_clean_at"] = None
     return ok(s)
+
+
+async def api_integration_status(plugin):
+    """: 跨插件协同状态 — webui 顶部状态条 + 联动 chip 用。
+
+    返:
+      - chat_archive_installed: bool (是否检测到 chat_archive 插件)
+      - chat_archive_cache_dir: str | None (web_cache 路径, 未检测到时为 None)
+      - storage_mode: "local" / "chat_archive" / "mixed"
+        - local: chat_archive 未装, 缩略图全走本插件 SQLite
+        - chat_archive: 装了, 全部走 chat_archive
+        - mixed: 装了, 但有老条目用本地 b64
+      - policy: {thumbnail_source, image_b64_stored, expiry_cleanup, description_cleanup}
+    """
+    try:
+        installed = chat_archive_integration.is_chat_archive_installed()
+    except Exception as ex:
+        logger.debug(f"[vision_text_bridge] 检测 chat_archive 失败: {ex}")
+        installed = False
+    cache_dir = None
+    if installed:
+        try:
+            cache_dir = chat_archive_integration.get_chat_archive_cache_dir()
+        except Exception:
+            cache_dir = None
+        cache_dir = str(cache_dir) if cache_dir else None
+
+    storage_mode = "local"
+    if installed:
+        has_local_b64 = False
+        if plugin._caption_cache is not None:
+            try:
+                # include_b64=True 才能读出 image_b64 (默认 list 返的 entry 不含 b64)
+                entries = plugin._caption_cache.list(limit=5, include_b64=True)
+                has_local_b64 = any(e.image_b64 for e in entries)
+            except Exception:
+                pass
+        storage_mode = "mixed" if has_local_b64 else "chat_archive"
+
+    return ok({
+        "chat_archive_installed": installed,
+        "chat_archive_cache_dir": cache_dir,
+        "storage_mode": storage_mode,
+        "policy": {
+            "thumbnail_source": "chat_archive" if installed else "local",
+            "image_b64_stored": not installed,
+            "expiry_cleanup": "chat_archive" if installed else "local",
+            "description_cleanup": "local",
+        },
+    })
 
 
 async def api_stats_timeline(plugin):
@@ -458,6 +515,8 @@ async def api_diag(plugin):
 _ROUTES = [
     # path (相对 PLUGIN_NAME), handler, methods, description
     ("/cache/stats", api_stats, ["GET"], "Cache stats"),
+    ("/cache/integration_status", api_integration_status, ["GET"],
+     "跨插件协同状态 (chat_archive 联动)"),
     ("/cache/stats/timeline", api_stats_timeline, ["GET"], "按天创建量（柱状图）"),
     ("/cache/list", api_list, ["GET"], "Cache list"),
     ("/cache/delete", api_delete, ["GET", "POST"],

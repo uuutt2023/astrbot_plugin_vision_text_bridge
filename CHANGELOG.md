@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+### 新增
+- **webui 联动物标**: 顶部 status bar 加 chat_archive 联动状态 chip, 缩略图列加 "本" / "协" 来源标签
+  - 后端 `/cache/integration_status` API: 返 chat_archive_installed / cache_dir / storage_mode (local / chat_archive / mixed) / policy
+  - 缩略图 payload 加 `source` 字段: "local" / "chat_archive" / "none"
+  - 前端 `loadIntegrationBadge()` 调 API 更新 chip 文字 + class (int-ok/int-mixed/int-off) + tooltip 说明
+  - 缩略图 cell `renderThumb()` 加 `.source-tag` 标签: 翠绿 "协" = chat_archive, 靛蓝 "本" = SQLite
+  - `placeholder` 区分: chat_archive 未缓存 vs 老本地数据
+  - cache-bust `?v=` 升到 1.1.0
+  - 新 test `test_integration_status.py` (8 个反向验证)
+
 ### 修复
 - **插件加载报 'string indices must be integers, not str'**: 移除 _conf_schema.json 顶层 `_doc` 文本字段。AstrBot 框架 `_parse_schema` 递归遍历时, 遇到 string value 调 v["type"] 会报 TypeError 并中断加载。现在 schema 顶层只允许 group (含 items 的 dict), 文档说明放 README/CHANGELOG。  新 test `test_schema_top_level_all_values_are_dict` 防止再犯。
 
