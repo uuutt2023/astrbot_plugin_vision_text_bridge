@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+### 修复
+- **插件加载报 'string indices must be integers, not str'**: 移除 _conf_schema.json 顶层 `_doc` 文本字段。AstrBot 框架 `_parse_schema` 递归遍历时, 遇到 string value 调 v["type"] 会报 TypeError 并中断加载。现在 schema 顶层只允许 group (含 items 的 dict), 文档说明放 README/CHANGELOG。  新 test `test_schema_top_level_all_values_are_dict` 防止再犯。
+
+### 重构
+- **配置 schema 整理**: 35 个选项重组为 10 个分组 (基础/MiniMax CLI/并发/图像理解/缓存/输入处理/LLM 提示/跨插件兼容/日志/脱敏)
+  - 嵌套 group schema, AstrBot 后台插件设置页会按分组折叠展示
+  - 保留旧读法兼容: `_flatten_group_config` 在 plugin `__init__` 期展平嵌套 group, main.py 31 处 `self.config.get("X")` 无需改
+  - 新增 helper `cfg_group_int/str/bool` (嵌套读法, 配置_helpers.py)
+  - 所有 description / hint 移除版本号引用 (v0.7 / v0.8.2 / v0.8.13 等)
+  - 新增 `test_schema.py` 10 个反向验证 (版本号检测/分组/flatten/幂等/helpers)
+  - webui cache-bust `?v=` 升到 1.0.0 (style.css/logger.js/app.js)
+  - webui subtitle 加上「10 个分组配置」
+  - README 配置章节重写为 10 个分组表格
+- **重复逻辑去重**: 4 个 test 文件的 stub 插件 (50 行 × 3 = 150 行) 抽到 `tests/stub_helpers.py` 共享; test_chat_archive/test_regenerate/test_no_hit_count 内部 9 处 plugin 构造用 `make_test_plugin_with_caption_cache` 模板
+
 ### 新增
 - **与 astrbot_plugin_chat_archive 协同**: 检测到该插件时, 本插件不缓存图片 b64, webui 缩略图走 chat_archive 的 `web_cache/`, 过期清理交给 chat_archive
   - 新模块 `chat_archive_integration.py`

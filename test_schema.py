@@ -163,6 +163,27 @@ def test_all_schema_options_have_default():
     print("✓ test_all_schema_options_have_default")
 
 
+def test_schema_top_level_all_values_are_dict():
+    """: schema 顶层每个 value 必须是 dict (含 items 字段的 group)。
+
+    背景: AstrBot 框架在 _parse_schema 递归遍历 schema, 期望每个顶层 value
+    都能 v["type"] 取到 type. 任何 string value (如 _doc 文档字段) 都会触发
+    'string indices must be integers, not str' 错误并让插件加载失败。
+    """
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    bad: list[tuple[str, str]] = []
+    for k, v in schema.items():
+        if not isinstance(v, dict):
+            t = type(v).__name__
+            bad.append((k, t))
+    assert not bad, (
+        f"以下 schema 顶层 value 不是 dict (会让 AstrBot 框架 _parse_schema 失败):\n"
+        + "\n".join(f"  {k!r}: {t}" for k, t in bad)
+        + "\n说明: schema 顶层只允许 group (含 items 的 dict). 文档/说明请放 README 或 metadata.yaml."
+    )
+    print("✓ test_schema_top_level_all_values_are_dict")
+
+
 def test_config_helpers_nested_group():
     """: config_helpers.cfg_group_int / cfg_group_str 嵌套读法可用。"""
     from config_helpers import cfg_group_int, cfg_group_str, cfg_group_bool

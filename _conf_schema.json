@@ -1,6 +1,4 @@
 {
-  "_doc": "astrbot_plugin_vision_text_bridge 配置 — 按功能分组。改任何字段后, AstrBot 会自动写回 data/config/<plugin_name>_config.json, 缺失项补默认值, 多余项删除。",
-
   "基础": {
     "description": "基础",
     "type": "object",
