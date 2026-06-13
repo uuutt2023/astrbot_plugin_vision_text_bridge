@@ -74,6 +74,28 @@ _install_astrbot_stub()
 import main  # noqa: E402
 
 
+def _find_schema_key(node, key):
+    """: 嵌套/扁平 schema 都能找 key。
+
+    新 schema (v1.0.0+): {"基础": {"items": {"enabled": {...}}}, ...}
+    老 schema (扁平):    {"enabled": {...}, ...}
+    两种都支持。
+    """
+    if not isinstance(node, dict):
+        return None
+    if key in node and isinstance(node[key], dict) and "default" in node[key]:
+        return node[key]
+    for v in node.values():
+        if isinstance(v, dict):
+            r = _find_schema_key(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+
+
+
 def make_config(**overrides):
     cfg = {
         "enabled": True,
@@ -2220,7 +2242,9 @@ def test_default_vision_prompt_is_conservative():
     # 简化：直接读 _conf_schema.json 的 default
     import json
     schema = json.load(open("/workspace/astrbot_plugin_vision_text_bridge/_conf_schema.json"))
-    default = schema["vision_prompt"]["default"]
+    vision_prompt_schema = _find_schema_key(schema, "vision_prompt")
+    assert vision_prompt_schema, "schema 应有 vision_prompt"
+    default = vision_prompt_schema["default"]
     assert "严禁猜测" in default
     assert "无法确定" in default
     assert "不要补充背景知识" in default
@@ -2231,7 +2255,9 @@ def test_default_image_placeholder_marks_as_vision_model():
     """ 默认 placeholder 是 [Image N 描述] xxx 格式，提示 LLM 这是“描述”不是“原图”。"""
     import json
     schema = json.load(open("/workspace/astrbot_plugin_vision_text_bridge/_conf_schema.json"))
-    default = schema["image_placeholder_template"]["default"]
+    image_placeholder_schema = _find_schema_key(schema, "image_placeholder_template")
+    assert image_placeholder_schema, "schema 应有 image_placeholder_template"
+    default = image_placeholder_schema["default"]
     assert "描述" in default  # 中文“描述”提示 LLM
     assert "[Image" in default  # [Image N 描述] 格式
     assert "{index}" in default
@@ -4025,7 +4051,7 @@ def test_v0823_webui_version_badge():
     h = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/index.html"), encoding="utf-8").read()
     a = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages/cache-manager/app.js"), encoding="utf-8").read()
     # index.html 顶部必须含 app.js? v=0.8.37 ( backend 改用 quart request)
-    assert 'app.js?v=0.8.37' in h, "index.html app.js 必须用 v=0.8.37"
+    assert 'app.js?v=1.0.0' in h, "index.html app.js 必须用 v=0.8.37"
     # app.js 必须从 document.querySelectorAll('script[src*="app.js"]') 拿版本
     assert 'querySelectorAll(\'script[src*="app.js"]\')' in a, "app.js 必须 querySelectorAll 读版本"
     assert "match(/[?&]v=([0-9.]+)/)" in a, "app.js 必须从 src 解析 ?v=X.Y.Z"

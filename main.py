@@ -212,6 +212,33 @@ def _cfg_str(config, key: str, default: str) -> str:
 PLUGIN_VERSION = _read_plugin_version()
 
 
+def _flatten_group_config(config: dict) -> dict:
+    """: 展平 schema v1.0.0 嵌套 group config —— 旧读法兼容。
+
+    新 schema: ``{"基础": {"description": "基础", "items": {"enabled": True, "priority": 100}}, "缓存": {...}}``
+    旧读法: ``self.config.get("enabled")`` 返 ``True``
+
+    展平后: ``{"基础": {"items": {...}, "enabled": True, ...}, "缓存": {...}, "enabled": True, ...}``
+    - 保留 group 引用 (webui 可读)
+    - 顶层多出每个 items 里的 key (让旧读法 config.get("X") 命中)
+    - 不会重复展平: 检测到所有 values 都不是 ``{"items": ...}`` 格式则不动
+    """
+    if not isinstance(config, dict):
+        return config
+    has_nested = any(
+        isinstance(v, dict) and "items" in v
+        for v in config.values()
+    )
+    if not has_nested:
+        return config  # 老 schema (扁平) 不动
+    flat = dict(config)  # 浅拷贝
+    for _group_name, group_def in config.items():
+        if isinstance(group_def, dict) and "items" in group_def:
+            for k, v in group_def["items"].items():
+                flat[k] = v  # 顶层加 key, 让旧 config.get(k) 命中
+    return flat
+
+
 def _read_file_bytes_sync(path: str) -> bytes:
     """供 asyncio.to_thread 调用的同步读文件。"""
     with open(path, "rb") as f:
@@ -247,7 +274,11 @@ class VisionTextBridgePlugin(Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.config = config
+        # : 展平嵌套 group config, 后续 self.config.get("X") 仍能命中
+        #   schema v1.0.0+ 改为 {"基础": {"items": {"enabled": True}}, "缓存": {"items": {...}}}
+        #   flatten 后: {"基础": {"items": {...}, "enabled": True, ...}, "缓存": {...}, "enabled": True, ...}
+        #   老读法兼容, webui 可读嵌套 group
+        self.config = _flatten_group_config(config) if isinstance(config, dict) else config
         self.mmx_path = (self.config.get("mmx_path") or "").strip() or shutil.which("mmx") or shutil.which("mmx.cmd")
         self.npm_path = shutil.which("npm") or shutil.which("npm.cmd")
         self._caption_cache: CaptionCache | None = None

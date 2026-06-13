@@ -55,34 +55,52 @@ npm install -g mmx-cli
 
 ## 配置
 
-### 总开关
+所有选项在 AstrBot 后台「插件设置」页面可视化配置。配置按 10 个分组展示, 可逐一展开。
+
+### 基础
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | 关闭后插件完全停用 |
-| `priority` | int | `100` | 拦截优先级，数值越大越先执行。修改后需重启 AstrBot |
-| `auto_install_cli` | bool | `false` | 找不到 mmx 时自动 `npm install -g mmx-cli` |
+| `priority` | int | `100` | on_llm_request 钩子优先级, 值越大越靠前. 修改后需重启 AstrBot |
 
-### MiniMax 调用
+### MiniMax CLI
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `mmx_path` | string | `""` | mmx 可执行文件绝对路径，留空时从 `PATH` 查找 |
-| `minimax_api_key` | password | `""` | MiniMax API Key |
-| `auto_login` | bool | `true` | 启动时使用 API Key 自动登录 mmx |
+| `mmx_path` | string | `""` | mmx 可执行文件绝对路径, 留空时从 `PATH` 查找 |
+| `minimax_api_key` | password | `""` | MiniMax API Key. 加载时用 mmx auth login --api-key 自动登录 |
+| `auto_login` | bool | `true` | 启动时用 API Key 自动登录 mmx |
+| `auto_install_cli` | bool | `false` | 找不到 mmx 时自动 `npm install -g mmx-cli` (需 Node.js + 全局安装权限) |
 | `command_timeout` | int | `60` | 单次图像理解超时（秒） |
-| `max_concurrent_vision` | int | `3` | 单条消息最大并发图像处理数 |
-| `vision_prompt` | text | 保守描述模板 | 传给 MiniMax 的提示词，模板严格禁止猜测游戏/番剧/品牌名 |
-| `image_placeholder_template` | string | `[Image {index} 描述] {description}` | 注入用户消息的格式。LLM 识别此格式后引用 |
-| `max_description_length` | int | `800` | 单图描述最大字符数，`0` 不限制 |
-| `failure_message` | string | `[Image {index} 描述] 理解失败：{error}` | MiniMax 调用失败时的占位文本 |
+
+### 并发
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `max_concurrent_vision` | int | `3` | 单条消息最大并发图像处理数. 超过串行处理. 建议 1-4 避免 API 限流 |
+
+### 图像理解
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `vision_prompt` | text | 保守描述模板 | 传给 MiniMax 的提示词, 严格禁止猜测游戏/番剧/品牌名 |
+| `image_placeholder_template` | string | `[Image {index} 描述] {description}` | 注入用户消息的格式. 支持 `{index}` + `{description}` 变量 |
+| `max_description_length` | int | `800` | 单图描述最大字符数, `0` 不限制 |
+| `failure_message` | string | `[Image {index} 描述] 理解失败: {error}` | MiniMax 调用失败时的占位文本 |
+| `strip_mmx_markdown` | bool | `true` | 清理 mmx 返回的 markdown 噪音. 典型响应 520 字符可压到 380 字符, 省 25-30% token |
 
 ### 缓存
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `cache_descriptions` | bool | `true` | 启用描述缓存 |
-| `cache_file_paths` | bool | `true` | 缓存 `file://` 本地路径（群聊场景 AstrBot 经常存临时文件） |
+| `cache_descriptions` | bool | `true` | 启用描述缓存. 使用图片内容 md5 作为缓存 key |
+| `cache_file_paths` | bool | `true` | 缓存 `file://` 本地临时文件路径（群聊场景 AstrBot 经常存临时文件） |
+| `max_b64_size_kb` | int | `2048` | SQLite 存图片 base64 的上限（KB）, 超过不存. 检测到 chat_archive 时缩略图走 chat_archive web_cache |
+| `memory_cache_ttl_seconds` | int | `300` | 内存热缓存有效期（秒）, 0 = 不过期 |
+| `memory_cache_max_size` | int | `500` | 内存热缓存最大条数（LRU 淘汰）, 0 = 不限制 |
+| `sqlite_cache_ttl_days` | int | `7` | SQLite 缓存有效期（天）, 0 = 不过期 |
+| `sqlite_clean_interval_hours` | int | `1` | SQLite 过期清理任务间隔（小时）, 0 = 启动时清一次后关闭后台任务 |
 
 缓存键使用 `md5(图片字节)`。同一张图无论 URL/路径如何变化都能命中。
 
@@ -95,29 +113,45 @@ npm install -g mmx-cli
 - **过期清理** 交给 chat_archive 负责 (它每天扫 `web_cache/` 删除 mtime > N 天的文件)
 - 文本描述仍由本插件 SQLite 缓存 (描述 vs 图片是不同生命周期)
 
-### LLM 提示词
+### 输入处理
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `inject_system_prompt_guidance` | bool | `true` | 向 system_prompt 注入「严格引用图描述」指令 |
-| `inject_caption_text_to_system_prompt` | bool | `false` | 同时将图描述塞入 system_prompt（双重保险） |
+| `include_history` | bool | `false` | 处理历史对话 (req.contexts) 中的图片. 关闭时只处理当前用户消息 |
+| `include_extra_parts` | bool | `true` | 处理 extra_user_content_parts 中的图片. 多数场景图片在 image_urls, 可关闭以提升性能 |
+| `strip_all_image_urls_in_fallback` | bool | `false` | 链末兜底删除**所有** image_url (不仅是 base64). 避免 LLM 报 `unknown variant image_url` 400 错误 |
+
+### LLM 提示
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `inject_system_prompt_guidance` | bool | `true` | 向 system_prompt 注入「严格引用图描述」指令, 防止 LLM 凭印象补充背景 |
+| `inject_caption_text_to_system_prompt` | bool | `false` | 同时将图描述塞入 system_prompt（双重保险, 极端情况） |
+
+### 跨插件兼容
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `tool_filter_mode` | string | `off` | 工具过滤模式: `off` / `whitelist` / `blacklist` |
+| `tool_filter_names` | string | `""` | 工具过滤名单（逗号分隔）, 支持通配符 `*` |
+| `tool_filter_extra_key` | string | `_group_chat_plus_func_tool` | 从 event.get_extra() 取的待注入工具集 key（chat_plus 内部） |
 | `keep_provider_modality_as_is` | bool | `false` | 不修改 provider modalities（关闭「主模型支持图」的兼容性修复） |
-| `strip_all_image_urls_in_fallback` | bool | `false` | 链末兜底删除**所有** image_url（不仅是 base64） |
 
-### 调试
+### 日志
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `verbose_logging` | bool | `false` | 总日志开关，开启后 4 个细粒度全部生效 |
+| `verbose_logging` | bool | `false` | 总开关. 开启后下面 4 个细粒度全部生效 |
 | `verbose_hook_trace` | bool | `false` | 拦截钩子入口/出口日志 |
 | `verbose_mmx_subprocess` | bool | `false` | mmx 子进程完整命令与输出 |
-| `verbose_cache_trace` | bool | `false` | 内存 / SQLite 缓存命中日志 |
-| `verbose_id_computation` | bool | `false` | 图片 md5 计算过程日志 |
-| `redact_sensitive` | bool | `true` | 日志脱敏 API Key |
+| `verbose_cache_trace` | bool | `false` | 内存 / SQLite 缓存命中/写入日志 |
+| `verbose_id_computation` | bool | `false` | image_id (md5) 计算过程日志 |
 
-**调试流程**：先开 `verbose_logging` 看总体；定位阶段后关掉总开关，只留对应细粒度；排查完毕全部关闭。
+### 脱敏
 
-完整字段定义见 `_conf_schema.json`。
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `redact_sensitive` | bool | `true` | 日志中对 API Key、URL token 等敏感字段脱敏. 关闭后日志会输出完整 URL |
 
 ## 缓存机制
 
