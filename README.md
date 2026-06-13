@@ -86,6 +86,15 @@ npm install -g mmx-cli
 
 缓存键使用 `md5(图片字节)`。同一张图无论 URL/路径如何变化都能命中。
 
+### 与 chat_archive 协同
+
+如果检测到 [astrbot_plugin_chat_archive](https://github.com/YukiNo420/astrbot_plugin_chat_archive) 已安装, 本插件:
+
+- **不存 image_b64** (省 SQLite 空间, 避免重复缓存同一张图)
+- **webui 缩略图** 从 chat_archive 的 `web_cache/<sha256(url)[:32]><ext>` 读
+- **过期清理** 交给 chat_archive 负责 (它每天扫 `web_cache/` 删除 mtime > N 天的文件)
+- 文本描述仍由本插件 SQLite 缓存 (描述 vs 图片是不同生命周期)
+
 ### LLM 提示词
 
 | 键 | 类型 | 默认 | 说明 |

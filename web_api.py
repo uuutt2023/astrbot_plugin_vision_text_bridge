@@ -176,7 +176,13 @@ async def read_key_from_request(context, debug: bool = True) -> str:
 # 缩略图 (共用)
 # ---------------------------------------------------------------------------
 async def _do_thumbnail(plugin, image_id: str):
-    """缩略图核心逻辑。供 /cache/thumbnail/<id> 路径参数版调用。"""
+    """缩略图核心逻辑。供 /cache/thumbnail/<id> 路径参数版调用。
+
+    协同 chat_archive:
+      1. 先看本插件 SQLite 里 image_b64 (chat_archive 未装 或 老条目)
+      2. 拿不到 → 看 chat_archive 装没装, 装了去它 web_cache 读
+      3. 两边都没有 → 返 has_image=False
+    """
     if plugin._caption_cache is None:
         return err("SQLite 缓存未初始化", 500)
     image_id = (image_id or "").strip()
@@ -185,19 +191,40 @@ async def _do_thumbnail(plugin, image_id: str):
     e = plugin._caption_cache.get(image_id, with_b64=True)
     if e is None:
         return err("未找到该 image_id", 404)
-    mime = e.mime_type
-    if not e.image_b64:
+
+    # 路径 1: 本插件 SQLite 存了 b64 (老数据 / chat_archive 未装)
+    if e.image_b64:
+        data_mime = e.mime_type or "image/jpeg"
         return ok({
-            "image_id": image_id, "mime_type": mime, "data_url": "",
+            "image_id": image_id, "mime_type": data_mime,
+            "data_url": f"data:{data_mime};base64,{e.image_b64}",
             "width": e.width, "height": e.height,
-            "file_size": e.file_size, "has_image": False,
+            "file_size": e.file_size, "has_image": True,
         })
-    data_mime = mime or "image/jpeg"
+
+    # 路径 2: 走 chat_archive
+    try:
+        import chat_archive_integration
+        if chat_archive_integration.is_chat_archive_installed():
+            found = chat_archive_integration.find_chat_archive_image(e.image_url)
+            if found:
+                data, mime, w, h = found
+                import base64
+                b64 = base64.b64encode(data).decode("ascii")
+                return ok({
+                    "image_id": image_id, "mime_type": mime,
+                    "data_url": f"data:{mime};base64,{b64}",
+                    "width": w or e.width, "height": h or e.height,
+                    "file_size": len(data), "has_image": True,
+                })
+    except Exception as ex:
+        logger.debug(f"[vision_text_bridge] chat_archive 读图失败: {ex}")
+
+    # 路径 3: 都没有
     return ok({
-        "image_id": image_id, "mime_type": data_mime,
-        "data_url": f"data:{data_mime};base64,{e.image_b64}",
+        "image_id": image_id, "mime_type": e.mime_type, "data_url": "",
         "width": e.width, "height": e.height,
-        "file_size": e.file_size, "has_image": True,
+        "file_size": e.file_size, "has_image": False,
     })
 
 

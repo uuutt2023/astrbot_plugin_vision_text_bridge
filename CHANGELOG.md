@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+### 新增
+- **与 astrbot_plugin_chat_archive 协同**: 检测到该插件时, 本插件不缓存图片 b64, webui 缩略图走 chat_archive 的 `web_cache/`, 过期清理交给 chat_archive
+  - 新模块 `chat_archive_integration.py`
+    - `is_chat_archive_installed()` —— 探测 `data/plugins/astrbot_plugin_chat_archive/metadata.yaml`
+    - `get_chat_archive_cache_dir()` —— 拿 `<data>/plugin_data/astrbot_plugin_chat_archive/web_cache/`
+    - `find_chat_archive_image(url)` —— 算 `sha256(url)[:32] + ext` 读文件
+  - `main.py _persist` —— chat_archive 装时 image_b64 存空串 (单点缓存)
+  - `web_api.py _do_thumbnail` —— 路径 1 (SQLite b64) → 路径 2 (chat_archive 文件) → 路径 3 (返 has_image=False)
+  - 本插件 `clean_expired` 仍跑 (清 description 行, 跟 chat_archive 清理 web_cache 不冲突)
+  - 新 test `test_chat_archive.py` (10 个反向验证)
+
 ### 删除
 - **完全移除 hit_count 统计**：webui 打开时不再递增命中次数
   - `CaptionCache.get()` 改为纯读,不再写 `hit_count` / `last_hit_at`

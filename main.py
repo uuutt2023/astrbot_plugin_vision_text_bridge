@@ -925,6 +925,11 @@ class VisionTextBridgePlugin(Star):
         if self._caption_cache is None:
             return
         b64, mime, w, h, size = await self._fetch_image_meta(url, image_bytes)
+        # 如果 chat_archive 装了, 本插件 SQLite 不存 image_b64 (省 DB 空间, 统一从 chat_archive 拿)
+        # 过期清理也交由 chat_archive 负责 (它每天扫 web_cache)
+        import chat_archive_integration
+        if chat_archive_integration.is_chat_archive_installed():
+            b64 = ""  # : 单点缓存 - chat_archive 拥有图片
         try:
             self._caption_cache.put(
                 image_id=image_id, url=url, description=description,
