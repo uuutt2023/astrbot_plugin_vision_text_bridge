@@ -1,70 +1,17 @@
 """test_regenerate.py — 测试 /cache/regenerate 端点修复: 用 image_id 查 url, 不传 image_id 给 mmx。
-
-复用 test.py 的 astrbot stub 模式（沙箱无 astrbot/quart）。
 """
 import os
 import sys
 import json
 import asyncio
 import tempfile
-import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-
-def _install_stub():
-    """复制 test.py 的 stub 安装逻辑 (沙箱无 astrbot/quart)。"""
-    stub = types.ModuleType("astrbot")
-    api = types.ModuleType("astrbot.api")
-    api.AstrBotConfig = dict
-    api.logger = SimpleNamespace(
-        info=lambda *a, **k: None,
-        warning=lambda *a, **k: None,
-        error=lambda *a, **k: None,
-        exception=lambda *a, **k: None,
-        debug=lambda *a, **k: None,
-    )
-    event_module = types.ModuleType("astrbot.api.event")
-    event_module.AstrMessageEvent = SimpleNamespace
-    event_module.filter = SimpleNamespace(
-        on_llm_request=lambda *a, **k: (lambda f: f),
-        command=lambda *a, **k: (lambda f: f),
-        command_group=lambda *a, **k: (lambda f: f),
-    )
-    event_module.MessageChain = list
-    provider_module = types.ModuleType("astrbot.api.provider")
-    provider_module.ProviderRequest = SimpleNamespace
-    star_module = types.ModuleType("astrbot.api.star")
-    star_module.Context = SimpleNamespace
-    star_module.Star = object
-    star_module.register = lambda *a, **k: (lambda cls: cls)
-    sys.modules.setdefault("astrbot", stub)
-    sys.modules.setdefault("astrbot.api", api)
-    sys.modules.setdefault("astrbot.api.event", event_module)
-    sys.modules.setdefault("astrbot.api.provider", provider_module)
-    sys.modules.setdefault("astrbot.api.star", star_module)
-    stub.api = api
-
-
-_install_stub()
+from tests.stub_helpers import install_stubs, make_test_plugin, make_test_plugin_with_caption_cache  # noqa: E402
+install_stubs()
 import main  # noqa: E402
-
-# 也 stub quart 给 web_api (web_api 顶部 from quart import request)
-quart_mod = types.ModuleType("quart")
-quart_mod.request = SimpleNamespace(args={}, method="POST")
-async def _stub_get_json(silent=True):
-    return None
-async def _stub_get_data(as_text=False):
-    return ""
-async def _stub_form():
-    return {}
-quart_mod.request.get_json = _stub_get_json
-quart_mod.request.get_data = _stub_get_data
-quart_mod.request.form = _stub_form
-sys.modules.setdefault("quart", quart_mod)
-
 import web_api  # noqa: E402
 
 
@@ -77,13 +24,7 @@ def test_regenerate_uses_url_not_image_id():
     """
     tmpdir = tempfile.mkdtemp()
     db_path = os.path.join(tmpdir, "test.db")
-    plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-    plugin.config = {"mmx_path": "/usr/bin/true"}
-    plugin.mmx_path = "/usr/bin/true"
-    plugin.context = SimpleNamespace()
-    plugin._caption_cache = main.CaptionCache(db_path)
-    plugin._description_cache = {}
-    plugin._vision_semaphore = asyncio.Semaphore(1)
+    plugin = make_test_plugin_with_caption_cache(main, str(db_path))
 
     new_desc = "新生成的描述内容"
     captured = {"url": None}
@@ -123,13 +64,7 @@ def test_regenerate_404_when_image_id_not_found():
     """: 重新生成时 image_id 不存在, 返 404 而非走错路。"""
     tmpdir = tempfile.mkdtemp()
     db_path = os.path.join(tmpdir, "test.db")
-    plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-    plugin.config = {"mmx_path": "/usr/bin/true"}
-    plugin.mmx_path = "/usr/bin/true"
-    plugin.context = SimpleNamespace()
-    plugin._caption_cache = main.CaptionCache(db_path)
-    plugin._description_cache = {}
-    plugin._vision_semaphore = asyncio.Semaphore(1)
+    plugin = make_test_plugin_with_caption_cache(main, str(db_path))
 
     async def fake_read_key(ctx):
         return "nonexistent_image_id_1234567890abcdef"

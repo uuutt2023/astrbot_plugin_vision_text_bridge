@@ -42,20 +42,38 @@ def _get_plugin_root() -> Optional[Path]:
         return None
 
 
+# 模块级 cache: _INSTALL_CHECK_CACHE 避免 每次都 access 磁盘
+#    生命周期: 插件加载期检查一次, 后续请求复用 (AstrBot 不重启插件不会重装)
+_INSTALL_CHECK_CACHE: Optional[bool] = None
+
+
 def is_chat_archive_installed() -> bool:
-    """: 探测 astrbot_plugin_chat_archive 是否安装。"""
+    """: 探测 astrbot_plugin_chat_archive 是否安装 (带 cache)。"""
+    global _INSTALL_CHECK_CACHE
+    if _INSTALL_CHECK_CACHE is not None:
+        return _INSTALL_CHECK_CACHE
     root = _get_plugin_root()
     if root is None:
+        _INSTALL_CHECK_CACHE = False
         return False
     # 1. 探测 plugins 子目录
     plugins_dir = root / "plugins" / "astrbot_plugin_chat_archive"
     if (plugins_dir / "metadata.yaml").exists() or (plugins_dir / "main.py").exists():
+        _INSTALL_CHECK_CACHE = True
         return True
     # 2. 探测 data/plugins (部署变体)
     alt = root / "data" / "plugins" / "astrbot_plugin_chat_archive"
     if (alt / "metadata.yaml").exists() or (alt / "main.py").exists():
+        _INSTALL_CHECK_CACHE = True
         return True
+    _INSTALL_CHECK_CACHE = False
     return False
+
+
+def reset_cache_for_testing() -> None:
+    """: 测试 helper —— 清 cache 重新检查。"""
+    global _INSTALL_CHECK_CACHE
+    _INSTALL_CHECK_CACHE = None
 
 
 # ---------------------------------------------------------------------------

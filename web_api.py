@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 from astrbot.api import logger
 from config_helpers import cfg_int
+import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
 
 
 # 顶层常量
@@ -71,6 +72,35 @@ def ok(data):
 
 def err(message: str, status: int = 400):
     return jsonify({"ok": False, "error": message}), status
+
+
+def _require_caption_cache(plugin):
+    """: 检查 plugin._caption_cache 是否初始化。未初始化返 err tuple, 否则返 None。
+
+    用法:  handler 顶部
+        miss = _require_caption_cache(plugin)
+        if miss is not None:
+            return miss
+    """
+    if plugin._caption_cache is None:
+        return err("SQLite 缓存未初始化", 500)
+    return None
+
+
+def _build_thumbnail_payload(image_id: str, mime: str, b64: str, w: int, h: int, size: int):
+    """: 统一组装缩略图 dict —— 避免 3 个分支手搓重复字段。
+
+    b64 为空时 mime 保留原值 (老条目可能未存 mime, 返回空串);
+    b64 非空时 mime 退到 "image/jpeg"。
+    """
+    effective_mime = (mime or "image/jpeg") if b64 else mime
+    return {
+        "image_id": image_id,
+        "mime_type": effective_mime,
+        "data_url": f"data:{effective_mime};base64,{b64}" if b64 else "",
+        "width": w, "height": h, "file_size": size,
+        "has_image": bool(b64),
+    }
 
 
 def read_args() -> dict:
@@ -183,8 +213,9 @@ async def _do_thumbnail(plugin, image_id: str):
       2. 拿不到 → 看 chat_archive 装没装, 装了去它 web_cache 读
       3. 两边都没有 → 返 has_image=False
     """
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     image_id = (image_id or "").strip()
     if not image_id:
         return err("缺少参数 image_id")
@@ -194,46 +225,37 @@ async def _do_thumbnail(plugin, image_id: str):
 
     # 路径 1: 本插件 SQLite 存了 b64 (老数据 / chat_archive 未装)
     if e.image_b64:
-        data_mime = e.mime_type or "image/jpeg"
-        return ok({
-            "image_id": image_id, "mime_type": data_mime,
-            "data_url": f"data:{data_mime};base64,{e.image_b64}",
-            "width": e.width, "height": e.height,
-            "file_size": e.file_size, "has_image": True,
-        })
+        return ok(_build_thumbnail_payload(
+            image_id, e.mime_type, e.image_b64, e.width, e.height, e.file_size,
+        ))
 
     # 路径 2: 走 chat_archive
     try:
-        import chat_archive_integration
         if chat_archive_integration.is_chat_archive_installed():
             found = chat_archive_integration.find_chat_archive_image(e.image_url)
             if found:
-                data, mime, w, h = found
                 import base64
+                data, mime, w, h = found
                 b64 = base64.b64encode(data).decode("ascii")
-                return ok({
-                    "image_id": image_id, "mime_type": mime,
-                    "data_url": f"data:{mime};base64,{b64}",
-                    "width": w or e.width, "height": h or e.height,
-                    "file_size": len(data), "has_image": True,
-                })
+                return ok(_build_thumbnail_payload(
+                    image_id, mime, b64, w or e.width, h or e.height, len(data),
+                ))
     except Exception as ex:
         logger.debug(f"[vision_text_bridge] chat_archive 读图失败: {ex}")
 
     # 路径 3: 都没有
-    return ok({
-        "image_id": image_id, "mime_type": e.mime_type, "data_url": "",
-        "width": e.width, "height": e.height,
-        "file_size": e.file_size, "has_image": False,
-    })
+    return ok(_build_thumbnail_payload(
+        image_id, e.mime_type, "", e.width, e.height, e.file_size,
+    ))
 
 
 # ---------------------------------------------------------------------------
 # handlers
 # ---------------------------------------------------------------------------
 async def api_stats(plugin):
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     s = plugin._caption_cache.stats().to_dict()
     s["in_memory_cache_size"] = len(plugin._description_cache)
     s["memory_cache_ttl_seconds"] = int(plugin.config.get("memory_cache_ttl_seconds", 300) or 0)
@@ -253,8 +275,9 @@ async def api_stats(plugin):
 
 async def api_stats_timeline(plugin):
     """: 按天创建的缓存条数 (默认 30 天) — webui 画柱状图用。"""
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     try:
         a = read_args()
         days = int(a.get("days", 30) or 30)
@@ -266,8 +289,9 @@ async def api_stats_timeline(plugin):
 
 
 async def api_list(plugin):
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     a = read_args()
     limit = int(a.get("limit", 50) or 50)
     offset = int(a.get("offset", 0) or 0)
@@ -284,8 +308,9 @@ async def api_list(plugin):
 
 
 async def api_delete(plugin):
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     key = await read_key_from_request(plugin.context)
     if not key:
         return err("缺少参数 key")
@@ -302,8 +327,9 @@ async def api_delete(plugin):
 
 
 async def api_clear(plugin):
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     n = plugin._caption_cache.clear()
     plugin._description_cache.clear()
     try:
@@ -314,8 +340,9 @@ async def api_clear(plugin):
 
 
 async def api_regenerate(plugin):
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     key = await read_key_from_request(plugin.context)
     if not key:
         return err("缺少参数 key")
@@ -335,8 +362,9 @@ async def api_regenerate(plugin):
 
 
 async def api_export(plugin):
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     entries = plugin._caption_cache.list(limit=10000, offset=0)
     return ok({
         "exported_at": time.time(),
@@ -352,8 +380,9 @@ async def api_thumbnail(plugin, image_id: str = ""):
 
 async def api_clean_expired(plugin):
     """: 手动触发过期清理 (返删除条数)。"""
-    if plugin._caption_cache is None:
-        return err("SQLite 缓存未初始化", 500)
+    miss = _require_caption_cache(plugin)
+    if miss is not None:
+        return miss
     ttl_days = cfg_int(plugin.config, "sqlite_cache_ttl_days", 7)
     if ttl_days <= 0:
         return err("sqlite_cache_ttl_days=0，未启用过期清理", 400)

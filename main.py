@@ -66,6 +66,7 @@ except ImportError:
         return added
     logger.warning("[vision_text_bridge] 旧版 image_utils.py 无 collect_image_urls_from_components — 已用本地 fallback, 嵌套扫描将失效。git pull 后重启 AstrBot 解决。")
 from tool_filter import match_tool_name as _match_tool_name, filter_disabled_tools as _filter_disabled_tools
+import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
 from mmx_runner import (
     MmxResult, build_vision_command as _build_vision_command,
     run_mmx as _run_mmx_fn, install_mmx_cli as _install_mmx_cli_fn,
@@ -317,6 +318,19 @@ class VisionTextBridgePlugin(Star):
         if self.config.get("verbose_logging", False):
             return True
         return any(bool(self.config.get(f"verbose_{f}", False)) for f in flags)
+
+    def _vdebug(self, flag: str, msg: str, *args) -> None:
+        """: 细粒度调试日志 — 仅在 verbose_{flag} 或 verbose_logging 开启时打。
+
+        取代多处 ``if self._should_log("X"): logger.debug(...)`` 重复。
+        """
+        if self._should_log(flag):
+            logger.debug(msg, *args)
+
+    def _vinfo(self, flag: str, msg: str, *args) -> None:
+        """: 细粒度信息日志 — 同 _vdebug, 走 INFO 级别。"""
+        if self._should_log(flag):
+            logger.info(msg, *args)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -927,7 +941,7 @@ class VisionTextBridgePlugin(Star):
         b64, mime, w, h, size = await self._fetch_image_meta(url, image_bytes)
         # 如果 chat_archive 装了, 本插件 SQLite 不存 image_b64 (省 DB 空间, 统一从 chat_archive 拿)
         # 过期清理也交由 chat_archive 负责 (它每天扫 web_cache)
-        import chat_archive_integration
+        # chat_archive_integration 模块已在顶部 import
         if chat_archive_integration.is_chat_archive_installed():
             b64 = ""  # : 单点缓存 - chat_archive 拥有图片
         try:

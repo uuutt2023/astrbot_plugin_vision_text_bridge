@@ -18,46 +18,8 @@ from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# stub (复用 test.py 模式)
-import types as _t
-stub = _t.ModuleType("astrbot")
-api = _t.ModuleType("astrbot.api")
-api.AstrBotConfig = dict
-api.logger = SimpleNamespace(
-    info=lambda *a, **k: None, warning=lambda *a, **k: None,
-    error=lambda *a, **k: None, exception=lambda *a, **k: None,
-    debug=lambda *a, **k: None,
-)
-ev = _t.ModuleType("astrbot.api.event")
-ev.AstrMessageEvent = SimpleNamespace
-ev.filter = SimpleNamespace(
-    on_llm_request=lambda *a, **k: (lambda f: f),
-    command=lambda *a, **k: (lambda f: f),
-    command_group=lambda *a, **k: (lambda f: f),
-)
-ev.MessageChain = list
-pr = _t.ModuleType("astrbot.api.provider")
-pr.ProviderRequest = SimpleNamespace
-st = _t.ModuleType("astrbot.api.star")
-st.Context = SimpleNamespace
-st.Star = object
-st.register = lambda *a, **k: (lambda c: c)
-
-
-# StarTools mock (chat_archive_integration 用)
-class _StarTools:
-    @staticmethod
-    def get_data_dir():
-        return str(Path(tempfile.mkdtemp()) / "plugin_data" / "test_plugin")
-st.StarTools = _StarTools
-
-sys.modules.setdefault("astrbot", stub)
-sys.modules.setdefault("astrbot.api", api)
-sys.modules.setdefault("astrbot.api.event", ev)
-sys.modules.setdefault("astrbot.api.provider", pr)
-sys.modules.setdefault("astrbot.api.star", st)
-stub.api = api
+from tests.stub_helpers import install_stubs, make_test_plugin, make_test_plugin_with_caption_cache  # noqa: E402
+install_stubs()
 import main  # noqa: E402
 import caption_cache  # noqa: E402
 import chat_archive_integration as cai  # noqa: E402
@@ -128,17 +90,7 @@ def test_persist_skips_b64_when_chat_archive_installed():
     """: chat_archive 装时 _persist 不存 image_b64 (省 DB)。"""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "persist.db"
-        plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-        plugin.config = {
-            "mmx_path": "/usr/bin/true",
-            "cache_descriptions": True,
-            "max_b64_size_kb": 200,
-        }
-        plugin.mmx_path = "/usr/bin/true"
-        plugin.context = SimpleNamespace()
-        plugin._caption_cache = main.CaptionCache(db_path)
-        plugin._description_cache = {}
-        plugin._vision_semaphore = asyncio.Semaphore(1)
+        plugin = make_test_plugin_with_caption_cache(main, str(db_path))
         # bypass _fetch_image_meta 走直接控制
         async def fake_fetch_meta(url, image_bytes=b""):
             return "ZmFrZWJhc2U2NA==", "image/jpeg", 100, 100, 11
@@ -159,17 +111,7 @@ def test_persist_stores_b64_when_chat_archive_not_installed():
     """: chat_archive 未装时 _persist 仍存 image_b64 (兼容老路径)。"""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "persist2.db"
-        plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-        plugin.config = {
-            "mmx_path": "/usr/bin/true",
-            "cache_descriptions": True,
-            "max_b64_size_kb": 200,
-        }
-        plugin.mmx_path = "/usr/bin/true"
-        plugin.context = SimpleNamespace()
-        plugin._caption_cache = main.CaptionCache(db_path)
-        plugin._description_cache = {}
-        plugin._vision_semaphore = asyncio.Semaphore(1)
+        plugin = make_test_plugin_with_caption_cache(main, str(db_path))
         async def fake_fetch_meta(url, image_bytes=b""):
             return "ZmFrZWJhc2U2NA==", "image/jpeg", 100, 100, 11
         with patch.object(plugin, "_fetch_image_meta", fake_fetch_meta):
@@ -190,11 +132,7 @@ def test_thumbnail_uses_chat_archive_when_no_b64():
         db_path = Path(tmp) / "thumb.db"
         cache_dir = Path(tmp) / "web_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-        plugin.config = {}
-        plugin.context = SimpleNamespace()
-        plugin._caption_cache = main.CaptionCache(db_path)
-        plugin._description_cache = {}
+        plugin = make_test_plugin_with_caption_cache(main, str(db_path))
 
         url = "https://x.com/c.jpg"
         # put 时 b64 空 (chat_archive 装的模式)
@@ -227,11 +165,7 @@ def test_thumbnail_uses_b64_when_chat_archive_not_installed():
     """: SQLite 有 b64, chat_archive 没装 → 走 SQLite (老路径)。"""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "thumb2.db"
-        plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-        plugin.config = {}
-        plugin.context = SimpleNamespace()
-        plugin._caption_cache = main.CaptionCache(db_path)
-        plugin._description_cache = {}
+        plugin = make_test_plugin_with_caption_cache(main, str(db_path))
 
         # put 时 b64 有 (chat_archive 未装模式)
         plugin._caption_cache.put(
@@ -258,11 +192,7 @@ def test_thumbnail_returns_has_image_false_when_both_missing():
         db_path = Path(tmp) / "thumb3.db"
         cache_dir = Path(tmp) / "web_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        plugin = main.VisionTextBridgePlugin.__new__(main.VisionTextBridgePlugin)
-        plugin.config = {}
-        plugin.context = SimpleNamespace()
-        plugin._caption_cache = main.CaptionCache(db_path)
-        plugin._description_cache = {}
+        plugin = make_test_plugin_with_caption_cache(main, str(db_path))
 
         plugin._caption_cache.put("img_222", "https://x.com/e.jpg", "鸟")
         # 故意不放文件

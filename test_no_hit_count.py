@@ -12,37 +12,8 @@ from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# stub (复用 test.py 模式)
-import types as _t
-stub = _t.ModuleType("astrbot")
-api = _t.ModuleType("astrbot.api")
-api.AstrBotConfig = dict
-api.logger = SimpleNamespace(
-    info=lambda *a, **k: None, warning=lambda *a, **k: None,
-    error=lambda *a, **k: None, exception=lambda *a, **k: None,
-    debug=lambda *a, **k: None,
-)
-ev = _t.ModuleType("astrbot.api.event")
-ev.AstrMessageEvent = SimpleNamespace
-ev.filter = SimpleNamespace(
-    on_llm_request=lambda *a, **k: (lambda f: f),
-    command=lambda *a, **k: (lambda f: f),
-    command_group=lambda *a, **k: (lambda f: f),
-)
-ev.MessageChain = list
-pr = _t.ModuleType("astrbot.api.provider")
-pr.ProviderRequest = SimpleNamespace
-st = _t.ModuleType("astrbot.api.star")
-st.Context = SimpleNamespace
-st.Star = object
-st.register = lambda *a, **k: (lambda c: c)
-sys.modules.setdefault("astrbot", stub)
-sys.modules.setdefault("astrbot.api", api)
-sys.modules.setdefault("astrbot.api.event", ev)
-sys.modules.setdefault("astrbot.api.provider", pr)
-sys.modules.setdefault("astrbot.api.star", st)
-stub.api = api
+from tests.stub_helpers import install_stubs  # noqa: E402
+install_stubs()
 import main  # noqa: E402
 import caption_cache  # noqa: E402
 
