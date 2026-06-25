@@ -149,11 +149,16 @@ async def login_mmx(mmx_path: str, api_key: str, config: dict) -> None:
         logger.warning("[vision_text_bridge] 预登录异常: %s", e)
 
 
-async def install_mmx_cli(npm_path: str | None) -> None:
-    """通过 npm 全局安装 mmx-cli。失败警告不抛。"""
+async def install_mmx_cli(npm_path: str | None) -> bool:
+    """通过 npm 全局安装 mmx-cli。失败返 False, 警告不抛。
+
+    Returns:
+        True: 安装成功 (或认为已装)
+        False: npm 不可用 / 安装失败 / 超时
+    """
     if not npm_path:
         logger.warning("[vision_text_bridge] 未找到 npm，无法自动安装 mmx-cli")
-        return
+        return False
     logger.info("[vision_text_bridge] 开始自动安装 mmx-cli...")
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -167,16 +172,19 @@ async def install_mmx_cli(npm_path: str | None) -> None:
             proc.kill()
             await proc.wait()
             logger.warning("[vision_text_bridge] 自动安装 mmx-cli 超时")
-            return
+            return False
         if proc.returncode != 0:
             logger.warning(
                 "[vision_text_bridge] 自动安装失败: %s",
                 stderr.decode("utf-8", errors="replace"),
             )
+            return False
         else:
             logger.info("[vision_text_bridge] mmx-cli 安装完成")
+            return True
     except Exception:
         logger.exception("[vision_text_bridge] 自动安装 mmx-cli 异常")
+        return False
 
 
 # ---------------------------------------------------------------------------

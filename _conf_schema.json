@@ -46,8 +46,8 @@
       "auto_install_cli": {
         "description": "找不到 mmx 时自动安装 mmx-cli",
         "type": "bool",
-        "hint": "默认关闭。需要系统已装 Node.js/npm, 且 AstrBot 进程有全局安装权限。",
-        "default": false
+        "hint": "默认开启。需系统装 Node.js/npm, 且 AstrBot 进程有全局安装权限。装失败时跳 warning + 详细错误信息, 不会崩溃。安装中 1-3 分钟。",
+        "default": true
       },
       "command_timeout": {
         "description": "单次 mmx vision describe 超时（秒）",

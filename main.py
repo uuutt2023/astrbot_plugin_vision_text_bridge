@@ -406,13 +406,26 @@ class VisionTextBridgePlugin(Star):
             logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
 
         # 3. mmx 安装 + 预登录
-        if not self.mmx_path and self.config.get("auto_install_cli", False):
-            await self._install_mmx_cli()
-            self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd")
+        if not self.mmx_path and self.config.get("auto_install_cli", True):
+            logger.info("[vision_text_bridge] 未找到 mmx CLI, 尝试自动安装 mmx-cli (1-3 分钟)...")
+            install_ok = await self._install_mmx_cli()
+            if install_ok:
+                self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd")
+                if self.mmx_path:
+                    logger.info("[vision_text_bridge] mmx-cli 自动安装成功: %s", self.mmx_path)
+                else:
+                    logger.warning("[vision_text_bridge] 自动安装完成但 mmx 仍不在 PATH 中, 请检查 PATH 或手动设置 mmx_path 配置")
+            else:
+                logger.warning(
+                    "[vision_text_bridge] mmx-cli 自动安装失败。请手动执行:\n"
+                    "  1. 装 Node.js/npm (https://nodejs.org/)\n"
+                    "  2.  npm install -g mmx-cli\n"
+                    "  3. 重启 AstrBot 或在插件配置中指定 mmx_path 绝对路径"
+                )
         if not self.mmx_path:
             logger.warning(
-                "[vision_text_bridge] 未找到 mmx CLI，请先 npm install -g mmx-cli"
-                " 或在插件配置中指定 mmx_path。"
+                "[vision_text_bridge] 未找到 mmx CLI, 插件不处理图片转换。"
+                "请手动 npm install -g mmx-cli 或在插件配置中指定 mmx_path。"
             )
             return
         if self.config.get("auto_login", True):
@@ -1137,8 +1150,9 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.warning("[vision_text_bridge] 预登录异常: %s", e)
 
-    async def _install_mmx_cli(self) -> None:
-        await _install_mmx_cli_fn(self.npm_path)
+    async def _install_mmx_cli(self) -> bool:
+        """: 装 mmx-cli, 返 bool. 装成功 True, 失败 False (不抛)."""
+        return await _install_mmx_cli_fn(self.npm_path)
 
     def _diagnose_mmx_error(self, err_text: str, url: str) -> None:
         _diagnose_mmx_error_fn(err_text, url, self._preview, VisionTextBridgePlugin._DIAGNOSED)

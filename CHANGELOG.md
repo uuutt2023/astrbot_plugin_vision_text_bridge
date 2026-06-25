@@ -16,6 +16,14 @@
   - 新 test `test_integration_status.py` (8 个反向验证)
 
 ### 修复
+- **mmx-cli 默认自动安装**: `auto_install_cli` default `false` → `true`
+  - 用户装本插件的意图就是用 mmx, 不应需要手动开启
+  - `install_mmx_cli()` 返 `bool` 取代 None — 装成功 True / 失败 False
+  - main.py 装中 / 装成功 / 装失败都打详细日志
+  - 装失败给明确 3 步手动指南 (装 Node.js / npm install -g / 设 mmx_path)
+  - 新 test `test_auto_install.py` (6 个反向验证)
+
+### 修复
 - **插件加载报 'string indices must be integers, not str'**: 移除 _conf_schema.json 顶层 `_doc` 文本字段。AstrBot 框架 `_parse_schema` 递归遍历时, 遇到 string value 调 v["type"] 会报 TypeError 并中断加载。现在 schema 顶层只允许 group (含 items 的 dict), 文档说明放 README/CHANGELOG。  新 test `test_schema_top_level_all_values_are_dict` 防止再犯。
 
 ### 重构
