@@ -2,6 +2,8 @@
 import os
 import sys
 import asyncio
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -89,6 +91,53 @@ def test_init_calls_auto_install_when_mmx_missing():
     print("✓ test_init_calls_auto_install_when_mmx_missing")
 
 
+
+def test_install_mmx_local_returns_bool_no_npm():
+    """: install_mmx_local 没 npm 返 False."""
+    async def run():
+        return await mmx_runner.install_mmx_local(None, "/tmp/fake_target")
+    result = asyncio.run(run())
+    assert result is False
+    print("✓ test_install_mmx_local_returns_bool_no_npm")
+
+
+def test_install_mmx_local_returns_bool_success():
+    """: install_mmx_local 装成功返 True。"""
+    async def run():
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, ".mmx")
+            with patch("asyncio.create_subprocess_exec") as mock_exec:
+                mock_proc = AsyncMock()
+                mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+                mock_proc.returncode = 0
+                mock_exec.return_value = mock_proc
+                return await mmx_runner.install_mmx_local("/usr/bin/npm", target)
+    result = asyncio.run(run())
+    assert result is True
+    print("✓ test_install_mmx_local_returns_bool_success")
+
+
+def test_find_local_mmx_finds_binary():
+    """: find_local_mmx 在 plugin dir 找到 .bin/mmx."""
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = Path(tmp) / ".mmx" / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        (bin_dir / "mmx").write_bytes(b"#!/bin/sh\necho mmx")
+        (bin_dir / "mmx").chmod(0o755)
+        result = mmx_runner.find_local_mmx(tmp)
+        assert result is not None
+        assert result.endswith("mmx")
+        assert "/.mmx/" in result
+    print("✓ test_find_local_mmx_finds_binary")
+
+
+def test_find_local_mmx_returns_none_when_missing():
+    """: find_local_mmx plugin dir 没 .mmx 返 None。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = mmx_runner.find_local_mmx(tmp)
+        assert result is None
+    print("✓ test_find_local_mmx_returns_none_when_missing")
+
 if __name__ == "__main__":
     test_schema_auto_install_cli_default_true()
     test_install_mmx_cli_returns_bool_success()
@@ -96,5 +145,9 @@ if __name__ == "__main__":
     test_install_mmx_cli_returns_bool_npm_fail()
     test_install_mmx_cli_returns_bool_timeout()
     test_init_calls_auto_install_when_mmx_missing()
+    test_install_mmx_local_returns_bool_no_npm()
+    test_install_mmx_local_returns_bool_success()
+    test_find_local_mmx_finds_binary()
+    test_find_local_mmx_returns_none_when_missing()
     print("---")
     print("ALL AUTO-INSTALL TESTS PASSED")

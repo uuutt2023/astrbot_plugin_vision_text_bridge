@@ -16,6 +16,7 @@ debug / redact / 错误诊断 set 共享 :data:`_DIAGNOSED`。
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import json
 import re
 from dataclasses import dataclass
@@ -188,6 +189,60 @@ async def install_mmx_cli(npm_path: str | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+
+
+async def install_mmx_local(npm_path: str | None, target_dir: str) -> bool:
+    """把 mmx-cli 装到 plugin 本地目录 (--prefix target_dir), 不需 root, 不改 system PATH.
+
+    Returns:
+        True: 装成功
+        False: npm 不可用 / 装失败
+    """
+    if not npm_path:
+        logger.warning("[vision_text_bridge] 未找到 npm，无法本地装 mmx-cli")
+        return False
+    td = Path(target_dir)
+    td.mkdir(parents=True, exist_ok=True)
+    logger.info("[vision_text_bridge] 装 mmx-cli 到本地目录: %s", td)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            npm_path, "install", "--prefix", str(td), "mmx-cli",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("[vision_text_bridge] 本地装 mmx-cli 超时")
+            return False
+        if proc.returncode != 0:
+            logger.warning(
+                "[vision_text_bridge] 本地装 mmx-cli 失败: %s",
+                stderr.decode("utf-8", errors="replace"),
+            )
+            return False
+        logger.info("[vision_text_bridge] mmx-cli 本地装成功: %s", td)
+        return True
+    except Exception:
+        logger.exception("[vision_text_bridge] 本地装 mmx-cli 异常")
+        return False
+
+
+def find_local_mmx(plugin_dir: str) -> str | None:
+    """查找 plugin 本地装的 mmx 二进制。多个可能位置。"""
+    pd = Path(plugin_dir)
+    candidates = [
+        pd / ".mmx" / "node_modules" / ".bin" / "mmx",
+        pd / ".mmx" / "node_modules" / ".bin" / "mmx.cmd",
+        pd / ".mmx" / "bin" / "mmx",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
+
 # 错误诊断 (warn-once)
 # ---------------------------------------------------------------------------
 
