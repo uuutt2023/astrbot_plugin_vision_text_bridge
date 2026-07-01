@@ -29,59 +29,63 @@ def test_schema_auto_install_cli_default_true():
     raise AssertionError("schema 中找不到 auto_install_cli")
 
 
-def test_install_mmx_cli_returns_bool_success():
-    """: install_mmx_cli 装成功返 True."""
+def test_install_mmx_cli_returns_path_success():
+    """: install_mmx_cli 装成功 + 找到 mmx → 返 mmx 绝对路径。"""
     async def run():
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
-            mock_proc = AsyncMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            return await mmx_runner.install_mmx_cli("/usr/bin/npm")
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "mmx").write_bytes(b"#!/bin/sh\necho mmx")
+            (bin_dir / "mmx").chmod(0o755)
+            call_count = [0]
+            async def fake_exec(*args, **kwargs):
+                call_count[0] += 1
+                mock = AsyncMock()
+                if call_count[0] == 1:
+                    mock.communicate = AsyncMock(return_value=(b"ok", b""))
+                    mock.returncode = 0
+                else:
+                    mock.communicate = AsyncMock(return_value=(tmp.encode(), b""))
+                    mock.returncode = 0
+                return mock
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+                return await mmx_runner.install_mmx_cli("/usr/bin/npm")
     result = asyncio.run(run())
-    assert result is True, f"装成功应返 True, 实际 {result}"
-    print("✓ test_install_mmx_cli_returns_bool_success")
-
-
-def test_install_mmx_cli_returns_bool_no_npm():
-    """: install_mmx_cli 没 npm 返 False."""
+    assert result is not None, "装成功应返 mmx 路径"
+    assert result.endswith("/bin/mmx"), f"路径格式错: {result}"
+    print("✓ test_install_mmx_cli_returns_path_success")
+def test_install_mmx_cli_returns_none_no_npm():
+    """: install_mmx_cli 没 npm 返 None。"""
     async def run():
         return await mmx_runner.install_mmx_cli(None)
     result = asyncio.run(run())
-    assert result is False, f"没 npm 应返 False, 实际 {result}"
-    print("✓ test_install_mmx_cli_returns_bool_no_npm")
-
-
-def test_install_mmx_cli_returns_bool_npm_fail():
-    """: install_mmx_cli npm 安装失败返 False."""
+    assert result is None
+    print("✓ test_install_mmx_cli_returns_none_no_npm")
+def test_install_mmx_cli_returns_none_npm_fail():
+    """: install_mmx_cli npm 装失败返 None。"""
     async def run():
         with patch("asyncio.create_subprocess_exec") as mock_exec:
             mock_proc = AsyncMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b"ERR! code EACCES"))
+            mock_proc.communicate = AsyncMock(return_value=(b"", b"EACCES: permission denied"))
             mock_proc.returncode = 1
             mock_exec.return_value = mock_proc
             return await mmx_runner.install_mmx_cli("/usr/bin/npm")
     result = asyncio.run(run())
-    assert result is False, f"npm 失败应返 False, 实际 {result}"
-    print("✓ test_install_mmx_cli_returns_bool_npm_fail")
-
-
-def test_install_mmx_cli_returns_bool_timeout():
-    """: install_mmx_cli 超时返 False. patch asyncio.wait_for 抛 TimeoutError."""
+    assert result is None
+    print("✓ test_install_mmx_cli_returns_none_npm_fail")
+def test_install_mmx_cli_returns_none_timeout():
+    """: install_mmx_cli 超时返 None。"""
     async def run():
         with patch("asyncio.create_subprocess_exec") as mock_exec:
             mock_proc = AsyncMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
             mock_proc.kill = MagicMock()
             mock_proc.wait = AsyncMock()
             mock_exec.return_value = mock_proc
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-                return await mmx_runner.install_mmx_cli("/usr/bin/npm")
+            return await mmx_runner.install_mmx_cli("/usr/bin/npm")
     result = asyncio.run(run())
-    assert result is False, f"超时应返 False, 实际 {result}"
-    print("✓ test_install_mmx_cli_returns_bool_timeout")
-
-
+    assert result is None
+    print("✓ test_install_mmx_cli_returns_none_timeout")
 def test_main_module_imports_with_old_mmx_runner():
     """: main.py 在 mmx_runner 没 install_mmx_local/find_local_mmx 时也能加载 (compatibility)."""
     # 1. 模拟老 mmx_runner: 缺 install_mmx_local
@@ -205,10 +209,10 @@ def test_find_local_mmx_returns_none_when_missing():
 
 if __name__ == "__main__":
     test_schema_auto_install_cli_default_true()
-    test_install_mmx_cli_returns_bool_success()
-    test_install_mmx_cli_returns_bool_no_npm()
-    test_install_mmx_cli_returns_bool_npm_fail()
-    test_install_mmx_cli_returns_bool_timeout()
+    test_install_mmx_cli_returns_path_success()
+    test_install_mmx_cli_returns_none_no_npm()
+    test_install_mmx_cli_returns_none_npm_fail()
+    test_install_mmx_cli_returns_none_timeout()
     test_main_module_imports_with_old_mmx_runner()
     test_init_falls_back_to_global_install_when_local_unavailable()
     test_init_calls_auto_install_when_mmx_missing()

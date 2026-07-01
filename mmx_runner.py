@@ -150,17 +150,21 @@ async def login_mmx(mmx_path: str, api_key: str, config: dict) -> None:
         logger.warning("[vision_text_bridge] 预登录异常: %s", e)
 
 
-async def install_mmx_cli(npm_path: str | None) -> bool:
-    """通过 npm 全局安装 mmx-cli。失败返 False, 警告不抛。
+async def install_mmx_cli(npm_path: str | None) -> str | None:
+    """通过 npm 全局装 mmx-cli, 装后查 npm bin 目录直接找 mmx 路径.
+
+    npm 全局装的 bin 可能不在系统 PATH 里 (例如装到 ~/.npm-global/bin 但
+    PATH 没追加), shutil.which("mmx") 找不到. 此函数装完后主动查
+    `npm prefix -g` + `bin/mmx` 拿绝对路径, 避开 PATH 问题.
 
     Returns:
-        True: 安装成功 (或认为已装)
-        False: npm 不可用 / 安装失败 / 超时
+        str: mmx 二进制绝对路径 (装成功 + 找到)
+        None: npm 不可用 / 装失败 / 找不到 mmx 文件
     """
     if not npm_path:
-        logger.warning("[vision_text_bridge] 未找到 npm，无法自动安装 mmx-cli")
-        return False
-    logger.info("[vision_text_bridge] 开始自动安装 mmx-cli...")
+        logger.warning("[vision_text_bridge] 未找到 npm，无法自动装 mmx-cli")
+        return None
+    logger.info("[vision_text_bridge] 开始自动装 mmx-cli...")
     try:
         proc = await asyncio.create_subprocess_exec(
             npm_path, "install", "-g", "mmx-cli",
@@ -172,25 +176,48 @@ async def install_mmx_cli(npm_path: str | None) -> bool:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            logger.warning("[vision_text_bridge] 自动安装 mmx-cli 超时")
-            return False
+            logger.warning("[vision_text_bridge] 自动装 mmx-cli 超时")
+            return None
         if proc.returncode != 0:
             logger.warning(
-                "[vision_text_bridge] 自动安装失败: %s",
+                "[vision_text_bridge] 自动装失败: %s",
                 stderr.decode("utf-8", errors="replace"),
             )
-            return False
-        else:
-            logger.info("[vision_text_bridge] mmx-cli 安装完成")
-            return True
+            return None
+        logger.info("[vision_text_bridge] mmx-cli 装完成, 查 bin 路径...")
     except Exception:
-        logger.exception("[vision_text_bridge] 自动安装 mmx-cli 异常")
-        return False
+        logger.exception("[vision_text_bridge] 自动装 mmx-cli 异常")
+        return None
 
-
-# ---------------------------------------------------------------------------
-
-
+    # 查 npm 全局 bin 目录: npm prefix -g 拿 prefix, bin 在 prefix/bin
+    try:
+        proc2 = await asyncio.create_subprocess_exec(
+            npm_path, "prefix", "-g",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc2.communicate(), timeout=10)
+        if proc2.returncode != 0:
+            logger.warning("[vision_text_bridge] npm prefix -g 失败")
+            return None
+        prefix = stdout.decode("utf-8", errors="replace").strip()
+        # 可能在多行 (warnings + path), 取最后非空行
+        prefix = [l.strip() for l in prefix.splitlines() if l.strip()][-1] if prefix else ""
+        if not prefix:
+            logger.warning("[vision_text_bridge] npm prefix -g 输出空")
+            return None
+        # 找 prefix/bin/mmx 或 prefix/bin/mmx.cmd
+        from pathlib import Path as _P
+        prefix_path = _P(prefix)
+        for candidate in [prefix_path / "bin" / "mmx", prefix_path / "bin" / "mmx.cmd"]:
+            if candidate.is_file():
+                logger.info("[vision_text_bridge] 找到 npm 全局 mmx: %s", candidate)
+                return str(candidate)
+        logger.warning("[vision_text_bridge] npm prefix=%s 下未找到 bin/mmx", prefix)
+        return None
+    except Exception:
+        logger.exception("[vision_text_bridge] 查 npm bin 目录异常")
+        return None
 async def install_mmx_local(npm_path: str | None, target_dir: str) -> bool:
     """把 mmx-cli 装到 plugin 本地目录 (--prefix target_dir), 不需 root, 不改 system PATH.
 

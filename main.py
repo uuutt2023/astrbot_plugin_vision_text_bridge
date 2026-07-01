@@ -439,13 +439,12 @@ class VisionTextBridgePlugin(Star):
             else:
                 logger.info("[vision_text_bridge] mmx_runner 老版本无持久化装函数, 跳过本地装")
             if not self.mmx_path:
-                # 3b. 全局 npm install -g (fallback, 老 mmx_runner 直接走这里)
                 logger.info("[vision_text_bridge] 尝试 npm install -g mmx-cli ...")
-                install_ok = await self._install_mmx_cli()
-                if install_ok:
-                    self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
-                    if self.mmx_path:
-                        logger.info("[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path)
+                # v1.1.2+: install_mmx_cli 直接返 mmx 路径 (查 npm prefix -g), 避开 PATH 问题
+                installed_path = await self._install_mmx_cli()
+                if installed_path:
+                    self.mmx_path = installed_path
+                    logger.info("[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path)
                 else:
                     logger.warning(
                         "[vision_text_bridge] mmx-cli 装失败。请手动执行:\n"
@@ -462,10 +461,9 @@ class VisionTextBridgePlugin(Star):
         if self.config.get("auto_login", True):
             api_key = (self.config.get("minimax_api_key") or "").strip()
             if not api_key:
-                logger.info("[vision_text_bridge] 未配置 minimax_api_key，跳过自动登录")
+                logger.info("[vision_text_bridge] 未配置 minimax_api_key, 跳过自动登录")
             else:
                 await self._login_mmx(api_key)
-
         # 4. 伪装 provider modality（防 AstrBot 切 fallback）
         self._mark_providers_support_image()
 
