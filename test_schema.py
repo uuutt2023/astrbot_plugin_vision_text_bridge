@@ -213,3 +213,81 @@ if __name__ == "__main__":
     test_config_helpers_nested_group()
     print("---")
     print("ALL SCHEMA TESTS PASSED")
+
+
+def test_flatten_group_config_handles_format_B_no_items():
+    """: _flatten_group_config 支持格式 B: 嵌套 dict 无 items 包装 (AstrBot v4.26 实际格式)."""
+    from main import _flatten_group_config
+    # 模拟 AstrBot v4.26 实际给的 config (无 items 包装, 直接是 group + fields)
+    config = {
+        "MiniMax CLI": {
+            "minimax_api_key": "sk-test-1234",
+            "auto_login": True,
+            "auto_install_cli": True,
+        },
+        "基础": {
+            "enabled": True,
+            "priority": 100,
+        },
+    }
+    flat = _flatten_group_config(config)
+    # 顶层能命中 minimax_api_key (用户场景: '我配了但显示未配置')
+    assert flat.get("minimax_api_key") == "sk-test-1234",         f"格式 B 应让 config.get('minimax_api_key') 命中, 实际 {flat.get('minimax_api_key')}"
+    assert flat.get("auto_login") is True
+    assert flat.get("enabled") is True
+    assert flat.get("priority") == 100
+    print("✓ test_flatten_group_config_handles_format_B_no_items")
+
+
+def test_flatten_group_config_handles_format_A_with_items():
+    """: _flatten_group_config 支持格式 A: 有 items 包装."""
+    from main import _flatten_group_config
+    config = {
+        "基础": {"description": "...", "items": {"enabled": True, "priority": 100}},
+        "MiniMax CLI": {"description": "...", "items": {"minimax_api_key": "sk-xxx"}},
+    }
+    flat = _flatten_group_config(config)
+    assert flat.get("enabled") is True
+    assert flat.get("priority") == 100
+    assert flat.get("minimax_api_key") == "sk-xxx"
+    print("✓ test_flatten_group_config_handles_format_A_with_items")
+
+
+def test_flatten_group_config_handles_format_C_flat():
+    """: _flatten_group_config 支持格式 C: 完全扁平."""
+    from main import _flatten_group_config
+    config = {"minimax_api_key": "sk-xxx", "enabled": True}
+    flat = _flatten_group_config(config)
+    assert flat.get("minimax_api_key") == "sk-xxx"
+    assert flat.get("enabled") is True
+    print("✓ test_flatten_group_config_handles_format_C_flat")
+
+
+def test_flatten_group_config_real_user_scenario():
+    """: 用户场景: dashboard 配 minimax_api_key → 应能读到."""
+    from main import _flatten_group_config
+    # 模拟 dashboard 保存的配置 (AstrBot 把 schema 解析后的 user-data 形式)
+    config = {
+        "基础": {"enabled": True, "priority": 100},
+        "MiniMax CLI": {
+            "mmx_path": "",
+            "minimax_api_key": "sk-1234567890abcdef",  # 用户填的
+            "auto_login": True,
+            "auto_install_cli": True,
+        },
+        "缓存": {
+            "cache_descriptions": True,
+        },
+    }
+    flat = _flatten_group_config(config)
+    assert flat.get("minimax_api_key") == "sk-1234567890abcdef"
+    # 还能读 cache_descriptions
+    assert flat.get("cache_descriptions") is True
+    print("✓ test_flatten_group_config_real_user_scenario")
+
+
+if __name__ == "__main__":
+    test_flatten_group_config_handles_format_B_no_items()
+    test_flatten_group_config_handles_format_A_with_items()
+    test_flatten_group_config_handles_format_C_flat()
+    test_flatten_group_config_real_user_scenario()

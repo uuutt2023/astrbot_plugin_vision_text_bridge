@@ -223,32 +223,47 @@ PLUGIN_VERSION = _read_plugin_version()
 
 
 def _flatten_group_config(config: dict) -> dict:
-    """: 展平 schema v1.0.0 嵌套 group config —— 旧读法兼容。
+    """: 展平嵌套 group config — 旧读法兼容。
 
-    新 schema: ``{"基础": {"description": "基础", "items": {"enabled": True, "priority": 100}}, "缓存": {...}}``
-    旧读法: ``self.config.get("enabled")`` 返 ``True``
+    支持 3 种输入格式 (AstrBot 不同版本可能给不同格式):
 
-    展平后: ``{"基础": {"items": {...}, "enabled": True, ...}, "缓存": {...}, "enabled": True, ...}``
-    - 保留 group 引用 (webui 可读)
-    - 顶层多出每个 items 里的 key (让旧读法 config.get("X") 命中)
-    - 不会重复展平: 检测到所有 values 都不是 ``{"items": ...}`` 格式则不动
+    格式 A: ``{"基础": {"description": "...", "items": {"enabled": True, "priority": 100}}}``
+      - 新 schema 完整定义 (有 items 键)
+      - 展平后: ``{"基础": {...}, "enabled": True, "priority": 100}``
+
+    格式 B: ``{"MiniMax CLI": {"minimax_api_key": "sk-xxx", "auto_login": True}}``
+      - AstrBot 已把 schema 解析完, 只剩用户填的字段 (无 items)
+      - 展平后: ``{"MiniMax CLI": {...}, "minimax_api_key": "sk-xxx", "auto_login": True}``
+
+    格式 C: ``{"minimax_api_key": "sk-xxx", "enabled": True}``
+      - 完全扁平 (老 schema 或无 group 包装)
+      - 不动
+
+    检测方式:
+    - 如果 value 是 dict 且有 schema metadata 键 (description/type/hint/default/obvious_hint/items),
+      它是 schema definition, 把 items 提到顶层
+    - 如果 value 是 dict 但只是普通 group 容器, 同样展平内部字段
     """
     if not isinstance(config, dict):
         return config
-    has_nested = any(
-        isinstance(v, dict) and "items" in v
-        for v in config.values()
-    )
-    if not has_nested:
-        return config  # 老 schema (扁平) 不动
-    flat = dict(config)  # 浅拷贝
-    for _group_name, group_def in config.items():
-        if isinstance(group_def, dict) and "items" in group_def:
-            for k, v in group_def["items"].items():
-                flat[k] = v  # 顶层加 key, 让旧 config.get(k) 命中
+    flat = dict(config)  # 浅拷贝, 保留 group 引用
+    SCHEMA_META_KEYS = {"description", "type", "hint", "default", "obvious_hint", "items"}
+    for _key, value in list(config.items()):
+        if not isinstance(value, dict):
+            continue
+        if "items" in value and isinstance(value["items"], dict):
+            # 格式 A: schema definition with items wrapper
+            for ik, iv in value["items"].items():
+                flat[ik] = iv
+        else:
+            # 格式 B: group 容器只有字段, 无 items 包装
+            is_schema_def = any(mk in value for mk in ("description", "type", "hint", "default", "obvious_hint"))
+            if not is_schema_def:
+                # 普通 user-data group, 展平
+                for ik, iv in value.items():
+                    if ik not in flat:  # 不覆盖已有顶层 key
+                        flat[ik] = iv
     return flat
-
-
 def _read_file_bytes_sync(path: str) -> bytes:
     """供 asyncio.to_thread 调用的同步读文件。"""
     with open(path, "rb") as f:
@@ -289,6 +304,30 @@ class VisionTextBridgePlugin(Star):
         #   flatten 后: {"基础": {"items": {...}, "enabled": True, ...}, "缓存": {...}, "enabled": True, ...}
         #   老读法兼容, webui 可读嵌套 group
         self.config = _flatten_group_config(config) if isinstance(config, dict) else config
+        # : 诊断: 启动时打印 config 结构 + minimax_api_key 状态 (用户报告"配置了但未识别")
+        try:
+            keys = list(self.config.keys()) if isinstance(self.config, dict) else []
+            ak_raw = self.config.get("minimax_api_key") if isinstance(self.config, dict) else None
+            ak_len = len(ak_raw) if ak_raw else 0
+            ak_masked = (ak_raw[:4] + "***(len=" + str(ak_len) + ")") if ak_raw and len(ak_raw) >= 4 else f"<empty or short len={ak_len}>"
+            # 找嵌套 group 里的 minimax_api_key
+            nested_ak = None
+            nested_path = None
+            if isinstance(self.config, dict):
+                for gk, gv in self.config.items():
+                    if isinstance(gv, dict):
+                        for sub_k in ("minimax_api_key",):
+                            if sub_k in gv:
+                                v = gv[sub_k]
+                                if v:
+                                    nested_ak = v
+                                    nested_path = f"{gk}.{sub_k}"
+            logger.info(
+                "[vision_text_bridge] config 诊断: keys=%s, minimax_api_key(top)=%s, nested=%s",
+                keys, ak_masked, f"{nested_path}={nested_ak[:4]+'***'} (len={len(nested_ak)})" if nested_ak else None,
+            )
+        except Exception as e:
+            logger.warning("[vision_text_bridge] config 诊断失败: %s", e)
         self.mmx_path = (self.config.get("mmx_path") or "").strip()
         if not self.mmx_path:
             local = _find_local_mmx_fn(str(_PLUGIN_DIR))
