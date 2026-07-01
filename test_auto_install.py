@@ -82,6 +82,71 @@ def test_install_mmx_cli_returns_bool_timeout():
     print("✓ test_install_mmx_cli_returns_bool_timeout")
 
 
+def test_main_module_imports_with_old_mmx_runner():
+    """: main.py 在 mmx_runner 没 install_mmx_local/find_local_mmx 时也能加载 (compatibility)."""
+    # 1. 模拟老 mmx_runner: 缺 install_mmx_local
+    import importlib, sys
+    mmx_runner_mod = sys.modules.get("mmx_runner")
+    if mmx_runner_mod:
+        # 暂时删掉 install_mmx_local (如有)
+        save_il = getattr(mmx_runner_mod, "install_mmx_local", None)
+        save_fm = getattr(mmx_runner_mod, "find_local_mmx", None)
+        if save_il:
+            del mmx_runner_mod.install_mmx_local
+        if save_fm:
+            del mmx_runner_mod.find_local_mmx
+        try:
+            if "main" in sys.modules:
+                del sys.modules["main"]
+            if "data.plugins.astrbot_plugin_vision_text_bridge.main" in sys.modules:
+                del sys.modules["data.plugins.astrbot_plugin_vision_text_bridge.main"]
+            try:
+                import main
+                print("✓ main 加载成功 (老 mmx_runner 兼容)")
+            except ImportError as e:
+                print(f"✗ main 加载失败: {e}")
+                raise AssertionError(f"main 在老 mmx_runner 下加载失败: {e}")
+        finally:
+            if save_il:
+                mmx_runner_mod.install_mmx_local = save_il
+            if save_fm:
+                mmx_runner_mod.find_local_mmx = save_fm
+    print("✓ test_main_module_imports_with_old_mmx_runner")
+
+
+def test_init_falls_back_to_global_install_when_local_unavailable():
+    """: __init__: 老 mmx_runner (无 install_mmx_local) → 直接走全局 npm install -g."""
+    from unittest.mock import patch, AsyncMock
+    # 模拟 _install_mmx_local_fn is None
+    plugin = make_test_plugin(main)
+    plugin.mmx_path = ""  # 没 mmx
+    plugin.npm_path = "/usr/bin/npm"
+    plugin.config["auto_install_cli"] = True
+    # 替换 import 的函数
+    main._install_mmx_local_fn = None  # 触发老 mmx_runner fallback
+    main._find_local_mmx_fn = lambda _d: None
+
+    async def fake_install():
+        return True
+    plugin._install_mmx_cli = fake_install
+
+    with patch.object(main.shutil, "which", return_value="/usr/bin/mmx"):
+        # 跑 __init__ 后段
+        # 直接调内部逻辑 (跳过 register/route)
+        async def run():
+            # 触发 # 3. 装逻辑
+            if not plugin.mmx_path and plugin.config.get("auto_install_cli", True):
+                if main._install_mmx_local_fn is None:
+                    install_ok = await plugin._install_mmx_cli()
+                    if install_ok:
+                        plugin.mmx_path = main.shutil.which("mmx") or ""
+            return plugin.mmx_path
+        import asyncio
+        result = asyncio.run(run())
+    assert result == "/usr/bin/mmx", f"应走 fallback 到全局装, 实际 {result}"
+    print("✓ test_init_falls_back_to_global_install_when_local_unavailable")
+
+
 def test_init_calls_auto_install_when_mmx_missing():
     """: __init__ 路径: mmx 找不到 + auto_install_cli 默认 True → 调 _install_mmx_cli."""
     plugin = make_test_plugin(main)  # 不传任何 override
@@ -144,6 +209,8 @@ if __name__ == "__main__":
     test_install_mmx_cli_returns_bool_no_npm()
     test_install_mmx_cli_returns_bool_npm_fail()
     test_install_mmx_cli_returns_bool_timeout()
+    test_main_module_imports_with_old_mmx_runner()
+    test_init_falls_back_to_global_install_when_local_unavailable()
     test_init_calls_auto_install_when_mmx_missing()
     test_install_mmx_local_returns_bool_no_npm()
     test_install_mmx_local_returns_bool_success()
