@@ -293,13 +293,31 @@
         "description": "自动注册为本插件的 OpenAI compatible provider",
         "type": "bool",
         "hint": "开启后, 本插件在 AstrBot 启动时自动注册一个 OpenAI compatible provider (id=vision_text_bridge_compat), 可在 smart_imagechat_hub 的 default_image_caption_provider_id 配它。",
-        "default": false
+        "default": true
       },
       "smart_imagechat_hub_caption_format": {
         "description": "返回给 smart_imagechat_hub 的格式",
         "type": "string",
         "hint": "mmx 自然语言描述: 原样返回 (smart_imagechat_hub 拿到描述, _extract_tags 解析 tag); json: 包装成 [tag1, tag2] 格式",
         "default": "mmx"
+      },
+      "smart_imagechat_hub_api_base": {
+        "description": "自定义 API Base URL (留空用默认 localhost:port)",
+        "type": "string",
+        "hint": "默认自动从 AstrBot dashboard 拿 host:port。留空用默认; 高级用户可改 (如反代/远程).",
+        "default": ""
+      },
+      "smart_imagechat_hub_api_key": {
+        "description": "自定义 API Key (我方不校验, 留空)",
+        "type": "string",
+        "hint": "我方 endpoint 不校验 API Key, 留空即可。",
+        "default": ""
+      },
+      "smart_imagechat_hub_model_name": {
+        "description": "注册到 provider 的模型名",
+        "type": "string",
+        "hint": "smart_imagechat_hub 会用这个模型名调 LLM。可以是任意字符串 (我方不校验模型).",
+        "default": "vision-bridge"
       }
     }
   }

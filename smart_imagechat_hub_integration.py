@@ -78,3 +78,121 @@ def reset_cache_for_testing() -> None:
     """: 清 module-level cache (测试用)。"""
     global _INSTALL_CHECK_CACHE
     _INSTALL_CHECK_CACHE = None
+
+# ---------------------------------------------------------------------------
+# Provider 自动注册 — 让 smart_imagechat_hub 直接选 vision_text_bridge_compat 就能用
+# ---------------------------------------------------------------------------
+PROVIDER_ID = "vision_text_bridge_compat"
+PROVIDER_TYPE = "openai_chat_completion"
+PROVIDER_DEFAULT_MODEL = "vision-bridge"
+
+
+def build_provider_config(api_base: str, api_key: str = "", model: str = PROVIDER_DEFAULT_MODEL) -> dict:
+    """: 构造 AstrBot provider_config dict — 复用 openai_chat_completion type.
+
+    复用理由:
+    - 我方 endpoint 已经是 OpenAI ChatCompletion 格式
+    - AstrBot 内置 ProviderOpenAIOfficial 用 AsyncOpenAI 调任意 OpenAI compatible endpoint
+    - 不必写自定义 Provider class, 直接利用 AstrBot 已有的 OpenAI provider
+    - 用户也可以在 AstrBot dashboard 看到这个 provider, 像普通 OpenAI provider 一样配置
+    """
+    return {
+        "type": PROVIDER_TYPE,
+        "id": PROVIDER_ID,
+        "enable": True,
+        "api_base": api_base.rstrip("/"),
+        "key": [api_key] if api_key else [],
+        "model": model,
+        "provider_type": "chat_completion",
+    }
+
+
+def is_provider_already_registered(plugin) -> bool:
+    """: 检查 vision_text_bridge_compat provider 是否已注册 (避免重复)."""
+    try:
+        pm = getattr(plugin.context, "provider_manager", None)
+        if pm is None:
+            return False
+        for prov in getattr(pm, "provider_insts", []):
+            cfg = getattr(prov, "provider_config", None)
+            if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+async def auto_register_provider(plugin) -> bool:
+    """: 在 AstrBot 启动时注册我方 OpenAI compatible provider.
+
+    效果:
+    - 启动后, AstrBot provider_manager 里有 vision_text_bridge_compat provider
+    - 它的 api_base 指向我方 /v1/chat/completions endpoint
+    - 用户在 smart_imagechat_hub 配 default_image_caption_provider_id = vision_text_bridge_compat 即可
+    - smart_imagechat_hub 调 LLM (text_chat) → AstrBot ProviderOpenAIOfficial 发 HTTP 到我方
+    - 我方 endpoint 收到 → 调 mmx → 返 mmx 描述
+
+    Returns:
+        True: 注册成功
+        False: 失败 (provider_manager 不可用 / load_provider 抛错)
+    """
+    if is_provider_already_registered(plugin):
+        return True
+    try:
+        pm = getattr(plugin.context, "provider_manager", None)
+        if pm is None:
+            logger.debug("[vision_text_bridge] provider_manager 不可用, 跳过自动注册")
+            return False
+        # 拿 AstrBot dashboard host:port
+        try:
+            ac = plugin.context.astr_context
+            cfg = ac.config if hasattr(ac, "config") else {}
+            dashboard = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
+            host = dashboard.get("host", "localhost")
+            port = dashboard.get("port", 6185)
+        except Exception:
+            host, port = "localhost", 6185
+        api_base = (
+            f"http://{host}:{port}"
+            f"/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
+        )
+        # 用户可覆盖 api_base (高级用户)
+        user_override = plugin.config.get("smart_imagechat_hub_api_base", "")
+        if user_override:
+            api_base = user_override
+        api_key = plugin.config.get("smart_imagechat_hub_api_key", "")
+        model = plugin.config.get("smart_imagechat_hub_model_name", PROVIDER_DEFAULT_MODEL)
+        provider_config = build_provider_config(api_base=api_base, api_key=api_key, model=model)
+        # 调 load_provider — 它会 instantiate + add to provider_insts
+        await pm.load_provider(provider_config)
+        logger.info(
+            "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, api_base=%s, model=%s",
+            PROVIDER_ID, api_base, model,
+        )
+        return True
+    except Exception as e:
+        logger.warning("[vision_text_bridge] auto_register_provider 失败: %s", e)
+        return False
+
+
+def remove_provider(plugin) -> bool:
+    """: 卸载我方 provider (清理用)."""
+    try:
+        pm = getattr(plugin.context, "provider_manager", None)
+        if pm is None:
+            return False
+        for prov in list(getattr(pm, "provider_insts", [])):
+            cfg = getattr(prov, "provider_config", None)
+            if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
+                try:
+                    if hasattr(prov, "terminate"):
+                        prov.terminate()
+                except Exception:
+                    pass
+                pm.provider_insts.remove(prov)
+                logger.info("[vision_text_bridge] 已卸载 provider: %s", PROVIDER_ID)
+                return True
+        return False
+    except Exception:
+        return False
+

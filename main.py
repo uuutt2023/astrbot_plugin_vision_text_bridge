@@ -66,7 +66,8 @@ except ImportError:
         return added
     logger.warning("[vision_text_bridge] 旧版 image_utils.py 无 collect_image_urls_from_components — 已用本地 fallback, 嵌套扫描将失效。git pull 后重启 AstrBot 解决。")
 from tool_filter import match_tool_name as _match_tool_name, filter_disabled_tools as _filter_disabled_tools
-import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
+import chat_archive_integration
+import smart_imagechat_hub_integration  # : smart_imagechat_hub 兼容 (顶部 import, 避免函数内 import 重复)
 from mmx_runner import (
     MmxResult, build_vision_command as _build_vision_command,
     run_mmx as _run_mmx_fn, install_mmx_cli as _install_mmx_cli_fn,
@@ -215,32 +216,42 @@ PLUGIN_VERSION = _read_plugin_version()
 
 
 def _flatten_group_config(config: dict) -> dict:
-    """: 展平 schema v1.0.0 嵌套 group config —— 旧读法兼容。
+    """: 展平嵌套 group config — 旧读法兼容。
 
-    新 schema: ``{"基础": {"description": "基础", "items": {"enabled": True, "priority": 100}}, "缓存": {...}}``
-    旧读法: ``self.config.get("enabled")`` 返 ``True``
+    支持 3 种输入格式 (AstrBot 不同版本可能给不同格式):
 
-    展平后: ``{"基础": {"items": {...}, "enabled": True, ...}, "缓存": {...}, "enabled": True, ...}``
-    - 保留 group 引用 (webui 可读)
-    - 顶层多出每个 items 里的 key (让旧读法 config.get("X") 命中)
-    - 不会重复展平: 检测到所有 values 都不是 ``{"items": ...}`` 格式则不动
+    格式 A: ``{"基础": {"description": "...", "items": {"enabled": True, "priority": 100}}}``
+      - 新 schema 完整定义 (有 items 键)
+      - 展平后: ``{"基础": {...}, "enabled": True, "priority": 100}``
+
+    格式 B: ``{"MiniMax CLI": {"minimax_api_key": "sk-xxx", "auto_login": True}}``
+      - AstrBot 已把 schema 解析完, 只剩用户填的字段 (无 items)
+      - 展平后: ``{"MiniMax CLI": {...}, "minimax_api_key": "sk-xxx", "auto_login": True}``
+
+    格式 C: ``{"minimax_api_key": "sk-xxx", "enabled": True}``
+      - 完全扁平 (老 schema 或无 group 包装)
+      - 不动
     """
     if not isinstance(config, dict):
         return config
-    has_nested = any(
-        isinstance(v, dict) and "items" in v
-        for v in config.values()
-    )
-    if not has_nested:
-        return config  # 老 schema (扁平) 不动
-    flat = dict(config)  # 浅拷贝
-    for _group_name, group_def in config.items():
-        if isinstance(group_def, dict) and "items" in group_def:
-            for k, v in group_def["items"].items():
-                flat[k] = v  # 顶层加 key, 让旧 config.get(k) 命中
+    flat = dict(config)  # 浅拷贝, 保留 group 引用
+    SCHEMA_META_KEYS = {"description", "type", "hint", "default", "obvious_hint", "items"}
+    for _key, value in list(config.items()):
+        if not isinstance(value, dict):
+            continue
+        if "items" in value and isinstance(value["items"], dict):
+            # 格式 A: schema definition with items wrapper
+            for ik, iv in value["items"].items():
+                flat[ik] = iv
+        else:
+            # 格式 B: group 容器只有字段, 无 items 包装
+            is_schema_def = any(mk in value for mk in ("description", "type", "hint", "default", "obvious_hint"))
+            if not is_schema_def:
+                # 普通 user-data group, 展平
+                for ik, iv in value.items():
+                    if ik not in flat:  # 不覆盖已有顶层 key
+                        flat[ik] = iv
     return flat
-
-
 def _read_file_bytes_sync(path: str) -> bytes:
     """供 asyncio.to_thread 调用的同步读文件。"""
     with open(path, "rb") as f:
@@ -462,6 +473,8 @@ class VisionTextBridgePlugin(Star):
         self._check_compatibility()
         # 6. smart_imagechat_hub 兼容检测
         self._detect_smart_imagechat_hub()
+        # 7. smart_imagechat_hub OpenAI compatible provider 自动注册
+        await self._auto_register_sih_provider()
 
     def _get_plugin_data_dir(self) -> Path:
         try:
@@ -512,6 +525,25 @@ class VisionTextBridgePlugin(Star):
                     "但 enable_smart_imagechat_hub_compat=False, 兼容 endpoint 未启用"
                 )
 
+
+
+    async def _auto_register_sih_provider(self) -> None:
+        """: 启动期自动注册 OpenAI compatible provider (默认开, 让 smart_imagechat_hub 直接用)."""
+        if not self.config.get("smart_imagechat_hub_auto_register_provider", True):
+            logger.info(
+                "[vision_text_bridge] smart_imagechat_hub_auto_register_provider=False, "
+                "跳过自动注册 OpenAI compatible provider"
+            )
+            return
+        try:
+            ok = await smart_imagechat_hub_integration.auto_register_provider(self)
+            if ok:
+                logger.info(
+                    "[vision_text_bridge] 已自动注册 OpenAI compatible provider (id=vision_text_bridge_compat). "
+                    "smart_imagechat_hub 可配 default_image_caption_provider_id = vision_text_bridge_compat 接管 image caption."
+                )
+        except Exception as e:
+            logger.warning("[vision_text_bridge] _auto_register_sih_provider 失败: %s", e)
 
     def _mark_providers_support_image(self) -> None:
         """给所有 provider 补 'image' modality 标签，骗 AstrBot 不切 fallback。

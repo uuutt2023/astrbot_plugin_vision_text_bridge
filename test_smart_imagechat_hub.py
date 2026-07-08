@@ -300,6 +300,84 @@ def test_main_detect_smart_imagechat_hub_logs_info():
     # 验证: 调了检测, 没抛异常即 OK (log 难直接验证)
     print("✓ test_main_detect_smart_imagechat_hub_logs_info")
 
+def test_build_provider_config_structure():
+    """: build_provider_config 返正确结构 (含 type/id/enable/api_base/model/key)."""
+    cfg = smart_imagechat_hub_integration.build_provider_config(
+        api_base="http://localhost:6185/api/plug/.../v1/chat/completions",
+        api_key="",
+        model="vision-bridge",
+    )
+    assert cfg["type"] == "openai_chat_completion"
+    assert cfg["id"] == "vision_text_bridge_compat"
+    assert cfg["enable"] is True
+    assert cfg["api_base"].endswith("/v1/chat/completions")
+    assert cfg["api_base"].endswith("/v1/chat/completions")
+    assert cfg["key"] == []
+    assert cfg["model"] == "vision-bridge"
+    assert cfg["provider_type"] == "chat_completion"
+    print("✓ test_build_provider_config_structure")
+
+
+def test_build_provider_config_with_api_key():
+    """: build_provider_config 接受 API Key."""
+    cfg = smart_imagechat_hub_integration.build_provider_config(
+        api_base="http://x", api_key="sk-test"
+    )
+    assert cfg["key"] == ["sk-test"]
+    print("✓ test_build_provider_config_with_api_key")
+
+
+def test_is_provider_already_registered_returns_false_when_empty():
+    """: 没注册时 is_provider_already_registered 返 False."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    plugin = make_test_plugin(main)
+    plugin.context.provider_manager = MagicMock(provider_insts=[])
+    result = smart_imagechat_hub_integration.is_provider_already_registered(plugin)
+    assert result is False
+    print("✓ test_is_provider_already_registered_returns_false_when_empty")
+
+
+def test_is_provider_already_registered_returns_true_when_registered():
+    """: 注册后 is_provider_already_registered 返 True."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    plugin = make_test_plugin(main)
+    # mock provider_manager 已有该 provider
+    fake_prov = MagicMock()
+    fake_prov.provider_config = {"id": smart_imagechat_hub_integration.PROVIDER_ID}
+    plugin.context.provider_manager = MagicMock(provider_insts=[fake_prov])
+    result = smart_imagechat_hub_integration.is_provider_already_registered(plugin)
+    assert result is True
+    print("✓ test_is_provider_already_registered_returns_true_when_registered")
+
+
+def test_auto_register_provider_skipped_when_disabled():
+    """: 配置 False 时 _auto_register_sih_provider 不调 auto_register."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    import asyncio
+    plugin = make_test_plugin(main)
+    plugin.config["smart_imagechat_hub_auto_register_provider"] = False
+    with patch("smart_imagechat_hub_integration.auto_register_provider") as mock_ar:
+        asyncio.run(plugin._auto_register_sih_provider())
+    assert not mock_ar.called  # 配置 False, 不调
+    print("✓ test_auto_register_provider_skipped_when_disabled")
+
+
+def test_auto_register_provider_calls_when_enabled():
+    """: 配置 True 时 _auto_register_sih_provider 调 auto_register_provider."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    import asyncio
+    plugin = make_test_plugin(main)
+    plugin.config["smart_imagechat_hub_auto_register_provider"] = True
+    with patch("smart_imagechat_hub_integration.auto_register_provider", new=AsyncMock(return_value=True)) as mock_ar:
+        asyncio.run(plugin._auto_register_sih_provider())
+    assert mock_ar.called  # 配置 True, 调了
+    print("✓ test_auto_register_provider_calls_when_enabled")
+
+
 
 if __name__ == "__main__":
     test_is_smart_imagechat_hub_installed_returns_false_when_no_metadata()
@@ -314,5 +392,11 @@ if __name__ == "__main__":
     test_routes_include_smart_imagechat_hub_endpoints()
     test_schema_has_smart_imagechat_hub_group()
     test_main_detect_smart_imagechat_hub_logs_info()
+    test_build_provider_config_structure()
+    test_build_provider_config_with_api_key()
+    test_is_provider_already_registered_returns_false_when_empty()
+    test_is_provider_already_registered_returns_true_when_registered()
+    test_auto_register_provider_skipped_when_disabled()
+    test_auto_register_provider_calls_when_enabled()
     print("---")
     print("ALL SMART_IMAGECHAT_HUB TESTS PASSED")

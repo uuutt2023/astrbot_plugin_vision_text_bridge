@@ -201,14 +201,30 @@ chat_plus（priority=-1）会在主钩子之后 merge 工具集合到 `req.func_
 2. 暴露 OpenAI 兼容的 `POST /api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions` endpoint——smart_imagechat_hub 调这个 endpoint 时，本插件走 mmx 流程返回自然语言描述
 3. 简单 `GET/POST /api/plug/astrbot_plugin_vision_text_bridge/image/caption?url=...` 拿 mmx 描述
 
-**配置方法**（用户自己把 smart_imagechat_hub 的 caption provider 换成本插件）：
+**配置方法（v1.1.2+ 默认自动注册）**：
+
+启动时本插件**自动**在 AstrBot provider_manager 注册一个 OpenAI compatible provider：
+- provider id: `vision_text_bridge_compat`
+- type: `openai_chat_completion`
+- api_base: 自动从 AstrBot dashboard 拿 host:port（默认 `http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions`）
+- api_key: 留空（我方不校验）
+- model: `vision-bridge`
+
+用户只需要在 smart_imagechat_hub 配 `default_image_caption_provider_id` = `vision_text_bridge_compat` 即可，不用手动加 OpenAI compatible provider。
+
+**高级用户**（想覆盖默认值）可在插件配置里改：
+- `smart_imagechat_hub_api_base`：自定义 API Base URL（留空用默认）
+- `smart_imagechat_hub_api_key`：自定义 API Key（我方不校验，留空即可）
+- `smart_imagechat_hub_model_name`：注册到 provider 的模型名（默认 `vision-bridge`）
+
+**手动配置方法**（如果自动注册被关掉 `smart_imagechat_hub_auto_register_provider=False`）：
 
 1. 在 AstrBot 控制台加一个 OpenAI compatible provider：
    - provider id: `vision_text_bridge_compat`（或任意名字）
    - type: `openai_chat_completion`
    - api_base: `http://127.0.0.1:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions`
-   - api_key: 留空或任意（我方不校验）
-   - model: 留空
+   - api_key: 留空（我方不校验）
+   - model: `vision-bridge`
 2. smart_imagechat_hub 配 `default_image_caption_provider_id` = 这个 provider id
 3. 它的 image caption 请求会走本插件的 mmx 流程，不再调 LLM 多模态
 
@@ -217,8 +233,11 @@ chat_plus（priority=-1）会在主钩子之后 merge 工具集合到 `req.func_
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `enable_smart_imagechat_hub_compat` | `true` | 暴露 `/v1/chat/completions` 和 `/image/caption` endpoint |
-| `smart_imagechat_hub_auto_register_provider` | `false` | 启动时自动注册 OpenAI compatible provider（实验性，可能与其他插件冲突） |
+| `smart_imagechat_hub_auto_register_provider` | `true` | 启动时自动注册 OpenAI compatible provider (id=vision_text_bridge_compat) |
 | `smart_imagechat_hub_caption_format` | `mmx` | 返回格式：`mmx`（原样 mmx 描述）/ `json`（包装成 `[tag, tag]` 数组） |
+| `smart_imagechat_hub_api_base` | `""` | 自定义 API Base URL，留空用默认 `http://localhost:6185/api/plug/...` |
+| `smart_imagechat_hub_api_key` | `""` | 自定义 API Key（我方不校验，留空） |
+| `smart_imagechat_hub_model_name` | `vision-bridge` | 注册到 provider 的模型名 |
 
 **限制**：
 - smart_imagechat_hub 的 prompt 要求输出 `["tag1", "tag2"]` JSON 格式——我方返回的是 mmx 自然语言描述，它的 `_extract_tags` 可能要适配
