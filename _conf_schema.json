@@ -319,6 +319,7 @@
         "hint": "smart_imagechat_hub 会用这个模型名调 LLM。可以是任意字符串 (我方不校验模型).",
         "default": "vision-bridge"
       }
-    }
+    },
+    "type": "object"
   }
 }

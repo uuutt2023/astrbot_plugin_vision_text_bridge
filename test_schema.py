@@ -280,9 +280,23 @@ def test_flatten_group_config_real_user_scenario():
     assert flat.get("cache_descriptions") is True
     print("✓ test_flatten_group_config_real_user_scenario")
 
+def test_all_groups_have_type_object():
+    """: 反向验证: schema 每个 group 必须有 type=object 字段 (AstrBot v4.26.4 严格)."""
+    import json
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    missing = []
+    for name, group in schema.items():
+        if isinstance(group, dict) and "items" in group:
+            if group.get("type") != "object":
+                missing.append(name)
+    assert not missing, f"以下 group 缺 type=object 字段 (会导致 AstrBot 加载失败): {missing}"
+    print("✓ test_all_groups_have_type_object")
+
+
 
 if __name__ == "__main__":
     test_flatten_group_config_handles_format_B_no_items()
     test_flatten_group_config_handles_format_A_with_items()
     test_flatten_group_config_handles_format_C_flat()
     test_flatten_group_config_real_user_scenario()
+    test_all_groups_have_type_object()
