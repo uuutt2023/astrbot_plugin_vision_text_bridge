@@ -18,3 +18,23 @@ __pycache__/
 # 私密配置（如果用户复制了）
 _config_user.yaml
 data/caption_cache.sqlite3
+
+
+# 临时编译产物
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# data/ 整个目录 (含 sqlite)
+data/
+
+# 单元测试临时目录
+tmp/
+test_workspace/
