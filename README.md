@@ -189,6 +189,41 @@ AngelHeart（priority=50）会重写完整 prompt 字符串。旧版本将图描
 
 chat_plus（priority=-1）会在主钩子之后 merge 工具集合到 `req.func_tool`。本插件在主钩子入口（priority=100）预先清理待合并的工具集，使 chat_plus merge 进去的为干净版。
 
+### smart_imagechat_hub 图文理解插件
+
+[astrbot_plugin_smart_imagechat_hub](https://github.com/QingchenWait/astrbot_plugin_smart_imagechat_hub) 用 LLM 多模态给图片打标签（默认走 MiniMax/ OpenAI 多模态 API）。本插件提供**完全接管其 image caption 请求**的兼容方案。
+
+**重要背景**：smart_imagechat_hub 调 LLM 时用 `direct_provider_call=True` 直接调 `provider.text_chat(image_urls=...)`，**绕过我方 `on_llm_request` 钩子**——所以无法在钩子层拦截。
+
+**本插件提供的兼容方案**：
+
+1. 启动时自动检测是否装了 smart_imagechat_hub，装了就在日志和 webui 顶部 banner 提示
+2. 暴露 OpenAI 兼容的 `POST /api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions` endpoint——smart_imagechat_hub 调这个 endpoint 时，本插件走 mmx 流程返回自然语言描述
+3. 简单 `GET/POST /api/plug/astrbot_plugin_vision_text_bridge/image/caption?url=...` 拿 mmx 描述
+
+**配置方法**（用户自己把 smart_imagechat_hub 的 caption provider 换成本插件）：
+
+1. 在 AstrBot 控制台加一个 OpenAI compatible provider：
+   - provider id: `vision_text_bridge_compat`（或任意名字）
+   - type: `openai_chat_completion`
+   - api_base: `http://127.0.0.1:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions`
+   - api_key: 留空或任意（我方不校验）
+   - model: 留空
+2. smart_imagechat_hub 配 `default_image_caption_provider_id` = 这个 provider id
+3. 它的 image caption 请求会走本插件的 mmx 流程，不再调 LLM 多模态
+
+**配置开关**（插件 → 图片转文字 · Mavis → 智能图像聊天 兼容）：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `enable_smart_imagechat_hub_compat` | `true` | 暴露 `/v1/chat/completions` 和 `/image/caption` endpoint |
+| `smart_imagechat_hub_auto_register_provider` | `false` | 启动时自动注册 OpenAI compatible provider（实验性，可能与其他插件冲突） |
+| `smart_imagechat_hub_caption_format` | `mmx` | 返回格式：`mmx`（原样 mmx 描述）/ `json`（包装成 `[tag, tag]` 数组） |
+
+**限制**：
+- smart_imagechat_hub 的 prompt 要求输出 `["tag1", "tag2"]` JSON 格式——我方返回的是 mmx 自然语言描述，它的 `_extract_tags` 可能要适配
+- 建议先用 `mmx` 格式观察 smart_imagechat_hub 收到描述后的行为，如果它能解析就 OK，不能再切 `json` 模式
+
 ## 缓存管理页面
 
 路径：控制台 → 插件 → 图片转文字 · Mavis → 「缓存管理」

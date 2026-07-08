@@ -611,9 +611,38 @@ async function loadIntegrationBadge() {
  badge.textContent = "协同: 未知";
  badge.title = `检测 chat_archive 失败: ${e?.message || e}`;
  }
+ showSihBanner(d?.smart_imagechat_hub);
 }
 
 // 状态栏渲染（TTL/上限/下次清理）
+
+// : smart_imagechat_hub 兼容 banner — 检测到 smart_imagechat_hub 装了 + 兼容开启 → 显示用法
+function showSihBanner(sih) {
+  if ($("sih-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "sih-banner";
+  banner.style.cssText = "background:var(--accent-cyan-15);border:1px solid var(--accent-cyan);border-radius:8px;padding:12px 16px;margin:12px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap";
+  banner.innerHTML = `
+    <div style="flex:1;min-width:240px">
+      <div style="font-weight:600;color:var(--accent-cyan);margin-bottom:4px">smart_imagechat_hub 兼容已启用</div>
+      <div style="font-size:13px;line-height:1.5;color:var(--text-secondary)">
+        本插件暴露 <code style="background:var(--bg-elevated);padding:1px 6px;border-radius:4px">${sih.endpoint || "/v1/chat/completions"}</code> 接管 image caption。
+        在 smart_imagechat_hub 配 <code style="background:var(--bg-elevated);padding:1px 6px;border-radius:4px">default_image_caption_provider_id</code> = 指向本 endpoint 的 OpenAI compatible provider, 它发的打标签请求会走 mmx 流程。
+      </div>
+    </div>
+    <button id="sih-copy" style="padding:6px 12px;background:var(--accent-cyan);color:var(--bg-primary);border:none;border-radius:6px;cursor:pointer">复制 endpoint</button>
+  `;
+  const main = document.querySelector("main") || document.body;
+  const first = main.firstChild;
+  if (first) main.insertBefore(banner, first);
+  else main.appendChild(banner);
+  $("sih-copy")?.addEventListener("click", () => {
+    if (sih.endpoint) {
+      navigator.clipboard.writeText(sih.endpoint).then(() => showToast("已复制 endpoint", "success"));
+    }
+  });
+}
+
 function renderStatusBar(data) {
  const memTtl = data.memory_cache_ttl_seconds;
  $("status-mem-ttl").textContent = memTtl > 0 ? `${memTtl}s` : "永不过期";

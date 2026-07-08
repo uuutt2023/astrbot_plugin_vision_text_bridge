@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from astrbot.api import logger
 from config_helpers import cfg_int
 import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
+import smart_imagechat_hub_integration  # : smart_imagechat_hub 兼容
 
 
 # 顶层常量
@@ -317,6 +318,22 @@ async def api_integration_status(plugin):
                 pass
         storage_mode = "mixed" if has_local_b64 else "chat_archive"
 
+    # : smart_imagechat_hub 兼容状态
+    try:
+        sih_installed = smart_imagechat_hub_integration.is_smart_imagechat_hub_installed()
+    except Exception as ex:
+        logger.debug(f"[vision_text_bridge] 检测 smart_imagechat_hub 失败: {ex}")
+        sih_installed = False
+    sih_compat_enabled = bool(plugin.config.get("enable_smart_imagechat_hub_compat", True))
+    sih_compat_endpoint = None
+    if sih_compat_enabled:
+        try:
+            host = plugin.context.astr_context.config.get("dashboard", {}).get("host", "localhost")
+            port = plugin.context.astr_context.config.get("dashboard", {}).get("port", 6185)
+        except Exception:
+            host, port = "localhost", 6185
+        sih_compat_endpoint = f"http://{host}:{port}/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
+
     return ok({
         "chat_archive_installed": installed,
         "chat_archive_cache_dir": cache_dir,
@@ -326,6 +343,15 @@ async def api_integration_status(plugin):
             "image_b64_stored": not installed,
             "expiry_cleanup": "chat_archive" if installed else "local",
             "description_cleanup": "local",
+        },
+        "smart_imagechat_hub": {
+            "installed": sih_installed,
+            "compat_enabled": sih_compat_enabled,
+            "endpoint": sih_compat_endpoint,
+            "usage_hint": (
+                "smart_imagechat_hub 配置 default_image_caption_provider_id 为指向本 endpoint 的 OpenAI compatible provider, "
+                "它发的 image caption 请求会走本插件 mmx 流程"
+            ) if sih_installed and sih_compat_enabled else None,
         },
     })
 
@@ -464,6 +490,116 @@ async def api_clean_expired(plugin):
         return err(f"清理失败: {e}", 500)
 
 
+async def api_chat_completions(plugin, *args, **kwargs):
+    """: OpenAI compatible /v1/chat/completions 接管 smart_imagechat_hub 的 image caption。
+
+    行为:
+      - 收到 OpenAI ChatCompletion request (含 messages, model)
+      - 提取 messages[0].content 里的 image_url (smart_imagechat_hub 发的是 base64 / URL)
+      - 调 mmx 描述
+      - 包装成 OpenAI ChatCompletion response 返回
+
+    smart_imagechat_hub 配 default_image_caption_provider_id = 本插件 endpoint 时,
+    它会调这个 API 走 mmx 路径, 不再走原 LLM 多模态.
+    """
+    import smart_imagechat_hub_integration as _sih_int
+    try:
+        body = await quart_request.get_json(force=True, silent=True) or {}
+    except Exception:
+        try:
+            raw = (await quart_request.get_data(as_text=True)) or "{}"
+            import json as _json
+            body = _json.loads(raw)
+        except Exception as e:
+            return err(f"无法解析请求体: {e}", 400)
+    messages = body.get("messages") or []
+    if not messages:
+        return err("messages 不能为空", 400)
+    # 收集所有 image_url (从 multimodal content 块)
+    image_urls = []
+    prompt_text = ""
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "image_url":
+                        u = (part.get("image_url") or {}).get("url") or ""
+                        if u:
+                            image_urls.append(u)
+                    elif part.get("type") == "text":
+                        prompt_text += part.get("text", "")
+        elif isinstance(content, str):
+            prompt_text += content
+    if not image_urls:
+        return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
+    # 调 mmx 描述 (复用 plugin._describe_one)
+    try:
+        caption = await plugin._describe_one(image_urls[0])
+    except Exception as e:
+        logger.exception("[vision_text_bridge] chat_completions 调 mmx 失败: %s", e)
+        return err(f"mmx 描述失败: {e}", 500)
+    if not caption:
+        return err("mmx 描述返回空", 500)
+    # 包装成 OpenAI ChatCompletion response
+    import time as _t
+    import uuid as _uuid
+    model = body.get("model") or "vision_text_bridge"
+    return ok({
+        "id": f"chatcmpl-{_uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(_t.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": caption,
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "_meta": {
+            "source": "astrbot_plugin_vision_text_bridge.mmx",
+            "smart_imagechat_hub_integration": True,
+        },
+    })
+
+
+async def api_image_caption(plugin, *args, **kwargs):
+    """: 简单 mmx 描述 endpoint (GET ?url=...  或 POST body {url, format}).
+
+    GET /image/caption?url=https://... → 返纯文本 caption
+    POST /image/caption {url, format=tags|text} → 返 JSON {caption, tags}
+    """
+    try:
+        method = (quart_request.method or "GET").upper()
+    except Exception:
+        method = "GET"
+    if method == "GET":
+        try:
+            url = (quart_request.args.get("url") or "").strip()
+        except Exception:
+            url = ""
+    else:
+        try:
+            body = await quart_request.get_json(force=True, silent=True) or {}
+        except Exception:
+            body = {}
+        url = (body.get("url") or "").strip()
+    if not url:
+        return err("缺少 url 参数", 400)
+    try:
+        caption = await plugin._describe_one(url)
+    except Exception as e:
+        logger.exception("[vision_text_bridge] image_caption 调 mmx 失败: %s", e)
+        return err(f"mmx 描述失败: {e}", 500)
+    if not caption:
+        return err("mmx 描述返回空", 500)
+    return ok({"url": url, "caption": caption})
+
+
+
 async def api_diag(plugin):
     """.1: 诊断 endpoint — DB 路径/schema/最近 3 条。
 
@@ -528,6 +664,10 @@ _ROUTES = [
      "缩略图：image_id 走路径参数 (GET)"),
     ("/cache/diag", api_diag, ["GET"], "诊断：DB 路径/schema/最近 3 条"),
     ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "POST 主路径"),
+    ("/v1/chat/completions", api_chat_completions, ["POST"],
+     "OpenAI compatible 接管 smart_imagechat_hub 的 image caption 请求"),
+    ("/image/caption", api_image_caption, ["GET", "POST"],
+     "简单 mmx 描述 endpoint (返回纯文本或 JSON 标签)"),
 ]
 
 
