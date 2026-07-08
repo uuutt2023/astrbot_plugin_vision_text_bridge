@@ -1,21 +1,8 @@
-"""
-caption_cache
-=============
+"""caption_cache.py - SQLite 描述缓存 (WAL 模式)。
 
-基于 SQLite 的图片描述缓存(含图片二进制)。
-
-设计要点:
-
-- **image_id 为主键**: 用图片内容 md5(hashlib.md5(bytes).hexdigest()) 作为
-  唯一标识。同一张图不论 URL 是什么都会命中同一条缓存。
-- **image_b64 存图二进制**:base64 编码后存为 BLOB。webui 可以从这
-  个字段出图缩略图,不再依赖外部 Chat Archive 等插件。
-- **mime_type / file_size / width / height**:元信息。
-- **image_url 保留原始 URL**:用于页面展示与"重新生成"功能。
-- **线程安全**:SQLite 默认配置在多线程下不安全。本模块使用
-  ``check_same_thread=False`` + 每个调用都开新连接的简单策略,
-  适合低并发场景。
-- **WAL 模式**:开 WAL 提升并发读性能。
+数据: image_md5 + description + image_url + image_b64 + created_at + 缓存字段
+API: get / put / delete / list / clean_expired / count / daily_buckets
+作者: Mavis
 """
 
 from __future__ import annotations

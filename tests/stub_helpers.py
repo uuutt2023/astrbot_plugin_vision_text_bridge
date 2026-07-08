@@ -1,7 +1,11 @@
-"""tests/stub_helpers.py — 4 个 test_*.py 共用的 astrbot/quart stub + plugin 构造。
+"""tests/stub_helpers.py - 测试用共享 stub + plugin 构造 helper。
 
-沙箱无 astrbot / quart, 需要注入 mock 让 main / web_api 能 import。
-这些 stub 集中在这里, 4 个 test 文件用 ``from stub_helpers import install_stubs, make_test_plugin``。
+API:
+  - install_stubs(): 装 stub 到 sys.modules
+  - make_test_plugin(main, **overrides): 构造测试 plugin
+  - make_test_plugin_with_caption_cache(...): 同上 + caption_cache 实例
+
+作者: Mavis
 """
 import os
 import sys

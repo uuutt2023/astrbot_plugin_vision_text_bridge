@@ -1,17 +1,4 @@
-"""
-vision_text_bridge.image_fetch
-================================
-
-异步读图片字节 — 用于计算 image cache key (md5(content))。
-
-支持 scheme:
-    - ``file://`` — 本地文件 (URL 解码)
-    - ``http://`` / ``https://`` — 走 aiohttp (15s timeout)
-    - ``/`` 开头的绝对路径 — Unix / Windows
-    - 其它 — raise ``ValueError``
-
-不在 plugin class 内, 方便复用 / 测试。
-"""
+"""image_fetch.py - 图片下载 + 缓存 (用于 mmx 子进程读图)。"""
 
 from __future__ import annotations
 

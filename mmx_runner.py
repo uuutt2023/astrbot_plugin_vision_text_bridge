@@ -1,16 +1,15 @@
-"""
-vision_text_bridge.mmx_runner
-================================
+"""mmx_runner.py - mmx CLI 子进程封装 + 安装/诊断/描述。
 
-封装 ``mmx vision describe`` 子进程调用 + 错误诊断 + 输出清洗。
+功能:
+  - run_mmx: 调 mmx 子进程 + 解析输出
+  - install_mmx_local: 把 mmx-cli 装到 plugin 本地目录 (--prefix)
+  - install_mmx_cli: 全局 npm install -g mmx-cli, 返 mmx 绝对路径
+  - find_local_mmx: 找 plugin 本地装的 mmx
+  - login_mmx: mmx auth login
+  - diagnose_mmx_error: 错误诊断
+  - redact_text / redact_args: 脱敏
 
-``mmx`` 是 MiniMax CLI (), 走 ``asyncio.create_subprocess_exec``
-调 ``mmx vision describe --image <url> [--prompt <p>]`` 拿图片描述。
-
-所有 helper 接收 ``self`` 字段作为参数 (mmx_path, config, ...) ——
-不依赖 plugin 实例, 方便测试 / 复用。
-
-debug / redact / 错误诊断 set 共享 :data:`_DIAGNOSED`。
+作者: Mavis
 """
 
 from __future__ import annotations

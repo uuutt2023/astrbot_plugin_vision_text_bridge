@@ -1,7 +1,4 @@
-"""test_theme.py — 主题切换功能测试 (v1.0.0+)
-
-不依赖 AstrBot, 直接读 webui 静态资源验证。
-"""
+"""test_theme.py - 主题切换功能测试 (12 个用例)。"""
 import os
 import re
 import sys

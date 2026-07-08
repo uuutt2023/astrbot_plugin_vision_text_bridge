@@ -1,11 +1,4 @@
-"""test_integration_status.py — /cache/integration_status 端点反向验证。
-
-覆盖:
-  - chat_archive 未装 → storage_mode="local", policy.expiry_cleanup="local"
-  - chat_archive 装了 + 无老 b64 → storage_mode="chat_archive"
-  - chat_archive 装了 + 有老 b64 → storage_mode="mixed"
-  - 缩略图 source 字段: local / chat_archive / none 三种情况
-"""
+"""test_integration_status.py - /cache/integration_status 端点测试 (8 个用例)。"""
 import os
 import sys
 import asyncio

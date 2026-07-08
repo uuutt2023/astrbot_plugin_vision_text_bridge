@@ -1,11 +1,4 @@
-"""
-vision_text_bridge.image_meta
-================================
-
-图片元信息 (mime / width / height) 嗅探 + URL 缓存策略判断。
-
-不依赖 plugin 实例, 纯函数 — 方便测试 / inline 调用。
-"""
+"""image_meta.py - 图片元数据提取 (尺寸/格式)。"""
 
 from __future__ import annotations
 

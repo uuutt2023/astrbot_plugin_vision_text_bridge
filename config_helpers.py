@@ -1,21 +1,10 @@
-"""
-vision_text_bridge.config_helpers
-====================================
+"""config_helpers.py - 嵌套 group config 读 helper。
 
-配置项类型安全的 getter — 把 ``config.get(key, default)`` 包一层,
-对 ``None`` / 空串 / 类型转换失败做兜底。
+API:
+  - cfg_int / cfg_str / cfg_bool: 平铺 config 读
+  - cfg_group_int / cfg_group_str / cfg_group_bool: 嵌套 group 读
 
-为什么单独抽: ``VisionTextBridgePlugin`` 类里到处调 ``_cfg_int`` /
-``_cfg_str`` (40+ 处), 嵌在 plugin 里没必要 — 抽成模块级 helper,
-方便 :mod:`web_api` / :mod:`main` 共享。
-
-AstrBotConfig 实例实际是个 dict-like (有 ``.get(key, default)``),
-某些版本可能是对象 — 两种都支持。
-
-嵌套 group 支持 (v1.0.0 schema 改为分组):
-  - config = {"基础": {"enabled": true, "priority": 100}, ...}
-  - 读法: cfg_group_int(config, "基础", "enabled", True)
-  - 兼容旧扁平: config = {"enabled": true, ...} 也能用, group 参数留空或传 None
+作者: Mavis
 """
 
 from __future__ import annotations

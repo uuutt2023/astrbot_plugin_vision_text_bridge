@@ -1,23 +1,7 @@
-"""
-vision_text_bridge.image_utils
-================================
+"""image_utils.py - 通用图片 URL helper。
 
-图片 URL 字段处理工具。
-
-AstrBot 的 ProviderRequest 在三个地方可能携带图片:
-- `req.image_urls`: list[str] — 顶层图片 URL
-- `req.extra_user_content_parts`: list[dict | TextPart] — 用户额外 content part
-- `req.contexts[i].content[j]`: list[dict] — 历史消息里嵌套的 content
-
-这三处每个 image 字段的 shape 不一样 (dict / object / str), 本模块
-提供统一 helper 做:
-- 检测是不是 image_url 字段
-- 从字段抽 URL
-- 从 list 抽全部 URL
-- 判断是不是 data:base64 内联图
-- 按条件删 image_url (用于链末 hook 清 base64 残留)
-
-不依赖 plugin 实例, 纯函数 — 方便测试 / inline 调用。
+API: _is_cacheable_url / extract_image_url / collect_image_urls_from_components / is_bot_avatar_url
+作者: Mavis
 """
 
 from __future__ import annotations

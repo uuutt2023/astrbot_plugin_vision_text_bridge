@@ -1,9 +1,4 @@
-"""
-离线测试：模拟 ProviderRequest，验证插件在不实际调用 mmx 的情况下行为正确。
-
-用法：
-    python test.py
-"""
+"""test.py - 插件核心功能测试 (176 个用例)。"""
 
 from __future__ import annotations
 

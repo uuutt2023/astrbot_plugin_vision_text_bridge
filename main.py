@@ -1,13 +1,14 @@
-"""
-astrbot_plugin_vision_text_bridge
-==================================
+"""main.py - 插件入口 + 业务核心 + AstrBot 钩子实现。
 
-拦截 LLM 请求中的图片，调用 MiniMax CLI 图像理解后把描述以 user content
-block 形式注入到 ``req.extra_user_content_parts``，再交给对话模型。
+职责:
+  - 注册 plugin + 启动期初始化 (mmx / caption_cache / web API / 联动检测)
+  - 实现 on_llm_request 钩子 (priority=100): 拦截 + 描述 + 注入
+  - 实现 strip_residual_base64 链末钩子 (priority=-10000): 兜底清残留
+  - 业务核心: _describe_one / _process_request / _persist / _mark_providers_support_image
+  - 配置兼容: _flatten_group_config (处理 3 种 schema 格式)
+  - 跨插件兼容检测: _check_compatibility / _detect_smart_imagechat_hub / _auto_register_sih_provider
 
-参考实现：
-- 拦截钩子: ``astrbot_plugin_uni_nickname`` 的 ``@filter.on_llm_request``
-- 图像理解: ``astrbot_plugin_MiniMax_CLI`` 的 ``mmx vision describe`` 子进程
+作者: Mavis - 协议: MIT
 """
 
 from __future__ import annotations

@@ -1,8 +1,4 @@
-"""test_no_hit_count.py — 反向验证: 打开 webui / 重复 get() 不会递增 hit_count。
-
-背景: 用户报告 webui 打开 → hit_count 累加, hit 统计无意义。
-修复: CaptionCache.get() 改为纯读, 不写 hit_count/last_hit_at。
-"""
+"""test_no_hit_count.py - 完全移除 hit_count 字段的反向验证 (5 个用例)。"""
 import os
 import sys
 import sqlite3

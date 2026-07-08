@@ -1,10 +1,4 @@
-"""test_schema.py — _conf_schema.json 整理验证。
-
-覆盖:
-  1. 移除选项注释 (hint/description) 内的版本号 (v0.7 / v0.8.x / v1.0.0)
-  2. 嵌套 group 结构 — webui 可分组展示
-  3. _flatten_group_config 兼容老读法 (config.get("X") 命中)
-"""
+"""test_schema.py - _conf_schema.json 整理 + flatten_group_config 测试 (15 个用例)。"""
 import os
 import sys
 import re

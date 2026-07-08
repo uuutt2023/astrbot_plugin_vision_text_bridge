@@ -1,16 +1,7 @@
-"""chat_archive_integration.py — 与 astrbot_plugin_chat_archive 协同。
+"""chat_archive_integration.py - 与 astrbot_plugin_chat_archive 协同。
 
-设计:
-  1. 检测 chat_archive 是否安装（看 data/plugins/astrbot_plugin_chat_archive/metadata.yaml）
-  2. 如果装了, 本插件 webui 缩略图从 chat_archive 的 web_cache 拿 (sha256(url)[:32] + ext)
-  3. 本插件的 SQLite 不再存 image_b64 (省 DB 空间, 单一缓存来源)
-  4. 过期清理交给 chat_archive (它每天扫 web_cache 删除 mtime > N 天的文件)
-
-参考:
-  - https://github.com/YukiNo420/astrbot_plugin_chat_archive
-  - chat_archive.archive.media_cache.ArchiveMediaCache.download_media_to_cache(url) 返
-    /static/cache/<sha256(url)[:32]><ext>
-  - chat_archive.config.get_static_cache_dir() 返 <data>/plugin_data/astrbot_plugin_chat_archive/web_cache/
+设计: 检测安装 / 缩略图走 web_cache / 过期清理交 chat_archive
+作者: Mavis
 """
 from __future__ import annotations
 

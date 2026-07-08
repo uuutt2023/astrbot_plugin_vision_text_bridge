@@ -1,17 +1,4 @@
-"""
-vision_text_bridge.tool_filter
-================================
-
-工具集名称匹配 + 过滤 (用于 LLM tool set 黑/白名单)。
-
-AstrBot 框架允许 plugin 在 ``on_llm_request`` 时改 tool 列表,
-但不同组件 (chat_plus 的 ToolSet / FunctionToolManager / native
-provider) 接口不一样 — ``.tools`` / ``.func_list`` / ``.remove_func``。
-本模块提供统一 abstraction:
-
-- :func:`match_tool_name` — 名称 vs 模式列表 (支持 ``*`` 通配)
-- :func:`filter_disabled_tools` — 跨容器接口删/保留指定工具
-"""
+"""tool_filter.py - LLM tool_call 过滤 (禁用某些工具防止幻觉)。"""
 
 from __future__ import annotations
 

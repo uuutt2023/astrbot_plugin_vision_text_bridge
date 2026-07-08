@@ -1,4 +1,4 @@
-"""test_smart_imagechat_hub.py — 验证 smart_imagechat_hub 兼容功能。"""
+"""test_smart_imagechat_hub.py - smart_imagechat_hub 兼容功能测试 (18 个用例)。"""
 import os
 import sys
 from unittest.mock import patch, MagicMock, AsyncMock

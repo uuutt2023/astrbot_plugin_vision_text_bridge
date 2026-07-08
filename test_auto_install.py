@@ -1,4 +1,4 @@
-""": test_auto_install.py — 默认开启 auto_install_cli + install_mmx_cli 返 bool 验证。"""
+"""test_auto_install.py - mmx-cli 自动安装/持久化测试 (9 个用例)。"""
 import os
 import sys
 import asyncio

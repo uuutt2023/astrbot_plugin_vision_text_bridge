@@ -3,6 +3,18 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 语义化版本规范。
 `MAJOR.MINOR.PATCH`：`MAJOR` 大改不兼容；`MINOR` 新增功能；`PATCH` 修复 bug。
 
+## [1.1.0] - 2026-07-08
+
+### 仓库整理
+- **版本统一化**: `metadata.yaml` version 0.8.37 → 1.1.0（与实际代码版本一致）
+  - `PLUGIN_VERSION` 从 `metadata.yaml` 自动读（避免硬编码）
+  - webui cache-bust `?v=1.1.0` 与 version 同步
+- **docstring 统一风格**: 21 个 .py 文件顶部标准化 docstring（一行职责 + 详细说明 + 作者标记）
+- **加 ARCHITECTURE.md**: 完整文件归类 + 模块职责 + 依赖关系图 + 未来重构方向
+
+### 跨插件兼容
+- **smart_imagechat_hub 兼容**: OpenAI compatible endpoint + 启动期自动注册 provider（详见 [兼容性] 章节）
+
 ## [Unreleased]
 
 ### 新增

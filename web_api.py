@@ -1,20 +1,14 @@
-"""
-vision_text_bridge.web_api
-============================
+"""web_api.py - 全部 web API 路由 + webui 页面后端。
 
-注册到 AstrBot ``context.register_web_api`` 的全部 web 后端 API。
+路由:
+  - /cache/list /cache/delete /cache/clear /cache/regenerate
+  - /cache/thumbnail/<image_id> /cache/stats /cache/diag
+  - /cache/clean_expired /cache/export
+  - /cache/integration_status (chat_archive 联动)
+  - /v1/chat/completions (smart_imagechat_hub 兼容, OpenAI compatible)
+  - /image/caption (smart_imagechat_hub 兼容, 简单 mmx 描述)
 
-设计要点:
-- 全部 handler 在 ``register_all_routes(context, plugin)`` 里挂,
-  不再嵌套在 plugin 类的 ``_register_web_apis`` 闭包里 (深度从 4 减到 1)
-- ``quart_request`` 是从 ``from quart import request`` 拿的全局对象
-  — angel_memory 的同款, 也是 AstrBot 框架的真实 web 层
-- ``plugin`` 是 :class:`VisionTextBridgePlugin` 实例, 通过它读
-  ``_caption_cache`` / ``_description_cache`` / ``_last_clean_at`` / ``config`` /
-  ``_describe_one``
-
-注意: ``api_list`` 之前有死代码 ``body = await self.context.request.json``
-( 时代的残骸), 已在  整理中删除。
+作者: Mavis
 """
 
 from __future__ import annotations

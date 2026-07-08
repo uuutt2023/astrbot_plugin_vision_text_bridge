@@ -1,5 +1,4 @@
-"""test_regenerate.py — 测试 /cache/regenerate 端点修复: 用 image_id 查 url, 不传 image_id 给 mmx。
-"""
+"""test_regenerate.py - /cache/regenerate 端点修复测试 (3 个用例)。"""
 import os
 import sys
 import json

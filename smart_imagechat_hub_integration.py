@@ -1,21 +1,7 @@
-"""smart_imagechat_hub_integration.py — 与 astrbot_plugin_smart_imagechat_hub 兼容对接。
+"""smart_imagechat_hub_integration.py - 与 astrbot_plugin_smart_imagechat_hub 兼容对接。
 
-设计:
-  1. 检测 smart_imagechat_hub 是否安装 (查 data/plugins/astrbot_plugin_smart_imagechat_hub/metadata.yaml)
-  2. 提供 web API /v1/chat/completions (OpenAI compatible) 接管它的 image caption 请求
-  3. 用户把 smart_imagechat_hub 配置的 default_image_caption_provider_id 换成本插件的 OpenAI compatible provider (base_url = 本插件的 API)
-  4. smart_imagechat_hub 发打标签请求 → 调到我方 API → 走 mmx 图像理解 → 返回 mmx 描述 (包装成 LLM 响应) → smart_imagechat_hub 拿到 tag 描述
-
-参考:
-  - https://github.com/QingchenWait/astrbot_plugin_smart_imagechat_hub
-  - smart_imagechat_hub 走 direct_provider_call=True 直接调 provider.text_chat(image_urls=...) → 绕过 on_llm_request 钩子
-  - 所以本插件只能在 LLM provider 层 (OpenAI compatible API) 接管, 不能在钩子层
-
-限制:
-  - smart_imagechat_hub 打标签时 prompt 是 '请为这张图片生成 5-7 个简短中文特征标签...'
-  - 我方拿到 prompt + image_urls → 调 mmx 拿到自然语言描述 → 包装成 OpenAI ChatCompletion 格式返回
-  - smart_imagechat_hub 收到的是 mmx 描述而非纯 tag JSON —— 如果它的 _extract_tags 不能解析, 可能要适配
-  - 默认走 mmx 路径; 配置 smart_imagechat_hub_compat_use_mmx_captions=False 时改走"提示 LLM 总结"
+设计: 检测安装 / /v1/chat/completions 接管 image caption / 启动期自动注册 OpenAI provider
+作者: Mavis
 """
 from __future__ import annotations
 

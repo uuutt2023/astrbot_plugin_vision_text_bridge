@@ -1,11 +1,4 @@
-""": test_chat_archive.py — 与 astrbot_plugin_chat_archive 协同的测试。
-
-参考实现:
-  - https://github.com/YukiNo420/astrbot_plugin_chat_archive
-  - chat_archive 存: <data>/plugin_data/astrbot_plugin_chat_archive/web_cache/<sha256(url)[:32]><ext>
-  - chat_archive 负责过期清理 (_periodic_clean_loop)
-  - 本插件不再存 image_b64 (统一从 chat_archive 拿)
-"""
+"""test_chat_archive.py - chat_archive 集成测试 (10 个用例)。"""
 import os
 import sys
 import hashlib
