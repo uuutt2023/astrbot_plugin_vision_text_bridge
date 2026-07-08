@@ -318,7 +318,10 @@ async def api_integration_status(plugin):
     except Exception as ex:
         logger.debug(f"[vision_text_bridge] 检测 smart_imagechat_hub 失败: {ex}")
         sih_installed = False
-    sih_compat_enabled = bool(plugin.config.get("enable_smart_imagechat_hub_compat", True))
+    sih_compat_enabled = bool(
+    plugin.config.get("enable_openai_compat_endpoint")
+    or plugin.config.get("enable_smart_imagechat_hub_compat", True)
+)
     sih_compat_endpoint = None
     if sih_compat_enabled:
         try:

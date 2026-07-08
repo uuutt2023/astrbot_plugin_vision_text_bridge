@@ -151,11 +151,20 @@ async def auto_register_provider(plugin) -> bool:
             f"/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
         )
         # 用户可覆盖 api_base (高级用户)
-        user_override = plugin.config.get("smart_imagechat_hub_api_base", "")
+        user_override = (
+    plugin.config.get("openai_compat_api_base", "")
+    or plugin.config.get("smart_imagechat_hub_api_base", "")
+)
         if user_override:
             api_base = user_override
-        api_key = plugin.config.get("smart_imagechat_hub_api_key", "")
-        model = plugin.config.get("smart_imagechat_hub_model_name", PROVIDER_DEFAULT_MODEL)
+        api_key = (
+    plugin.config.get("openai_compat_api_key", "")
+    or plugin.config.get("smart_imagechat_hub_api_key", "")
+)
+        model = (
+    plugin.config.get("openai_compat_model_name")
+    or plugin.config.get("smart_imagechat_hub_model_name", PROVIDER_DEFAULT_MODEL)
+)
         provider_config = build_provider_config(api_base=api_base, api_key=api_key, model=model)
         # 调 load_provider — 它会 instantiate + add to provider_insts
         await pm.load_provider(provider_config)

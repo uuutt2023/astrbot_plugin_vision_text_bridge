@@ -513,7 +513,8 @@ class VisionTextBridgePlugin(Star):
             logger.debug("[vision_text_bridge] 检测 smart_imagechat_hub 失败: %s", e)
             return
         if installed:
-            compat_enabled = bool(self.config.get("enable_smart_imagechat_hub_compat", True))
+            compat_enabled = bool(self.config.get("enable_openai_compat_endpoint")
+                          or self.config.get("enable_smart_imagechat_hub_compat", True))
             if compat_enabled:
                 logger.info(
                     "[vision_text_bridge] 检测到 smart_imagechat_hub 已安装, "
@@ -523,16 +524,17 @@ class VisionTextBridgePlugin(Star):
             else:
                 logger.info(
                     "[vision_text_bridge] 检测到 smart_imagechat_hub 已安装, "
-                    "但 enable_smart_imagechat_hub_compat=False, 兼容 endpoint 未启用"
+                    "但 enable_openai_compat_endpoint=False (合并老名称 enable_smart_imagechat_hub_compat), 兼容 endpoint 未启用"
                 )
 
 
 
     async def _auto_register_sih_provider(self) -> None:
         """: 启动期自动注册 OpenAI compatible provider (默认开, 让 smart_imagechat_hub 直接用)."""
-        if not self.config.get("smart_imagechat_hub_auto_register_provider", True):
+        if not (self.config.get("auto_register_openai_compat_provider")
+          or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
             logger.info(
-                "[vision_text_bridge] smart_imagechat_hub_auto_register_provider=False, "
+                "[vision_text_bridge] auto_register_openai_compat_provider=False (合并老名称 smart_imagechat_hub_auto_register_provider), "
                 "跳过自动注册 OpenAI compatible provider"
             )
             return
@@ -545,6 +547,53 @@ class VisionTextBridgePlugin(Star):
                 )
         except Exception as e:
             logger.warning("[vision_text_bridge] _auto_register_sih_provider 失败: %s", e)
+
+    def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
+        """: 检查 event 是否在权限范围内 (群白名单 / 用户白名单 / 仅私聊).
+
+        5 种模式 (按顺序判断, 任一不通过返 (False, reason)):
+          1. 群聊 + private_chat_only=True → "private_chat_only" (跳过群)
+          2. 群聊 + enable_group_whitelist=True + 群不在 whitelist → "group_not_in_whitelist"
+          3. 私聊 + enable_user_whitelist=True + 用户不在 whitelist → "user_not_in_whitelist"
+          4. enable_user_whitelist=True + 用户不在 whitelist → "user_not_in_whitelist" (群内)
+          5. 默认通过 (所有开关都关) → (True, "")
+
+        Returns:
+            (allowed, reason) - allowed=True 表示允许拦截; reason="" 或 skip 原因
+        """
+        try:
+            # 拿 event 的群/用户信息
+            msg = getattr(event, "message_obj", None) or getattr(event, "message", None)
+            group_id = str(getattr(msg, "group_id", "") or "") if msg else ""
+            user_id = str(getattr(msg, "sender", None) and (msg.sender.user_id or getattr(msg.sender, "user_id", "")) or "")
+            if not user_id and hasattr(event, "get_sender_id"):
+                user_id = str(event.get_sender_id() or "")
+            is_private = not group_id  # 没 group_id = 私聊
+
+            # 1. 仅私聊 + 当前是群 → 跳过
+            if not is_private and self.config.get("private_chat_only", False):
+                return False, "private_chat_only"
+
+            # 2. 群白名单
+            if not is_private and self.config.get("enable_group_whitelist", False):
+                whitelist = self.config.get("group_whitelist", []) or []
+                whitelist_str = {str(g) for g in whitelist}
+                if group_id not in whitelist_str:
+                    return False, "group_not_in_whitelist"
+
+            # 3. 用户白名单 (私聊/群聊都生效)
+            if self.config.get("enable_user_whitelist", False):
+                whitelist = self.config.get("user_whitelist", []) or []
+                whitelist_str = {str(u) for u in whitelist}
+                if user_id not in whitelist_str:
+                    return False, "user_not_in_whitelist"
+
+            return True, ""
+        except Exception as e:
+            # 提取失败 → 保守放行 (避免因权限检查 bug 漏掉所有拦截)
+            if self._should_log("hook_trace"):
+                logger.debug("[vision_text_bridge] _check_permission 异常, 默认放行: %s", e)
+            return True, ""
 
     def _mark_providers_support_image(self) -> None:
         """给所有 provider 补 'image' modality 标签，骗 AstrBot 不切 fallback。
@@ -749,6 +798,12 @@ class VisionTextBridgePlugin(Star):
             return
         if not self.mmx_path:
             logger.warning("[vision_text_bridge] 跳过本次拦截：未配置 mmx CLI")
+            return
+        # : 权限检查 (群白名单 / 用户白名单 / 仅私聊) — 不通过直接 return
+        allowed, skip_reason = self._check_permission(event)
+        if not allowed:
+            if self._should_log("hook_trace"):
+                logger.info("[vision_text_bridge] 跳过拦截（%s）", skip_reason)
             return
         if self._vision_semaphore is None:
             self._vision_semaphore = asyncio.Semaphore(

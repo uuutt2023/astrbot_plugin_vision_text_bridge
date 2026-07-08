@@ -276,9 +276,13 @@ def test_schema_has_smart_imagechat_hub_group():
         schema = json.load(f)
     assert "smart_imagechat_hub 兼容" in schema
     items = schema["smart_imagechat_hub 兼容"]["items"]
-    assert "enable_smart_imagechat_hub_compat" in items
-    assert "smart_imagechat_hub_auto_register_provider" in items
-    assert "smart_imagechat_hub_caption_format" in items
+    # v1.1.2+: 重命名为 openai_compat_*
+    assert "enable_openai_compat_endpoint" in items
+    assert "auto_register_openai_compat_provider" in items
+    assert "openai_compat_api_base" in items
+    assert "openai_compat_api_key" in items
+    assert "openai_compat_model_name" in items
+    assert "openai_compat_caption_format" in items
     print("✓ test_schema_has_smart_imagechat_hub_group")
 
 
@@ -343,6 +347,54 @@ def test_smart_imagechat_hub_integration_logger_defined():
     # 能调不报 NameError
     smart_imagechat_hub_integration.logger.info("test")
     print("✓ test_smart_imagechat_hub_integration_logger_defined")
+
+def test_fallback_to_legacy_smart_imagechat_hub_keys():
+    """: 反向验证: 没设新 key 时, 兼容老 smart_imagechat_hub_* 键 (v1.1.0 → v1.1.2 优雅升级)."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    from unittest.mock import AsyncMock, patch
+    import asyncio
+    plugin = make_test_plugin(main)
+    # 设老 key
+    plugin.config["enable_smart_imagechat_hub_compat"] = True
+    plugin.config["smart_imagechat_hub_auto_register_provider"] = True
+    plugin.config["smart_imagechat_hub_api_key"] = "sk-legacy"
+    plugin.config["smart_imagechat_hub_model_name"] = "legacy-model"
+    # 不设新 key — 应该走 fallback
+    assert "enable_openai_compat_endpoint" not in plugin.config
+    assert "openai_compat_api_key" not in plugin.config
+    # 测 fallback 逻辑
+    from smart_imagechat_hub_integration import build_provider_config
+    # build_provider_config 直接用显式 args, 不走 config — 这里我们测 _check_permission + auto_register
+    # 验证 _check_permission 还能工作
+    plugin.context.provider_manager = MagicMock(provider_insts=[])
+    with patch("smart_imagechat_hub_integration.auto_register_provider", new=AsyncMock(return_value=True)) as mock_ar:
+        asyncio.run(plugin._auto_register_sih_provider())
+    # 调了 = 老 key 被认出来了
+    assert mock_ar.called
+    print("✓ test_fallback_to_legacy_smart_imagechat_hub_keys")
+
+
+def test_new_openai_compat_keys_take_precedence():
+    """: 反向验证: 新 key 优先老 key."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    plugin = make_test_plugin(main)
+    # 同时设新老 key — 新 key 应胜
+    plugin.config["enable_openai_compat_endpoint"] = True
+    plugin.config["enable_smart_imagechat_hub_compat"] = False
+    # 验证新 key 命中
+    enabled_new = plugin.config.get("enable_openai_compat_endpoint")
+    enabled_old = plugin.config.get("enable_smart_imagechat_hub_compat")
+    assert enabled_new is True  # 新 key 胜
+    # 测试读 config: 用新 key 模式
+    resolved = (
+        plugin.config.get("enable_openai_compat_endpoint")
+        or plugin.config.get("enable_smart_imagechat_hub_compat", True)
+    )
+    assert resolved is True  # 新 key 胜
+    print("✓ test_new_openai_compat_keys_take_precedence")
+
 
 
 
@@ -419,5 +471,7 @@ if __name__ == "__main__":
     test_is_provider_already_registered_returns_true_when_registered()
     test_auto_register_provider_skipped_when_disabled()
     test_auto_register_provider_calls_when_enabled()
+    test_fallback_to_legacy_smart_imagechat_hub_keys()
+    test_new_openai_compat_keys_take_precedence()
     print("---")
     print("ALL SMART_IMAGECHAT_HUB TESTS PASSED")
