@@ -312,7 +312,7 @@ def test_build_provider_config_structure():
     assert cfg["enable"] is True
     assert cfg["api_base"].endswith("/v1/chat/completions")
     assert cfg["api_base"].endswith("/v1/chat/completions")
-    assert cfg["key"] == []
+    assert cfg["key"] == ["placeholder"]  # v1.1.1+: 空时用占位符, 防 AstrBot Missing credentials
     assert cfg["model"] == "vision-bridge"
     assert cfg["provider_type"] == "chat_completion"
     print("✓ test_build_provider_config_structure")
@@ -325,6 +325,25 @@ def test_build_provider_config_with_api_key():
     )
     assert cfg["key"] == ["sk-test"]
     print("✓ test_build_provider_config_with_api_key")
+
+def test_build_provider_config_uses_placeholder_when_no_api_key():
+    """: 反向验证: api_key 留空时用占位符 'placeholder' (AstrBot OpenAI provider 校验必填)."""
+    cfg = smart_imagechat_hub_integration.build_provider_config(api_base="http://x")
+    # 必须有 key 字段 (不能空 list)
+    assert cfg["key"], "api_key 留空时必须用占位符, 否则 AstrBot 报 Missing credentials"
+    assert cfg["key"] == ["placeholder"]
+    print("✓ test_build_provider_config_uses_placeholder_when_no_api_key")
+
+
+def test_smart_imagechat_hub_integration_logger_defined():
+    """: 反向验证: 模块 logger 已定义 (防 NameError 崩插件启动)."""
+    import logging
+    # logger 是 logging.Logger 实例
+    assert isinstance(smart_imagechat_hub_integration.logger, logging.Logger)
+    # 能调不报 NameError
+    smart_imagechat_hub_integration.logger.info("test")
+    print("✓ test_smart_imagechat_hub_integration_logger_defined")
+
 
 
 def test_is_provider_already_registered_returns_false_when_empty():
@@ -394,6 +413,8 @@ if __name__ == "__main__":
     test_main_detect_smart_imagechat_hub_logs_info()
     test_build_provider_config_structure()
     test_build_provider_config_with_api_key()
+    test_build_provider_config_uses_placeholder_when_no_api_key()
+    test_smart_imagechat_hub_integration_logger_defined()
     test_is_provider_already_registered_returns_false_when_empty()
     test_is_provider_already_registered_returns_true_when_registered()
     test_auto_register_provider_skipped_when_disabled()

@@ -5,8 +5,11 @@
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 PLUGIN_NAME = "astrbot_plugin_smart_imagechat_hub"
@@ -81,13 +84,18 @@ def build_provider_config(api_base: str, api_key: str = "", model: str = PROVIDE
     - AstrBot 内置 ProviderOpenAIOfficial 用 AsyncOpenAI 调任意 OpenAI compatible endpoint
     - 不必写自定义 Provider class, 直接利用 AstrBot 已有的 OpenAI provider
     - 用户也可以在 AstrBot dashboard 看到这个 provider, 像普通 OpenAI provider 一样配置
+
+    **api_key 必填**: AstrBot ProviderOpenAIOfficial __init__ 校验 api_key 必填
+    (Missing credentials 错误), 哪怕我方 endpoint 不校验。
+    用户留空 → 用占位 'placeholder' 字符串。
     """
     return {
         "type": PROVIDER_TYPE,
         "id": PROVIDER_ID,
         "enable": True,
         "api_base": api_base.rstrip("/"),
-        "key": [api_key] if api_key else [],
+        # AstrBot 校验 api_key 必填, 用占位字符串 (我方不校验)
+        "key": [api_key] if api_key else ["placeholder"],
         "model": model,
         "provider_type": "chat_completion",
     }
