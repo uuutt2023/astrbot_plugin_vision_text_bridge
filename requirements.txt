@@ -1,0 +1,3 @@
+# AstrBot 内置 httpx (AsyncOpenAI 依赖), 通常无需额外安装
+# 如果启动报 ModuleNotFoundError: No module named 'httpx', 装一下:
+# httpx>=0.24

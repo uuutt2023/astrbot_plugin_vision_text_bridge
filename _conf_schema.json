@@ -280,48 +280,6 @@
       }
     }
   },
-  "smart_imagechat_hub 兼容": {
-    "description": "向其他工具插件暴露 OpenAI 兼容提供商。主要用于 smart_imagechat_hub 以及任何需要 LLM 多模态能力的工具。你可以选择让本插件自动注册 provider, 或手动在 AstrBot 控制台 -> 模型提供商 -> 加入新提供商源处添加。",
-    "items": {
-      "enable_openai_compat_endpoint": {
-        "description": "启用 OpenAI 兼容 endpoint",
-        "type": "bool",
-        "hint": "开启后, 本插件暴露 OpenAI 兼容接口 POST /api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions 和 GET /api/plug/astrbot_plugin_vision_text_bridge/image/caption。\n任何使用该 endpoint 的工具 (smart_imagechat_hub / 其他 LLM 多模态插件) 都会走本插件的 mmx 图像理解流程。\n默认开启。",
-        "default": true
-      },
-      "auto_register_openai_compat_provider": {
-        "description": "启动时自动注册 OpenAI 兼容提供商",
-        "type": "bool",
-        "hint": "开启后, 本插件会在 AstrBot 启动时自动注册一个 OpenAI 兼容提供商 (id=vision_text_bridge_compat, type=openai_chat_completion)。\n你可以直接在 AstrBot -> 模型提供商 -> 对话模型看到该提供商。\n如果关闭, 你可以手动添加 (位于提供商管理 -> 选 OpenAI 兼容 / openai_chat_completion -> 填 API Base URL + 占位 API Key + 选模型)。\n默认开启。",
-        "default": true
-      },
-      "openai_compat_api_base": {
-        "description": "自定义 API Base URL (留空用默认)",
-        "type": "string",
-        "hint": "默认从 AstrBot dashboard 自动拿 host:port。\n默认格式: http://<AstrBot基地址>:<AstrBot端口>/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions\n高级用户可以改 (例如反代 / 远程) - 需与 AstrBot dashboard 同机 / 可访问。",
-        "default": ""
-      },
-      "openai_compat_api_key": {
-        "description": "自定义 API Key",
-        "type": "string",
-        "hint": "本插件的 /v1/chat/completions 端点不校验 API Key, 你也可以留空。\n但 AstrBot 内置 OpenAI 提供商初始化会校验 api_key 必填, 为防 \"Missing credentials\" 错误, 本插件会自动填上占位串 placeholder。\n如果你在 dashboard 手动添加提供商, 占位字符串即可 (例: placeholder) - 本插件不校验 API Key。",
-        "default": ""
-      },
-      "openai_compat_model_name": {
-        "description": "注册到提供商的模型名",
-        "type": "string",
-        "hint": "默认 vision-bridge (AstrBot -> 模型提供商 -> 对话模型下拉框选该模型)。\n任意字符串都可以 (本插件不校验模型, 只走 mmx 路径)。\nsmart_imagechat_hub 会用该模型名调 LLM, 任何其他使用者也看到该名。",
-        "default": "vision-bridge"
-      },
-      "openai_compat_caption_format": {
-        "description": "返回格式",
-        "type": "string",
-        "hint": "mmx: 原样返回 mmx 描述（推荐）。多数调用方 (包括 smart_imagechat_hub) 能从自然语言里提取需要的信息。\njson: 包装成 JSON 数组格式 [“tag1”, “tag2”] - 仅在你明确知道调用方期待该格式时才用。",
-        "default": "mmx"
-      }
-    },
-    "type": "object"
-  },
   "权限控制": {
     "type": "object",
     "description": "权限控制 - 控制插件在哪些群/用户生效",
@@ -357,5 +315,47 @@
         "default": false
       }
     }
+  },
+  "OpenAI 兼容 provider 暴露": {
+    "description": "向 AstrBot 对话模型注册一个本插件的 LLM 提供商。开启后, 其他工具插件 (或任何通过 AstrBot provider_manager 调 LLM 的代码) 可以选择该提供商作为 LLM 多模态能力的后端。本插件对调用该提供商的请求会调用 mmx 进行图像理解, 并将描述作为 LLM 响应返回。",
+    "items": {
+      "enable_openai_compat_endpoint": {
+        "description": "启用 OpenAI 兼容 endpoint",
+        "type": "bool",
+        "hint": "开启后, 本插件暴露 OpenAI 兼容 HTTP 端点: \n  - POST /api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions\n  - GET/POST /api/plug/astrbot_plugin_vision_text_bridge/image/caption\n任何调用该端点的 LLM 调用会被重定向到 mmx 图像理解流程。\n默认开启。",
+        "default": true
+      },
+      "auto_register_openai_compat_provider": {
+        "description": "启动时自动注册 OpenAI 兼容提供商",
+        "type": "bool",
+        "hint": "开启后, 本插件会在 AstrBot 启动时自动在对话模型提供商列表里注册一个 id=vision_text_bridge_compat 的 provider。\n关闭后, 你可以手动添加 (位于 AstrBot 控制台 模型提供商 加入新提供商源 选择类型 OpenAI 兼容 填入上面 API Base URL + 模型名 vision-bridge)。\n默认开启。",
+        "default": true
+      },
+      "openai_compat_api_base": {
+        "description": "自定义 API Base URL (留空用默认)",
+        "type": "string",
+        "hint": "默认从 AstrBot dashboard 自动推断出 host:port (如 http://localhost:6185)。\n默认完整地址: http://<AstrBot 基地址>:<AstrBot 端口>/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions\n高级用户可填另一个可访问的同类接口 (e.g. 反代 / 远程) 。",
+        "default": ""
+      },
+      "openai_compat_api_key": {
+        "description": "自定义 API Key",
+        "type": "string",
+        "hint": "本插件的 /v1/chat/completions 端点不校验 API Key, 可以留空。\n如果你选择手动添加 provider, AstrBot 框架需要你填一个任意字符串作为 API Key (e.g. placeholder)。",
+        "default": ""
+      },
+      "openai_compat_model_name": {
+        "description": "注册到提供商的模型名",
+        "type": "string",
+        "hint": "注册到 AstrBot 对话模型下拉框的模型名。\n默认 vision-bridge, 任意字符串都可以 (本插件不校验模型, 只走 mmx 路径)。",
+        "default": "vision-bridge"
+      },
+      "openai_compat_caption_format": {
+        "description": "返回格式",
+        "type": "string",
+        "hint": "mmx: 原样返回 mmx 描述 (推荐)。调用方从自然语言描述里提取需要的信息。\njson: 包装成 JSON 数组格式 [“tag1”, “tag2”] - 仅在调用方明确需要该格式时使用。",
+        "default": "mmx"
+      }
+    },
+    "type": "object"
   }
 }

@@ -274,8 +274,8 @@ def test_schema_has_smart_imagechat_hub_group():
     import json
     with open("_conf_schema.json", "r", encoding="utf-8") as f:
         schema = json.load(f)
-    assert "smart_imagechat_hub 兼容" in schema
-    items = schema["smart_imagechat_hub 兼容"]["items"]
+    assert "OpenAI 兼容 provider 暴露" in schema
+    items = schema["OpenAI 兼容 provider 暴露"]["items"]
     # v1.1.2+: 重命名为 openai_compat_*
     assert "enable_openai_compat_endpoint" in items
     assert "auto_register_openai_compat_provider" in items

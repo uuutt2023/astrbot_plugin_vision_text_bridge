@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from vision_bridge_provider import VisionBridgeProvider
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,6 +109,11 @@ def is_provider_already_registered(plugin) -> bool:
         pm = getattr(plugin.context, "provider_manager", None)
         if pm is None:
             return False
+        # : 检查类型, 不查 provider_config.id (因为 VisionBridgeProvider 不存 id 字段)
+        for prov in getattr(pm, "provider_insts", []):
+            if isinstance(prov, VisionBridgeProvider):
+                return True
+        # 兼容老 openai_chat_completion 注册路径 (有 provider_config.id 字段)
         for prov in getattr(pm, "provider_insts", []):
             cfg = getattr(prov, "provider_config", None)
             if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
@@ -132,6 +139,7 @@ async def auto_register_provider(plugin) -> bool:
     """
     if is_provider_already_registered(plugin):
         return True
+
     try:
         pm = getattr(plugin.context, "provider_manager", None)
         if pm is None:
@@ -152,22 +160,29 @@ async def auto_register_provider(plugin) -> bool:
         )
         # 用户可覆盖 api_base (高级用户)
         user_override = (
-    plugin.config.get("openai_compat_api_base", "")
-    or plugin.config.get("smart_imagechat_hub_api_base", "")
-)
+            plugin.config.get("openai_compat_api_base", "")
+            or plugin.config.get("smart_imagechat_hub_api_base", "")
+        )
         if user_override:
             api_base = user_override
         api_key = (
-    plugin.config.get("openai_compat_api_key", "")
-    or plugin.config.get("smart_imagechat_hub_api_key", "")
-)
+            plugin.config.get("openai_compat_api_key", "")
+            or plugin.config.get("smart_imagechat_hub_api_key", "")
+        )
         model = (
-    plugin.config.get("openai_compat_model_name")
-    or plugin.config.get("smart_imagechat_hub_model_name", PROVIDER_DEFAULT_MODEL)
-)
-        provider_config = build_provider_config(api_base=api_base, api_key=api_key, model=model)
-        # 调 load_provider — 它会 instantiate + add to provider_insts
-        await pm.load_provider(provider_config)
+            plugin.config.get("openai_compat_model_name")
+            or plugin.config.get("smart_imagechat_hub_model_name", PROVIDER_DEFAULT_MODEL)
+        )
+        # : 不调 pm.load_provider (会触发 openai SDK 校验 api_key → Missing credentials)
+        #   直接 instantiate VisionBridgeProvider + add to provider_insts
+        #   text_chat 走 httpx 调我方 endpoint, 不依赖 openai SDK
+        inst = VisionBridgeProvider(
+            provider_config={"api_base": api_base, "key": [api_key or "placeholder"], "model": model},
+            provider_settings={},
+        )
+        pm.provider_insts.append(inst)
+        if hasattr(pm, "providers") and isinstance(getattr(pm, "providers", None), dict):
+            pm.providers[PROVIDER_ID] = inst
         logger.info(
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, api_base=%s, model=%s",
             PROVIDER_ID, api_base, model,
@@ -175,6 +190,7 @@ async def auto_register_provider(plugin) -> bool:
         return True
     except Exception as e:
         logger.warning("[vision_text_bridge] auto_register_provider 失败: %s", e)
+        return False
         return False
 
 
