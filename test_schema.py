@@ -59,7 +59,7 @@ def test_schema_has_10_groups():
     expected = {
         "基础", "MiniMax CLI", "并发", "图像理解", "缓存",
         "输入处理", "LLM 提示", "跨插件兼容", "日志", "脱敏",
-        "OpenAI 兼容 provider 暴露",
+        "OpenAI 兼容 provider",
         "权限控制",
     }
     assert set(groups) == expected, f"分组不匹配, 实际: {groups}"

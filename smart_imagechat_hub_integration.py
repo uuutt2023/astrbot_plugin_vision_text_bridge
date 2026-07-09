@@ -10,6 +10,17 @@ from pathlib import Path
 from typing import Optional
 
 from vision_bridge_provider import VisionBridgeProvider
+try:
+    from main import (
+        DEFAULT_DASHBOARD_PORT,
+        PLUGIN_ROUTE_PREFIX,
+        OPENAI_COMPAT_PATH,
+    )
+except ImportError:
+    # main 依赖 astrbot, 沙箱可能装不上 — fallback 共享常量
+    DEFAULT_DASHBOARD_PORT = 6185
+    PLUGIN_ROUTE_PREFIX = "/api/plug/astrbot_plugin_vision_text_bridge"
+    OPENAI_COMPAT_PATH = "/v1/chat/completions"
 
 logger = logging.getLogger(__name__)
 
@@ -145,33 +156,36 @@ async def auto_register_provider(plugin) -> bool:
         if pm is None:
             logger.debug("[vision_text_bridge] provider_manager 不可用, 跳过自动注册")
             return False
-        # 拿 AstrBot dashboard host:port
+        # : 端口优先级 — schema dashboard_port > AstrBot dashboard.port > 默认
+        #   这样用户在可视化配置里改 dashboard_port 即可生效
         try:
             ac = plugin.context.astr_context
             cfg = ac.config if hasattr(ac, "config") else {}
             dashboard = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
             host = dashboard.get("host", "localhost")
-            port = dashboard.get("port", 6185)
+            port = plugin.config.get("dashboard_port") or dashboard.get("port", DEFAULT_DASHBOARD_PORT)
+            port = int(port)
         except Exception:
-            host, port = "localhost", 6185
-        api_base = (
-            f"http://{host}:{port}"
-            f"/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
-        )
-        # 用户可覆盖 api_base (高级用户)
+            host, port = "localhost", DEFAULT_DASHBOARD_PORT
+        api_base = f"http://{host}:{port}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        # 优先级: 新 key > 老 key > 自动推断
         user_override = (
-            plugin.config.get("openai_compat_api_base", "")
+            plugin.config.get("api_base", "")
+            or plugin.config.get("openai_compat_api_base", "")
             or plugin.config.get("smart_imagechat_hub_api_base", "")
         )
         if user_override:
             api_base = user_override
         api_key = (
-            plugin.config.get("openai_compat_api_key", "")
+            plugin.config.get("api_key", "")
+            or plugin.config.get("openai_compat_api_key", "")
             or plugin.config.get("smart_imagechat_hub_api_key", "")
         )
         model = (
-            plugin.config.get("openai_compat_model_name")
-            or plugin.config.get("smart_imagechat_hub_model_name", PROVIDER_DEFAULT_MODEL)
+            plugin.config.get("model_name")
+            or plugin.config.get("openai_compat_model_name")
+            or plugin.config.get("smart_imagechat_hub_model_name")
+            or PROVIDER_DEFAULT_MODEL
         )
         # : 不调 pm.load_provider (会触发 openai SDK 校验 api_key → Missing credentials)
         #   直接 instantiate VisionBridgeProvider + add to provider_insts

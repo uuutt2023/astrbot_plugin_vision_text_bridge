@@ -103,6 +103,19 @@ CaptionCache = _sibling_cache.CaptionCache
 CaptionEntry = _sibling_cache.CaptionEntry
 
 PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
+
+# : AstrBot dashboard 默认端口 — 用户可通过 schema "dashboard_port" 覆盖
+DEFAULT_DASHBOARD_PORT = 6185
+
+# : 共享常量 - 减少插件内魔法字符串
+#   web_api.py / vision_bridge_provider.py / smart_imagechat_hub_integration.py 都从这里导入
+PLUGIN_ROUTE_PREFIX = "/api/plug/" + PLUGIN_NAME
+OPENAI_COMPAT_PATH = "/v1/chat/completions"
+IMAGE_CAPTION_PATH = "/image/caption"
+PROVIDER_ID = "vision_text_bridge_compat"
+DEFAULT_MODEL = "vision-bridge"
+PLACEHOLDER_API_KEY = "placeholder"
+
 # AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
 # priority 在 import 时锁定，调配置后需重启 AstrBot。
 DEFAULT_PRIORITY = 100

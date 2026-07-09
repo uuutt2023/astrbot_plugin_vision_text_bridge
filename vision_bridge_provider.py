@@ -231,6 +231,20 @@ class VisionBridgeProvider:
 
 
 # 暴露 register 用的 metadata
-PROVIDER_ID = "vision_text_bridge_compat"
+# : 共享常量从 main.py 导入 (PLUGIN_NAME / PROVIDER_ID / DEFAULT_MODEL / PLACEHOLDER_API_KEY)
+try:
+    from main import (
+        PROVIDER_ID as _MAIN_PROVIDER_ID,
+        DEFAULT_MODEL as _MAIN_DEFAULT_MODEL,
+        PLACEHOLDER_API_KEY as _MAIN_PLACEHOLDER_API_KEY,
+    )
+    PROVIDER_ID = _MAIN_PROVIDER_ID
+    DEFAULT_MODEL = _MAIN_DEFAULT_MODEL
+    PLACEHOLDER_API_KEY = _MAIN_PLACEHOLDER_API_KEY
+except ImportError:
+    # 沙箱 import 失败 (main 依赖 astrbot 装不上) → fallback
+    PROVIDER_ID = "vision_text_bridge_compat"
+    DEFAULT_MODEL = "vision-bridge"
+    PLACEHOLDER_API_KEY = "placeholder"
+
 PROVIDER_TYPE = "chat_completion"
-DEFAULT_MODEL = "vision-bridge"

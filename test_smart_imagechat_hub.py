@@ -274,15 +274,15 @@ def test_schema_has_smart_imagechat_hub_group():
     import json
     with open("_conf_schema.json", "r", encoding="utf-8") as f:
         schema = json.load(f)
-    assert "OpenAI 兼容 provider 暴露" in schema
-    items = schema["OpenAI 兼容 provider 暴露"]["items"]
+    assert "OpenAI 兼容 provider" in schema
+    items = schema["OpenAI 兼容 provider"]["items"]
     # v1.1.2+: 重命名为 openai_compat_*
-    assert "enable_openai_compat_endpoint" in items
-    assert "auto_register_openai_compat_provider" in items
-    assert "openai_compat_api_base" in items
-    assert "openai_compat_api_key" in items
-    assert "openai_compat_model_name" in items
-    assert "openai_compat_caption_format" in items
+    assert "enabled" in items
+    assert "auto_register" in items
+    assert "api_base" in items
+    assert "api_key" in items
+    assert "model_name" in items
+    assert "caption_format" in items
     print("✓ test_schema_has_smart_imagechat_hub_group")
 
 
@@ -361,8 +361,8 @@ def test_fallback_to_legacy_smart_imagechat_hub_keys():
     plugin.config["smart_imagechat_hub_api_key"] = "sk-legacy"
     plugin.config["smart_imagechat_hub_model_name"] = "legacy-model"
     # 不设新 key — 应该走 fallback
-    assert "enable_openai_compat_endpoint" not in plugin.config
-    assert "openai_compat_api_key" not in plugin.config
+    assert "enabled" not in plugin.config
+    assert "api_key" not in plugin.config
     # 测 fallback 逻辑
     from smart_imagechat_hub_integration import build_provider_config
     # build_provider_config 直接用显式 args, 不走 config — 这里我们测 _check_permission + auto_register
@@ -381,15 +381,15 @@ def test_new_openai_compat_keys_take_precedence():
     import main
     plugin = make_test_plugin(main)
     # 同时设新老 key — 新 key 应胜
-    plugin.config["enable_openai_compat_endpoint"] = True
+    plugin.config["enabled"] = True
     plugin.config["enable_smart_imagechat_hub_compat"] = False
     # 验证新 key 命中
-    enabled_new = plugin.config.get("enable_openai_compat_endpoint")
+    enabled_new = plugin.config.get("enabled")
     enabled_old = plugin.config.get("enable_smart_imagechat_hub_compat")
     assert enabled_new is True  # 新 key 胜
     # 测试读 config: 用新 key 模式
     resolved = (
-        plugin.config.get("enable_openai_compat_endpoint")
+        plugin.config.get("enabled")
         or plugin.config.get("enable_smart_imagechat_hub_compat", True)
     )
     assert resolved is True  # 新 key 胜

@@ -316,43 +316,49 @@
       }
     }
   },
-  "OpenAI 兼容 provider 暴露": {
-    "description": "向 AstrBot 对话模型注册一个本插件的 LLM 提供商。开启后, 其他工具插件 (或任何通过 AstrBot provider_manager 调 LLM 的代码) 可以选择该提供商作为 LLM 多模态能力的后端。本插件对调用该提供商的请求会调用 mmx 进行图像理解, 并将描述作为 LLM 响应返回。",
+  "OpenAI 兼容 provider": {
+    "description": "把本插件注册成 OpenAI 兼容 LLM 提供商。其他插件/代码通过 provider_manager 调用时, 本插件接 HTTP → 调 mmx → 返图像描述。",
     "items": {
-      "enable_openai_compat_endpoint": {
-        "description": "启用 OpenAI 兼容 endpoint",
+      "dashboard_port": {
+        "description": "AstrBot 端口",
+        "type": "int",
+        "hint": "本插件 endpoint 的端口 (和 AstrBot 主端口一致)。默认 6185。",
+        "default": 6185
+      },
+      "enabled": {
+        "description": "启用 OpenAI 兼容端点",
         "type": "bool",
-        "hint": "开启后, 本插件暴露 OpenAI 兼容 HTTP 端点: \n  - POST /api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions\n  - GET/POST /api/plug/astrbot_plugin_vision_text_bridge/image/caption\n任何调用该端点的 LLM 调用会被重定向到 mmx 图像理解流程。\n默认开启。",
+        "hint": "暴露 POST /v1/chat/completions 与 GET/POST /image/caption, 用于图像理解。默认开。",
         "default": true
       },
-      "auto_register_openai_compat_provider": {
-        "description": "启动时自动注册 OpenAI 兼容提供商",
+      "auto_register": {
+        "description": "启动时自动注册提供商",
         "type": "bool",
-        "hint": "开启后, 本插件会在 AstrBot 启动时自动在对话模型提供商列表里注册一个 id=vision_text_bridge_compat 的 provider。\n关闭后, 你可以手动添加 (位于 AstrBot 控制台 模型提供商 加入新提供商源 选择类型 OpenAI 兼容 填入上面 API Base URL + 模型名 vision-bridge)。\n默认开启。",
+        "hint": "启动时向 AstrBot provider_manager 注册 vision_text_bridge_compat。默认开。",
         "default": true
       },
-      "openai_compat_api_base": {
-        "description": "自定义 API Base URL (留空用默认)",
+      "api_base": {
+        "description": "API Base URL",
         "type": "string",
-        "hint": "默认从 AstrBot dashboard 自动推断出 host:port (如 http://localhost:6185)。\n默认完整地址: http://<AstrBot 基地址>:<AstrBot 端口>/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions\n高级用户可填另一个可访问的同类接口 (e.g. 反代 / 远程) 。",
+        "hint": "默认 http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions。留空用默认, 也可填反向代理或远程地址。",
+        "default": "http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "hint": "本端点不校验, 任意字符串 (含空)。",
         "default": ""
       },
-      "openai_compat_api_key": {
-        "description": "自定义 API Key",
+      "model_name": {
+        "description": "模型名",
         "type": "string",
-        "hint": "本插件的 /v1/chat/completions 端点不校验 API Key, 可以留空。\n如果你选择手动添加 provider, AstrBot 框架需要你填一个任意字符串作为 API Key (e.g. placeholder)。",
-        "default": ""
-      },
-      "openai_compat_model_name": {
-        "description": "注册到提供商的模型名",
-        "type": "string",
-        "hint": "注册到 AstrBot 对话模型下拉框的模型名。\n默认 vision-bridge, 任意字符串都可以 (本插件不校验模型, 只走 mmx 路径)。",
+        "hint": "注册到 AstrBot 对话模型下拉框的展示名。任意字符串均可。",
         "default": "vision-bridge"
       },
-      "openai_compat_caption_format": {
+      "caption_format": {
         "description": "返回格式",
         "type": "string",
-        "hint": "mmx: 原样返回 mmx 描述 (推荐)。调用方从自然语言描述里提取需要的信息。\njson: 包装成 JSON 数组格式 [“tag1”, “tag2”] - 仅在调用方明确需要该格式时使用。",
+        "hint": "mmx (推荐): 原样返 mmx 描述; json: 包装为 {\"tags\": [...]}。",
         "default": "mmx"
       }
     },
