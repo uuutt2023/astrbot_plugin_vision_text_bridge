@@ -98,48 +98,35 @@ def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
     else:
         logger.debug("[vision_text_bridge] cmd_config.json 无 provider 列表, 跳过")
         return False
-    # 找目标 entry
+    # : 找 target_entry — 但先 **删** (让 framework 不 instantiate openai_chat_completion 覆盖我方 instance)
+    # 之前是 append/改 entry — framework 启动时 'Loading model openai_chat_completion(vision_text_bridge_compat)'
+    # 用 ProviderOpenAIOfficial 类 instantiate, **覆盖** 我方 VisionBridgeProvider instance.
+    # smart_imagechat_hub 调 pm.providers[id].get_models() 拿到 ProviderOpenAIOfficial,
+    # 它 model_config 字段没设, get_models() 不返 vision-bridge → 查不到模型.
+    #
+    # 修: user config 里**不要**留 vision_text_bridge_compat entry, framework 不 instantiate
+    # 我方 plugin 启动时 pm.providers[id] = VisionBridgeProvider() 是**唯一** instance.
     target_idx = None
-    target_entry = None
     for i, entry in enumerate(providers):
         if isinstance(entry, dict) and entry.get("id") == provider_id:
-            target_idx = i
-            target_entry = entry
-            break
-    # : 用户要求 #2 — entry 不存在时主动 append 新 entry (让 AstrBot dashboard 能查阅)
-    if target_entry is None:
-        try:
-            from constants import DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX, OPENAI_COMPAT_PATH
-            default_base = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
-        except ImportError:
-            default_base = "http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
-        new_entry = {
-            "id": provider_id,
-            "type": "openai_chat_completion",
-            "enable": True,
-            "key": ["placeholder"],
-            "api_key": "placeholder",
-            "api_base": default_base,
-            "model_config": {"model": PROVIDER_DEFAULT_MODEL},
-        }
-        providers.append(new_entry)
-        # : 写回 disk
-        try:
-            cfg_path.write_text(
-                _json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            # 删
+            removed_entry = providers.pop(i)
             logger.info(
-                "[vision_text_bridge] cmd_config.json append 新 provider entry: id=%s, "
-                "type=openai_chat_completion, api_base=%s, model=%s",
-                provider_id, default_base, PROVIDER_DEFAULT_MODEL,
+                "[vision_text_bridge] cmd_config.json 删除 provider entry: id=%s (type=%s) — "
+                "避免 framework 用 openai_chat_completion 覆盖我方 VisionBridgeProvider instance",
+                provider_id, removed_entry.get("type", "?"),
             )
-        except Exception as e:
-            logger.warning("[vision_text_bridge] append 后写 cmd_config.json 失败: %s", e)
-        target_entry = new_entry
-        target_idx = len(providers) - 1
-        # : append 完了直接返 True, 不用再走下面的改 type/key 流程
-        return True
+            break
+    # 写回 disk (改后立刻持久化)
+    try:
+        cfg_path.write_text(
+            _json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning("[vision_text_bridge] 删 entry 后写 cmd_config.json 失败: %s", e)
+    # entry 已删, 走后面 _add_or_replace_inst 添加我方 VisionBridgeProvider instance
+    return True
 
     changes = []
     # 1. type 改 openai_chat_completion (保留 framework 原生支持)
@@ -512,6 +499,27 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             provider_settings={},
         )
         _add_or_replace_inst(inst_list, prov_dict, inst)
+
+        # : 同步写 pm.providers_config[id] = config — framework 查模型时可能读这个 dict
+        #   (走 'model_config.model' 字段) — 不写则 smart_imagechat_hub 等插件查不到模型
+        if isinstance(prov_dict, dict):
+            providers_config = getattr(pm, "providers_config", None)
+            if not isinstance(providers_config, dict):
+                try:
+                    providers_config = {}
+                    pm.providers_config = providers_config
+                except Exception:
+                    providers_config = None
+            if isinstance(providers_config, dict):
+                # : 构造完整 config — 跟 ProviderOpenAIOfficial 期望的格式一致
+                full_config = dict(config)
+                # model_config 字段 (smart_imagechat_hub 查模型时读)
+                if "model_config" not in full_config or not isinstance(full_config.get("model_config"), dict):
+                    full_config["model_config"] = {"model": full_config.get("model", PROVIDER_DEFAULT_MODEL)}
+                elif not full_config["model_config"].get("model"):
+                    full_config["model_config"]["model"] = full_config.get("model", PROVIDER_DEFAULT_MODEL)
+                providers_config[PROVIDER_ID] = full_config
+                logger.debug("auto_register_provider: 同步 pm.providers_config[id]=%s", full_config)
 
         logger.info(
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, type=%s, api_base=%s, model=%s",
