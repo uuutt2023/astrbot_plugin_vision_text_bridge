@@ -551,10 +551,44 @@ class VisionTextBridgePlugin(Star):
             )
             return
         try:
-            # : 用户要求 #3 — 集中 log 输出 api_base / api_key / instance_id / 模型昵称 id
-            ok = await smart_imagechat_hub_integration.auto_register_provider(self, log_details=True)
+            # : 不传 log_details=True 兼容老版本 sih_integration (用户 AstrBot zip 缓存 stale)
+            ok = await smart_imagechat_hub_integration.auto_register_provider(self)
         except Exception as e:
             logger.warning("[vision_text_bridge] _auto_register_sih_provider 失败: %s", e)
+
+        # : 集中 log — 不依赖 sih_integration 内部 log_details 参数
+        #   即使 sih_integration 是老版本 (没 log_details) 也照常打
+        if ok:
+            try:
+                pm = getattr(self.context, "provider_manager", None)
+                prov_dict = getattr(pm, "providers", {}) if pm else {}
+                inst = prov_dict.get("vision_text_bridge_compat") if isinstance(prov_dict, dict) else None
+                if inst is None:
+                    for p_inst in getattr(pm, "provider_insts", []):
+                        cls_name = type(p_inst).__name__
+                        if cls_name == "VisionBridgeProvider":
+                            inst = p_inst
+                            break
+                if inst is not None:
+                    instance_id = f"0x{id(inst):08x}"
+                    api_base = getattr(inst, "api_base", "") or ""
+                    api_key = getattr(inst, "api_key", "") or ""
+                    model = getattr(inst, "_current_model", None) or getattr(inst, "model", "") or ""
+                    if len(api_key) > 8:
+                        key_masked = api_key[:4] + "***" + api_key[-4:]
+                    else:
+                        key_masked = "***"
+                    logger.info(
+                        "[vision_text_bridge] provider 已就绪 — 完整配置:\n"
+                        "  provider_id        (AstrBot dashboard 显示名) = vision_text_bridge_compat\n"
+                        "  provider_instance_id (内存唯一 ID)           = %s\n"
+                        "  api_base           (POST endpoint URL)        = %s\n"
+                        "  api_key            (脱敏)                    = %s\n"
+                        "  model              (模型昵称 id)             = %s",
+                        instance_id, api_base, key_masked, model,
+                    )
+            except Exception as e:
+                logger.debug("[vision_text_bridge] 集中 log 失败: %s", e)
 
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """: 检查 event 是否在权限范围内 (群白名单 / 用户白名单 / 仅私聊).
