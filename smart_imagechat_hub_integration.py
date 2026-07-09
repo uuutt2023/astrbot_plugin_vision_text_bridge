@@ -393,8 +393,13 @@ def _cleanup_broken_instances(pm) -> tuple[dict, list]:
             cfg_type = cfg.get("type")
             logger.debug("_cleanup_broken_instances: 检查实例[%d] type=%s, config.id=%s, config.type=%s",
                          i, type(p_inst).__name__, cfg_id, cfg_type)
-            if cfg_id == PROVIDER_ID or cfg_type == PROVIDER_TYPE:
-                logger.debug("_cleanup_broken_instances: 标记实例[%d]为 None (旧实例)", i)
+            # : P1 fix — 不再清 framework ProviderOpenAIOfficial instance
+            #   之前 cfg_id == PROVIDER_ID 会标记 framework instance 为 None
+            #   framework instance 是合法的 (openai_chat_completion type, meta() work)
+            #   仅清旧 vision_bridge_compat type instance (老版本残留 - meta() 抛错)
+            from .constants import PROVIDER_TYPE  # 'vision_bridge_compat' 旧 type
+            if cfg_type == PROVIDER_TYPE and cfg_type != "openai_chat_completion":
+                logger.debug("_cleanup_broken_instances: 标记实例[%d]为 None (旧 vision_bridge_compat 类型)", i)
                 inst_list[i] = None  # 标记为可替换位置
         else:
             logger.debug("_cleanup_broken_instances: 实例[%d] 无有效 provider_config", i)
@@ -402,9 +407,14 @@ def _cleanup_broken_instances(pm) -> tuple[dict, list]:
     # 清理 providers 字典中的旧值
     if isinstance(prov_dict, dict) and PROVIDER_ID in prov_dict:
         existing = prov_dict.get(PROVIDER_ID)
-        if not isinstance(existing, VisionBridgeProvider):
-            logger.debug("_cleanup_broken_instances: providers[%s] 不是 VisionBridgeProvider，置为 None", PROVIDER_ID)
-            prov_dict[PROVIDER_ID] = None
+        # : P1 fix — 不再清 framework ProviderOpenAIOfficial instance
+        #   framework instance 是合法的 (meta() 走 provider_cls_map["openai_chat_completion"] work)
+        #   我方 plugin 后启动 — 已有 instance — keep
+        if isinstance(existing, VisionBridgeProvider):
+            pass  # 我方自己的 — keep
+        # 其它 (ProviderOpenAIOfficial instance from framework) — keep
+        else:
+            logger.debug("_cleanup_broken_instances: providers[%s] 是 framework instance, keep", PROVIDER_ID)
 
     logger.debug("_cleanup_broken_instances: 清理后 provider_insts 长度=%d", len(inst_list))
     return (prov_dict if isinstance(prov_dict, dict) else {}, inst_list)
@@ -482,28 +492,37 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         }
         logger.debug("auto_register_provider: 配置内容=%s", config)
 
-        # : 关键 - **不** 覆盖 framework 已加载的 ProviderOpenAIOfficial instance
-        #   之前我方 instantiate VisionBridgeProvider + replace pm.providers[id] →
-        #   meta() 调 provider_cls_map["vision_bridge_compat"] (我方 type) → 抛 'Provider type not registered'
-        #   框架加载走 type=openai_chat_completion → ProviderOpenAIOfficial 已在 pm.providers[id]
-        #   我们只 verify 存在 + 补全 model_config 字段, 不动 instance.
+        # : P0 fix — ALWAYS instantiate 我方 VisionBridgeProvider + add pm.provider_insts
+        #   之前 fallback 只在 framework 无 instance 时 instantiate
+        #   真实 bug: framework instance meta() 调用 provider_cls_map['openai_chat_completion']
+        #   **理论上** work 但之前 meta() 返 dict（dict 没 .id attr）→ sih getattr(meta, 'id') AttributeError → 跳过
+        #   现在我方 meta() 返 ProviderMeta dataclass → 一定 work
+        #   instantiate 我方 instance + add pm.provider_insts 即使 framework 已有
+        #   我方 instance 是 primary, framework instance 是 secondary (做 framework 调用)
 
-        framework_inst = prov_dict.get(PROVIDER_ID) if isinstance(prov_dict, dict) else None
-        if framework_inst is None:
-            # : 没 instance (framework 跳过加载) → 主动 instantiate 我方 VisionBridgeProvider
-            #   这是 fallback 路径 — 正常情况不会走
-            logger.warning(
-                "auto_register_provider: pm.providers[id] 无 instance, 走 fallback — "
-                "instantiate 我方 VisionBridgeProvider"
-            )
-            inst = VisionBridgeProvider(
-                provider_config=config,
-                provider_settings={},
-            )
-            _add_or_replace_inst(inst_list, prov_dict, inst)
-            framework_inst = inst
+        my_inst = VisionBridgeProvider(
+            provider_config=config,
+            provider_settings={},
+        )
+        # : 把我方 instance 加到 pm.provider_insts (用 add_or_replace 替换 None)
+        #   不重复 add (重复 add 会导致 sih dropdown 重复显示我方)
+        already_in_list = any(
+            isinstance(p, VisionBridgeProvider)
+            for p in getattr(pm, "provider_insts", [])
+        )
+        if not already_in_list:
+            _add_or_replace_inst(inst_list, prov_dict, my_inst)
+            logger.debug("auto_register_provider: 已 add 我方 VisionBridgeProvider instance 到 provider_insts")
         else:
-            # 修 framework instance 的 provider_config — 补全 model_config 字段
+            logger.debug("auto_register_provider: 我方 VisionBridgeProvider instance 已在 list 中, skip add")
+            # 替换 pm.providers[id] 指向我方 instance (framework meta 也 work)
+            if isinstance(prov_dict, dict):
+                prov_dict[PROVIDER_ID] = my_inst
+            framework_inst = my_inst
+
+        # : 修 framework instance (if 已存在 && 不是 我方 instance) — 补全 model_config
+        framework_inst = prov_dict.get(PROVIDER_ID) if isinstance(prov_dict, dict) else None
+        if framework_inst is not None and not isinstance(framework_inst, VisionBridgeProvider):
             if hasattr(framework_inst, "provider_config") and isinstance(framework_inst.provider_config, dict):
                 if "model_config" not in framework_inst.provider_config or not isinstance(
                     framework_inst.provider_config.get("model_config"), dict
@@ -512,13 +531,11 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                         "model": full_model_name,
                     }
                     logger.debug("auto_register_provider: 补全 framework instance.model_config")
-            # 修 model_name (Provider.set_model)
             if hasattr(framework_inst, "set_model"):
                 try:
                     framework_inst.set_model(full_model_name)
                 except Exception as e:
                     logger.debug("auto_register_provider: set_model 失败: %s", e)
-            # 修 model (Provider.model_name attribute)
             if hasattr(framework_inst, "model_name"):
                 try:
                     framework_inst.model_name = full_model_name

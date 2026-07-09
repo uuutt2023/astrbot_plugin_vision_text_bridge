@@ -103,25 +103,51 @@ class VisionBridgeProvider:
         """: 返本 provider 支持的模型 (固定 vision-bridge)."""
         return ["vision-bridge"]
 
-    def meta(self) -> dict:
-        """: 返 provider 元信息 — smart_imagechat_hub 等插件枚举 provider 列表时调.
+    def meta(self):
+        """: 返 provider 元信息 — 完全 override, 绕开 framework provider_cls_map 校验.
 
-        AstrBot 4.26.4 + smart_imagechat_hub 的 _chat_provider_options() 期望这个方法.
-        没它会报 'VisionBridgeProvider' object has no attribute 'meta'.
+        关键: 不继承 AbstractProvider — 不用 super().meta() — 直接构造 ProviderMeta.
         """
-        return {
-            "id": self.provider_config.get("id", ""),
-            "type": self.provider_config.get("type", "vision_bridge_compat"),
-            "provider_type": self.provider_type,
-            "model": self._current_model or self.model,
-            "model_name": self._current_model or self.model,
-            "api_base": self.api_base,
-            "enable": self.provider_config.get("enable", True),
-        }
+        cfg = self.provider_config or {}
+        provider_id = cfg.get("id") or PROVIDER_ID
+        # 用 'openai_chat_completion' — framework 已知 type (provider_cls_map 已注册)
+        meta_type = "openai_chat_completion"
+        # 模型名 — 多源融合
+        model_name = (
+            getattr(self, "model_name", None)
+            or getattr(self, "model", None)
+            or getattr(self, "_current_model", None)
+            or cfg.get("model")
+            or cfg.get("model_config", {}).get("model", PROVIDER_DEFAULT_MODEL)
+        )
+        try:
+            from astrbot.core.provider.entities import ProviderMeta
+            return ProviderMeta(
+                id=provider_id,
+                model=model_name,
+                type=meta_type,
+                provider_type="chat_completion",
+            )
+        except Exception:
+            # 终极 fallback: 仿 ProviderMeta 的 attribute-only 对象 (smart_imagechat_hub getattr 访问)
+            class _MetaShim:
+                def __init__(self_):
+                    self_.id = provider_id
+                    self_.type = meta_type
+                    self_.provider_type = "chat_completion"
+                    self_.model_name = model_name
+
+            shim = _MetaShim()
+            # 加 model property (不能用 @property 因为 _MetaShim 已 init — 用 shim.__class__)
+            try:
+                shim.model = model_name
+            except Exception:
+                pass
+            return shim
 
     def get_provider_type(self) -> str:
         """: 返 provider_type 字符串. AstrBot 框架用来分类 provider."""
-        return self.provider_type
+        return "chat_completion"
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
