@@ -103,6 +103,26 @@ class VisionBridgeProvider:
         """: 返本 provider 支持的模型 (固定 vision-bridge)."""
         return ["vision-bridge"]
 
+    def meta(self) -> dict:
+        """: 返 provider 元信息 — smart_imagechat_hub 等插件枚举 provider 列表时调.
+
+        AstrBot 4.26.4 + smart_imagechat_hub 的 _chat_provider_options() 期望这个方法.
+        没它会报 'VisionBridgeProvider' object has no attribute 'meta'.
+        """
+        return {
+            "id": self.provider_config.get("id", ""),
+            "type": self.provider_config.get("type", "vision_bridge_compat"),
+            "provider_type": self.provider_type,
+            "model": self._current_model or self.model,
+            "model_name": self._current_model or self.model,
+            "api_base": self.api_base,
+            "enable": self.provider_config.get("enable", True),
+        }
+
+    def get_provider_type(self) -> str:
+        """: 返 provider_type 字符串. AstrBot 框架用来分类 provider."""
+        return self.provider_type
+
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
