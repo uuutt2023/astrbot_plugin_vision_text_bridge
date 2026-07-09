@@ -29,24 +29,27 @@ from pathlib import Path as _Path
 
 
 def _find_cmd_config_file() -> "_Path | None":
-    """: 找 AstrBot cmd_config.json 路径 (data/config/cmd_config.json).
+    """: 找 AstrBot cmd_config.json 路径.
 
-    启发式: 当前进程 cwd 向上找 data/config/cmd_config.json.
+    官方文档: 配置在 ``data/cmd_config.json`` 的 provider 字段中.
+    启发式: 当前进程 cwd 向上找 data/cmd_config.json (向上 5 层), 退到硬编码候选.
     """
-    candidates = [
-        _Path.cwd() / "data" / "config" / "cmd_config.json",
-        _Path.cwd().parent / "data" / "config" / "cmd_config.json",
-        _Path("/AstrBot/data/config/cmd_config.json"),
-        _Path("/AstrBot/cmd_config.json"),
-    ]
-    # 向上搜: 从 cwd 出发, 找第一个含 data/config/cmd_config.json 的祖先
+    candidates = []
+    # 官方: data/cmd_config.json
+    candidates.append(_Path.cwd() / "data" / "cmd_config.json")
     cur = _Path.cwd()
     for _ in range(5):
-        cand = cur / "data" / "config" / "cmd_config.json"
+        cand = cur / "data" / "cmd_config.json"
         if cand.exists():
             return cand
         cur = cur.parent
     # 退到硬编码候选
+    candidates.extend([
+        _Path("/AstrBot/data/cmd_config.json"),
+        _Path.cwd() / "data" / "config" / "cmd_config.json",
+        _Path("/AstrBot/data/config/cmd_config.json"),
+        _Path("/AstrBot/cmd_config.json"),
+    ])
     for cand in candidates:
         if cand.exists():
             return cand
@@ -54,50 +57,109 @@ def _find_cmd_config_file() -> "_Path | None":
 
 
 def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
-    """: 改写 AstrBot cmd_config.json 里 provider_id 的 type 字段为 new_type.
+    """: 改写 AstrBot cmd_config.json 里 provider_id 的 entry — 完整修复.
 
-    目的: framework 启动时 'Loading model {new_type}({provider_id})' 用我方 class instantiate.
-    不再走 openai SDK, 不再报 Missing credentials.
+    根因 (2026-07-09 AstrBot 4.26.4):
+      - openai_chat_completion type 用 ProviderOpenAIOfficial, 读 config["key"]
+      - 老 config 默认 key=[] (空 list), chosen_api_key = api_keys[0] if api_keys else None
+      - AsyncOpenAI(api_key=None) → 报 'Missing credentials' 错
+      - 不管 type 改成啥, framework 加载 user config 时仍可能 read 到空 key
 
-    Returns: True 改写成功, False 没找到 file / entry / 已正确.
+    完整修复 (针对老 openai_chat_completion entry):
+      1. 保留 type='openai_chat_completion' (framework 已实现)
+      2. key=[] → key=['placeholder'] (openai SDK 拿到 string 'placeholder' 不报)
+      3. api_key='' → api_key='placeholder' (部分版本读这个字段)
+      4. api_base='' → 设成我方 endpoint (OpenAI SDK 发 HTTP 过来)
+      5. model='' → 设成 'vision-bridge' (我方可用任意)
+
+    这样 framework 启动时 'Loading model openai_chat_completion(provider_id)' 走
+    ProviderOpenAIOfficial(api_key='placeholder', base_url=我方 endpoint),
+    openai SDK 不校验 placeholder, 发请求到我方, 我方 /v1/chat/completions 接到后调 mmx,
+    返 OpenAI 格式 response. 全链路 OK, 不再 Missing credentials.
+
+    Returns: True 改写成功, False 没找到 file / entry.
     """
     cfg_path = _find_cmd_config_file()
     if cfg_path is None:
-        logger.debug("[vision_text_bridge] cmd_config.json 未找到, 跳过持久化 type 改写")
+        logger.debug("[vision_text_bridge] cmd_config.json 未找到, 跳过持久化改写")
         return False
     try:
         data = _json.loads(cfg_path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.debug("[vision_text_bridge] 读 cmd_config.json 失败: %s", e)
         return False
-    # AstrBot cmd_config.json 格式: {"provider": [{"id": "...", "type": "...", ...}, ...]}
-    providers = data.get("provider")
-    if not isinstance(providers, list):
-        # 旧格式: providers 在其他 key 下
-        providers = data.get("providers") or []
-        if not isinstance(providers, list):
-            logger.debug("[vision_text_bridge] cmd_config.json 无 provider 列表, 跳过")
-            return False
+    # AstrBot cmd_config.json 格式: {"provider": [{"id": "...", "type": "...", "key": [], ...}, ...]}
+    if isinstance(data.get("provider"), list):
+        providers = data["provider"]
+        provider_key = "provider"
+    elif isinstance(data.get("providers"), list):
+        providers = data["providers"]
         provider_key = "providers"
     else:
-        provider_key = "provider"
-    modified = False
-    for entry in providers:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("id") == provider_id:
-            old_type = entry.get("type")
-            if old_type == new_type:
-                continue
-            entry["type"] = new_type
-            modified = True
-            logger.info(
-                "[vision_text_bridge] 改写 cmd_config.json: provider id=%s type %s → %s",
-                provider_id, old_type, new_type,
-            )
-            break
-    if not modified:
+        logger.debug("[vision_text_bridge] cmd_config.json 无 provider 列表, 跳过")
         return False
+    # 找目标 entry
+    target_idx = None
+    target_entry = None
+    for i, entry in enumerate(providers):
+        if isinstance(entry, dict) and entry.get("id") == provider_id:
+            target_idx = i
+            target_entry = entry
+            break
+    if target_entry is None:
+        logger.debug("[vision_text_bridge] cmd_config.json 无 id=%s entry, 跳过", provider_id)
+        return False
+
+    changes = []
+    # 1. type 改 openai_chat_completion (保留 framework 原生支持)
+    old_type = target_entry.get("type", "")
+    if old_type != "openai_chat_completion":
+        changes.append(f"type {old_type!r} → 'openai_chat_completion'")
+        target_entry["type"] = "openai_chat_completion"
+
+    # 2. key=[] 或空 → key=["placeholder"]
+    key = target_entry.get("key")
+    if not isinstance(key, list) or not key or not all(isinstance(k, str) and k.strip() for k in key):
+        old_key_repr = repr(key)[:30]
+        target_entry["key"] = ["placeholder"]
+        changes.append(f"key {old_key_repr} → ['placeholder']")
+
+    # 3. api_key 空 → 'placeholder'
+    api_key = target_entry.get("api_key", "")
+    if not api_key or not isinstance(api_key, str) or not api_key.strip():
+        target_entry["api_key"] = "placeholder"
+        changes.append("api_key '' → 'placeholder'")
+
+    # 4. api_base 空 → 设成我方 endpoint
+    api_base = target_entry.get("api_base", "")
+    if not api_base or not isinstance(api_base, str) or not api_base.strip():
+        # 用默认值 (从 main.py 拿 dashboard_port + host)
+        try:
+            from constants import DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX, OPENAI_COMPAT_PATH
+            default_base = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        except ImportError:
+            default_base = "http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
+        target_entry["api_base"] = default_base
+        changes.append(f"api_base '' → {default_base!r}")
+
+    # 5. model 空 → 'vision-bridge'
+    model_cfg = target_entry.get("model_config") or {}
+    if not isinstance(model_cfg, dict):
+        model_cfg = {"model": "vision-bridge"}
+        target_entry["model_config"] = model_cfg
+        changes.append("model_config → {'model': 'vision-bridge'}")
+    elif not model_cfg.get("model"):
+        model_cfg["model"] = "vision-bridge"
+        changes.append("model_config.model '' → 'vision-bridge'")
+
+    if not changes:
+        logger.debug("[vision_text_bridge] cmd_config.json id=%s 已正确, 跳过", provider_id)
+        return False
+
+    logger.info(
+        "[vision_text_bridge] 改写 cmd_config.json id=%s: %s",
+        provider_id, "; ".join(changes),
+    )
     try:
         cfg_path.write_text(
             _json.dumps(data, ensure_ascii=False, indent=2),
@@ -364,7 +426,8 @@ async def auto_register_provider(plugin) -> bool:
     """
     logger.debug("auto_register_provider: 开始自动注册流程")
     # : 关键 — 先改写 user config, 否则 framework 启动时用老 type 加载 → 失败
-    _patch_user_config_type(PROVIDER_ID, PROVIDER_TYPE)
+    # 持久化改写 user config — 保留 type=openai_chat_completion (framework 原生支持), 但补全 key/api_key/api_base
+    _patch_user_config_type(PROVIDER_ID, "openai_chat_completion")
     if is_provider_already_registered(plugin):
         logger.debug("auto_register_provider: 已注册，直接返回 True")
         return True
