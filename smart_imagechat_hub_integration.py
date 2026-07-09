@@ -1,7 +1,5 @@
 """
-smart_imagechat_hub_integration.py - 与 astrbot_plugin_smart_imagechat_hub 兼容对接。
-
-设计: 检测安装 / /v1/chat/completions 接管 image caption / 启动期自动注册 OpenAI provider
+设计: /v1/chat/completions 接管 image caption / 启动期自动注册 OpenAI provider
 作者: uuutt
 """
 from __future__ import annotations
@@ -36,8 +34,11 @@ def _get_plugin_root() -> Optional[Path]:
     try:
         from astrbot.api.star import StarTools
         d = StarTools.get_data_dir()
-        return d.parent.parent
-    except Exception:
+        root = d.parent.parent
+        logger.debug("_get_plugin_root: 通过 StarTools 获取根目录=%s", root)
+        return root
+    except Exception as e:
+        logger.debug("_get_plugin_root: StarTools 失败: %s", e)
         return None
 
 
@@ -49,19 +50,25 @@ def is_smart_imagechat_hub_installed() -> bool:
     """
     global _INSTALL_CHECK_CACHE
     if _INSTALL_CHECK_CACHE is not None:
+        logger.debug("is_smart_imagechat_hub_installed: 命中缓存 -> %s", _INSTALL_CHECK_CACHE)
         return _INSTALL_CHECK_CACHE
+    logger.debug("is_smart_imagechat_hub_installed: 缓存未命中，开始磁盘检测")
     root = _get_plugin_root()
     if root is None:
+        logger.debug("is_smart_imagechat_hub_installed: 无法确定插件根目录，返回 False")
         _INSTALL_CHECK_CACHE = False
         return False
     candidates = [
         root / "data" / "plugins" / PLUGIN_NAME / "metadata.yaml",
         root / "plugins" / PLUGIN_NAME / "metadata.yaml",
     ]
+    logger.debug("is_smart_imagechat_hub_installed: 检查候选文件: %s", candidates)
     for c in candidates:
         if c.is_file():
+            logger.debug("is_smart_imagechat_hub_installed: 找到文件 %s，判定已安装", c)
             _INSTALL_CHECK_CACHE = True
             return True
+    logger.debug("is_smart_imagechat_hub_installed: 未找到 metadata.yaml，判定未安装")
     _INSTALL_CHECK_CACHE = False
     return False
 
@@ -70,11 +77,15 @@ def get_smart_imagechat_hub_dir() -> Optional[Path]:
     """返回 smart_imagechat_hub 安装路径 (如装了)。"""
     root = _get_plugin_root()
     if root is None:
+        logger.debug("get_smart_imagechat_hub_dir: 无法获取根目录")
         return None
     for sub in ("data/plugins", "plugins"):
         candidate = root / sub / PLUGIN_NAME
+        logger.debug("get_smart_imagechat_hub_dir: 尝试路径 %s", candidate)
         if candidate.is_dir():
+            logger.debug("get_smart_imagechat_hub_dir: 找到目录 %s", candidate)
             return candidate
+    logger.debug("get_smart_imagechat_hub_dir: 未找到 hub 目录")
     return None
 
 
@@ -82,6 +93,7 @@ def reset_cache_for_testing() -> None:
     """清 module-level cache (测试用)。"""
     global _INSTALL_CHECK_CACHE
     _INSTALL_CHECK_CACHE = None
+    logger.debug("reset_cache_for_testing: 安装检测缓存已清空")
 
 
 # ---------------------------------------------------------------------------
@@ -104,18 +116,18 @@ def build_provider_config(
     """
     if not api_base:
         api_base = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
-    return {
+    config = {
         "type": PROVIDER_TYPE,
         "id": PROVIDER_ID,
         "enable": True,
         "api_base": api_base.rstrip("/"),
-        # AstrBot 同时检查 key 和 api_key，都提供占位值
         "key": [api_key] if api_key else ["placeholder"],
         "api_key": api_key if api_key else "placeholder",
         "model": model,
-        # 关键修复：将 provider_type 设为自定义类型，而不是 "chat_completion"
         "provider_type": PROVIDER_TYPE,
     }
+    logger.debug("build_provider_config: 生成配置=%s", config)
+    return config
 
 
 def is_provider_already_registered(plugin) -> bool:
@@ -123,17 +135,26 @@ def is_provider_already_registered(plugin) -> bool:
     try:
         pm = getattr(plugin.context, "provider_manager", None)
         if pm is None:
+            logger.debug("is_provider_already_registered: provider_manager 不存在")
             return False
         # 检查已实例化的 provider 列表中是否已有 VisionBridgeProvider
-        for prov in getattr(pm, "provider_insts", []):
+        for i, prov in enumerate(getattr(pm, "provider_insts", [])):
+            logger.debug("is_provider_already_registered: 检查实例[%d] type=%s", i, type(prov).__name__)
             if isinstance(prov, VisionBridgeProvider):
+                logger.debug("is_provider_already_registered: 发现 VisionBridgeProvider 实例，已注册")
                 return True
             # 兼容性检查：也可能保留了旧的 openai_chat_completion 实例
             cfg = getattr(prov, "provider_config", None)
-            if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
-                return True
+            if isinstance(cfg, dict):
+                cfg_id = cfg.get("id")
+                logger.debug("is_provider_already_registered: 实例[%d] config.id=%s", i, cfg_id)
+                if cfg_id == PROVIDER_ID:
+                    logger.debug("is_provider_already_registered: 根据 config.id 判定已注册")
+                    return True
+        logger.debug("is_provider_already_registered: 未找到已注册实例")
         return False
-    except Exception:
+    except Exception as e:
+        logger.debug("is_provider_already_registered: 检查过程中异常: %s", e)
         return False
 
 
@@ -146,9 +167,12 @@ def _build_api_base(plugin) -> str:
         host = dashboard.get("host", "localhost")
         port = plugin.config.get("dashboard_port") or dashboard.get("port", DEFAULT_DASHBOARD_PORT)
         port = int(port)
-    except Exception:
-        host, port = "localhost", DEFAULT_DASHBOARD_PORT
-    return f"http://{host}:{port}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        url = f"http://{host}:{port}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        logger.debug("_build_api_base: host=%s, port=%s, url=%s", host, port, url)
+        return url
+    except Exception as e:
+        logger.debug("_build_api_base: 计算异常，使用默认值: %s", e)
+        return f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
 
 
 def _register_custom_provider_type(pm) -> None:
@@ -156,11 +180,15 @@ def _register_custom_provider_type(pm) -> None:
 
     优先级：register_provider_type > provider_type_map > 主动设置。
     """
+    logger.debug("_register_custom_provider_type: 开始注册类型 %s", PROVIDER_TYPE)
+
     # 1. 优先使用框架标准注册接口 (AstrBot >=4.26)
     if hasattr(pm, "register_provider_type"):
+        logger.debug("_register_custom_provider_type: 发现 register_provider_type 方法")
         try:
             pm.register_provider_type(PROVIDER_TYPE, VisionBridgeProvider)
             logger.info("已通过 register_provider_type 注册自定义 provider: %s", PROVIDER_TYPE)
+            logger.debug("_register_custom_provider_type: 注册成功")
             return
         except Exception as e:
             logger.warning("register_provider_type 调用失败: %s", e)
@@ -169,16 +197,21 @@ def _register_custom_provider_type(pm) -> None:
     for attr_name in ("provider_type_map", "custom_providers", "provider_class_map"):
         mapping = getattr(pm, attr_name, None)
         if isinstance(mapping, dict):
+            logger.debug("_register_custom_provider_type: 向 %s 注入映射", attr_name)
             mapping[PROVIDER_TYPE] = VisionBridgeProvider
             logger.info("已注入 provider 类型映射到 %s", attr_name)
+            logger.debug("_register_custom_provider_type: 注入完成")
             return
+        else:
+            logger.debug("_register_custom_provider_type: 属性 %s 不存在或不是字典", attr_name)
 
     # 3. 最后尝试直接设置属性（兼容性极低）
     try:
         pm.provider_class_map = {PROVIDER_TYPE: VisionBridgeProvider}
         logger.warning("已通过直接设置 provider_class_map 注册")
-    except Exception:
-        logger.error("无法注册自定义 provider 类型，请检查 AstrBot 版本")
+        logger.debug("_register_custom_provider_type: 直接设置 provider_class_map 成功")
+    except Exception as e:
+        logger.error("无法注册自定义 provider 类型，请检查 AstrBot 版本: %s", e)
 
 
 def _cleanup_broken_instances(pm) -> tuple[dict, list]:
@@ -190,6 +223,8 @@ def _cleanup_broken_instances(pm) -> tuple[dict, list]:
     inst_list = getattr(pm, "provider_insts", None)
     if not isinstance(inst_list, list):
         inst_list = []
+    logger.debug("_cleanup_broken_instances: 清理前 provider_insts 长度=%d, providers keys=%s",
+                 len(inst_list), list(prov_dict.keys()) if isinstance(prov_dict, dict) else "N/A")
 
     # 清理 provider_insts 中的无效项
     for i, p_inst in enumerate(inst_list):
@@ -198,28 +233,42 @@ def _cleanup_broken_instances(pm) -> tuple[dict, list]:
         if isinstance(p_inst, VisionBridgeProvider):
             continue
         cfg = getattr(p_inst, "provider_config", None)
-        if isinstance(cfg, dict) and (cfg.get("id") == PROVIDER_ID or cfg.get("type") == PROVIDER_TYPE):
-            inst_list[i] = None  # 标记为可替换位置
+        if isinstance(cfg, dict):
+            cfg_id = cfg.get("id")
+            cfg_type = cfg.get("type")
+            logger.debug("_cleanup_broken_instances: 检查实例[%d] type=%s, config.id=%s, config.type=%s",
+                         i, type(p_inst).__name__, cfg_id, cfg_type)
+            if cfg_id == PROVIDER_ID or cfg_type == PROVIDER_TYPE:
+                logger.debug("_cleanup_broken_instances: 标记实例[%d]为 None (旧实例)", i)
+                inst_list[i] = None  # 标记为可替换位置
+        else:
+            logger.debug("_cleanup_broken_instances: 实例[%d] 无有效 provider_config", i)
 
     # 清理 providers 字典中的旧值
     if isinstance(prov_dict, dict) and PROVIDER_ID in prov_dict:
         existing = prov_dict.get(PROVIDER_ID)
         if not isinstance(existing, VisionBridgeProvider):
+            logger.debug("_cleanup_broken_instances: providers[%s] 不是 VisionBridgeProvider，置为 None", PROVIDER_ID)
             prov_dict[PROVIDER_ID] = None
 
+    logger.debug("_cleanup_broken_instances: 清理后 provider_insts 长度=%d", len(inst_list))
     return (prov_dict if isinstance(prov_dict, dict) else {}, inst_list)
 
 
 def _add_or_replace_inst(inst_list: list, prov_dict: dict, inst) -> None:
     """将实例 inst 加入到列表和字典中，优先填补 None 空位。"""
+    logger.debug("_add_or_replace_inst: 当前列表长度=%d", len(inst_list))
     # 替换列表中的第一个 None 或追加
     for i, p in enumerate(inst_list):
         if p is None:
+            logger.debug("_add_or_replace_inst: 在索引 %d 处替换 None", i)
             inst_list[i] = inst
             break
     else:
+        logger.debug("_add_or_replace_inst: 未找到 None 空位，追加到末尾")
         inst_list.append(inst)
     prov_dict[PROVIDER_ID] = inst
+    logger.debug("_add_or_replace_inst: 字典已更新 key=%s", PROVIDER_ID)
 
 
 async def auto_register_provider(plugin) -> bool:
@@ -227,7 +276,9 @@ async def auto_register_provider(plugin) -> bool:
 
     若已注册则直接返回 True。
     """
+    logger.debug("auto_register_provider: 开始自动注册流程")
     if is_provider_already_registered(plugin):
+        logger.debug("auto_register_provider: 已注册，直接返回 True")
         return True
     try:
         pm = getattr(plugin.context, "provider_manager", None)
@@ -247,14 +298,19 @@ async def auto_register_provider(plugin) -> bool:
             or plugin.config.get("smart_imagechat_hub_model_name")
             or PROVIDER_DEFAULT_MODEL
         )
+        logger.debug("auto_register_provider: api_base=%s, api_key_is_set=%s, model=%s",
+                     api_base, bool(api_key), model)
 
         # 步骤1：确保自定义类型已注册
+        logger.debug("auto_register_provider: 步骤1 - 注册自定义类型")
         _register_custom_provider_type(pm)
 
         # 步骤2：清理可能残留的错误实例
+        logger.debug("auto_register_provider: 步骤2 - 清理残留实例")
         prov_dict, inst_list = _cleanup_broken_instances(pm)
 
         # 步骤3：构造配置（已包含 api_key 占位和正确的 provider_type）
+        logger.debug("auto_register_provider: 步骤3 - 构造配置")
         config = {
             "type": PROVIDER_TYPE,
             "id": PROVIDER_ID,
@@ -263,10 +319,12 @@ async def auto_register_provider(plugin) -> bool:
             "key": [api_key] if api_key else ["placeholder"],
             "api_key": api_key if api_key else "placeholder",
             "model": model,
-            "provider_type": PROVIDER_TYPE,  # 关键：不再是 "chat_completion"
+            "provider_type": PROVIDER_TYPE,
         }
+        logger.debug("auto_register_provider: 配置内容=%s", config)
 
         # 步骤4：实例化并插入管理器
+        logger.debug("auto_register_provider: 步骤4 - 实例化 VisionBridgeProvider")
         inst = VisionBridgeProvider(
             provider_config=config,
             provider_settings={},
@@ -277,29 +335,37 @@ async def auto_register_provider(plugin) -> bool:
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, type=%s, api_base=%s, model=%s",
             PROVIDER_ID, PROVIDER_TYPE, api_base, model,
         )
+        logger.debug("auto_register_provider: 注册成功，返回 True")
         return True
     except Exception as e:
         logger.warning("[vision_text_bridge] auto_register_provider 失败: %s", e)
+        logger.debug("auto_register_provider: 异常详情", exc_info=True)
         return False
 
 
 def remove_provider(plugin) -> bool:
     """卸载我方 provider (清理用)。"""
+    logger.debug("remove_provider: 开始卸载 provider")
     try:
         pm = getattr(plugin.context, "provider_manager", None)
         if pm is None:
+            logger.debug("remove_provider: provider_manager 不存在")
             return False
         for prov in list(getattr(pm, "provider_insts", [])):
             cfg = getattr(prov, "provider_config", None)
             if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
+                logger.debug("remove_provider: 找到目标 provider id=%s, 准备卸载", PROVIDER_ID)
                 try:
                     if hasattr(prov, "terminate"):
                         prov.terminate()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("remove_provider: terminate 调用异常: %s", e)
                 pm.provider_insts.remove(prov)
                 logger.info("[vision_text_bridge] 已卸载 provider: %s", PROVIDER_ID)
+                logger.debug("remove_provider: 卸载完成")
                 return True
+        logger.debug("remove_provider: 未找到需要卸载的 provider")
         return False
-    except Exception:
+    except Exception as e:
+        logger.debug("remove_provider: 卸载过程异常: %s", e)
         return False
