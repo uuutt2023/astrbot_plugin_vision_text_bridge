@@ -522,21 +522,21 @@ class VisionTextBridgePlugin(Star):
         try:
             installed = smart_imagechat_hub_integration.is_smart_imagechat_hub_installed()
         except Exception as e:
-            logger.debug("[vision_text_bridge] 检测 smart_imagechat_hub 失败: %s", e)
+            logger.debug("[vision_text_bridge] 检测外部图片理解插件失败: %s", e)
             return
         if installed:
             compat_enabled = bool(self.config.get("enable_openai_compat_endpoint")
                           or self.config.get("enable_smart_imagechat_hub_compat", True))
             if compat_enabled:
                 logger.info(
-                    "[vision_text_bridge] 检测到 smart_imagechat_hub 已安装, "
+                    "[vision_text_bridge] 检测到外部图片理解插件已安装, "
                     "兼容 endpoint 已启用 (POST /v1/chat/completions) — "
-                    "可配其 default_image_caption_provider_id 指向本插件接管 image caption"
+                    "可在其配置中指 provider id 接管 image caption"
                 )
             else:
                 logger.info(
-                    "[vision_text_bridge] 检测到 smart_imagechat_hub 已安装, "
-                    "但 enable_openai_compat_endpoint=False (合并老名称 enable_smart_imagechat_hub_compat), 兼容 endpoint 未启用"
+                    "[vision_text_bridge] 检测到外部图片理解插件已安装, "
+                    "但 enable_openai_compat_endpoint=False (合并老配置 key), 兼容 endpoint 未启用"
                 )
 
 
@@ -546,17 +546,13 @@ class VisionTextBridgePlugin(Star):
         if not (self.config.get("auto_register_openai_compat_provider")
           or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
             logger.info(
-                "[vision_text_bridge] auto_register_openai_compat_provider=False (合并老名称 smart_imagechat_hub_auto_register_provider), "
+                "[vision_text_bridge] auto_register_openai_compat_provider=False (合并老配置 key), "
                 "跳过自动注册 OpenAI compatible provider"
             )
             return
         try:
-            ok = await smart_imagechat_hub_integration.auto_register_provider(self)
-            if ok:
-                logger.info(
-                    "[vision_text_bridge] 已自动注册 OpenAI compatible provider (id=vision_text_bridge_compat). "
-                    "smart_imagechat_hub 可配 default_image_caption_provider_id = vision_text_bridge_compat 接管 image caption."
-                )
+            # : 用户要求 #3 — 集中 log 输出 api_base / api_key / instance_id / 模型昵称 id
+            ok = await smart_imagechat_hub_integration.auto_register_provider(self, log_details=True)
         except Exception as e:
             logger.warning("[vision_text_bridge] _auto_register_sih_provider 失败: %s", e)
 

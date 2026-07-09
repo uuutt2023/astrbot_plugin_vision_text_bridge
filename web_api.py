@@ -244,7 +244,7 @@ async def _do_thumbnail(plugin, image_id: str):
                     source="chat_archive",
                 ))
     except Exception as ex:
-        logger.debug(f"[vision_text_bridge] chat_archive 读图失败: {ex}")
+        logger.debug(f"[vision_text_bridge] 跨插件媒体缓存读图失败: {ex}")
 
     # 路径 3: 都没有
     return ok(_build_thumbnail_payload(
@@ -292,7 +292,7 @@ async def api_integration_status(plugin):
     try:
         installed = chat_archive_integration.is_chat_archive_installed()
     except Exception as ex:
-        logger.debug(f"[vision_text_bridge] 检测 chat_archive 失败: {ex}")
+        logger.debug(f"[vision_text_bridge] 检测跨插件媒体缓存失败: {ex}")
         installed = False
     cache_dir = None
     if installed:
@@ -318,7 +318,7 @@ async def api_integration_status(plugin):
     try:
         sih_installed = smart_imagechat_hub_integration.is_smart_imagechat_hub_installed()
     except Exception as ex:
-        logger.debug(f"[vision_text_bridge] 检测 smart_imagechat_hub 失败: {ex}")
+        logger.debug(f"[vision_text_bridge] 检测外部图片理解插件失败: {ex}")
         sih_installed = False
     sih_compat_enabled = bool(
     plugin.config.get("enable_openai_compat_endpoint")

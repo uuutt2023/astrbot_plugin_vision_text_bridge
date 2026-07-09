@@ -106,9 +106,40 @@ def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
             target_idx = i
             target_entry = entry
             break
+    # : 用户要求 #2 — entry 不存在时主动 append 新 entry (让 AstrBot dashboard 能查阅)
     if target_entry is None:
-        logger.debug("[vision_text_bridge] cmd_config.json 无 id=%s entry, 跳过", provider_id)
-        return False
+        try:
+            from constants import DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX, OPENAI_COMPAT_PATH
+            default_base = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        except ImportError:
+            default_base = "http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
+        new_entry = {
+            "id": provider_id,
+            "type": "openai_chat_completion",
+            "enable": True,
+            "key": ["placeholder"],
+            "api_key": "placeholder",
+            "api_base": default_base,
+            "model_config": {"model": PROVIDER_DEFAULT_MODEL},
+        }
+        providers.append(new_entry)
+        # : 写回 disk
+        try:
+            cfg_path.write_text(
+                _json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(
+                "[vision_text_bridge] cmd_config.json append 新 provider entry: id=%s, "
+                "type=openai_chat_completion, api_base=%s, model=%s",
+                provider_id, default_base, PROVIDER_DEFAULT_MODEL,
+            )
+        except Exception as e:
+            logger.warning("[vision_text_bridge] append 后写 cmd_config.json 失败: %s", e)
+        target_entry = new_entry
+        target_idx = len(providers) - 1
+        # : append 完了直接返 True, 不用再走下面的改 type/key 流程
+        return True
 
     changes = []
     # 1. type 改 openai_chat_completion (保留 framework 原生支持)
@@ -198,25 +229,25 @@ def is_smart_imagechat_hub_installed() -> bool:
     """
     global _INSTALL_CHECK_CACHE
     if _INSTALL_CHECK_CACHE is not None:
-        logger.debug("is_smart_imagechat_hub_installed: 命中缓存 -> %s", _INSTALL_CHECK_CACHE)
+        logger.debug("is_external_image_caption_plugin_installed: 命中缓存 -> %s", _INSTALL_CHECK_CACHE)
         return _INSTALL_CHECK_CACHE
-    logger.debug("is_smart_imagechat_hub_installed: 缓存未命中，开始磁盘检测")
+    logger.debug("is_external_image_caption_plugin_installed: 缓存未命中，开始磁盘检测")
     root = _get_plugin_root()
     if root is None:
-        logger.debug("is_smart_imagechat_hub_installed: 无法确定插件根目录，返回 False")
+        logger.debug("is_external_image_caption_plugin_installed: 无法确定插件根目录，返回 False")
         _INSTALL_CHECK_CACHE = False
         return False
     candidates = [
         root / "data" / "plugins" / PLUGIN_NAME / "metadata.yaml",
         root / "plugins" / PLUGIN_NAME / "metadata.yaml",
     ]
-    logger.debug("is_smart_imagechat_hub_installed: 检查候选文件: %s", candidates)
+    logger.debug("is_external_image_caption_plugin_installed: 检查候选文件: %s", candidates)
     for c in candidates:
         if c.is_file():
-            logger.debug("is_smart_imagechat_hub_installed: 找到文件 %s，判定已安装", c)
+            logger.debug("is_external_image_caption_plugin_installed: 找到文件 %s，判定已安装", c)
             _INSTALL_CHECK_CACHE = True
             return True
-    logger.debug("is_smart_imagechat_hub_installed: 未找到 metadata.yaml，判定未安装")
+    logger.debug("is_external_image_caption_plugin_installed: 未找到 metadata.yaml，判定未安装")
     _INSTALL_CHECK_CACHE = False
     return False
 
@@ -225,15 +256,15 @@ def get_smart_imagechat_hub_dir() -> Optional[Path]:
     """返回 smart_imagechat_hub 安装路径 (如装了)。"""
     root = _get_plugin_root()
     if root is None:
-        logger.debug("get_smart_imagechat_hub_dir: 无法获取根目录")
+        logger.debug("get_external_image_caption_plugin_dir: 无法获取根目录")
         return None
     for sub in ("data/plugins", "plugins"):
         candidate = root / sub / PLUGIN_NAME
-        logger.debug("get_smart_imagechat_hub_dir: 尝试路径 %s", candidate)
+        logger.debug("get_external_image_caption_plugin_dir: 尝试路径 %s", candidate)
         if candidate.is_dir():
-            logger.debug("get_smart_imagechat_hub_dir: 找到目录 %s", candidate)
+            logger.debug("get_external_image_caption_plugin_dir: 找到目录 %s", candidate)
             return candidate
-    logger.debug("get_smart_imagechat_hub_dir: 未找到 hub 目录")
+    logger.debug("get_external_image_caption_plugin_dir: 未找到插件目录")
     return None
 
 
@@ -486,12 +517,63 @@ async def auto_register_provider(plugin) -> bool:
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, type=%s, api_base=%s, model=%s",
             PROVIDER_ID, PROVIDER_TYPE, api_base, model,
         )
-        logger.debug("auto_register_provider: 注册成功，返回 True")
+        if log_details:
+            _log_registered_instance(plugin)
+        else:
+            logger.debug("auto_register_provider: 注册完成, log_details=False, 跳过集中 log")
         return True
     except Exception as e:
         logger.warning("[vision_text_bridge] auto_register_provider 失败: %s", e)
         logger.debug("auto_register_provider: 异常详情", exc_info=True)
         return False
+
+
+def _log_registered_instance(plugin) -> None:
+    """: 集中 log 输出 — 用户要求 #3 排查用.
+
+    输出:
+      - provider_id        (AstrBot dashboard 显示的 id)
+      - provider_instance_id (内存地址 0x... — framework 给 instance 分配的唯一 ID)
+      - api_base           (POST endpoint URL)
+      - api_key            (脱敏 — 前 4 + *** + 后 4)
+      - model              (模型昵称 id)
+    """
+    try:
+        pm = getattr(plugin.context, "provider_manager", None)
+        if pm is None:
+            return
+        prov_dict = getattr(pm, "providers", {})
+        inst = prov_dict.get(PROVIDER_ID) if isinstance(prov_dict, dict) else None
+        if inst is None:
+            # 兼容: 也可能在 provider_insts 列表里
+            for p_inst in getattr(pm, "provider_insts", []):
+                if isinstance(p_inst, VisionBridgeProvider):
+                    inst = p_inst
+                    break
+        if inst is None:
+            logger.warning("[vision_text_bridge] _log_registered_instance: 找不到已注册 instance")
+            return
+        # : instance 唯一 ID — Python id() 内存地址 (框架级 instance 唯一)
+        instance_id = f"0x{id(inst):08x}"
+        api_base = getattr(inst, "api_base", "") or ""
+        api_key = getattr(inst, "api_key", "") or ""
+        model = getattr(inst, "_current_model", None) or getattr(inst, "model", "") or ""
+        # 脱敏
+        if len(api_key) > 8:
+            key_masked = api_key[:4] + "***" + api_key[-4:]
+        else:
+            key_masked = "***"
+        logger.info(
+            "[vision_text_bridge] provider 已就绪 — 完整配置:\n"
+            "  provider_id        (AstrBot dashboard 显示名) = %s\n"
+            "  provider_instance_id (内存唯一 ID)           = %s\n"
+            "  api_base           (POST endpoint URL)        = %s\n"
+            "  api_key            (脱敏)                    = %s\n"
+            "  model              (模型昵称 id)             = %s",
+            PROVIDER_ID, instance_id, api_base, key_masked, model,
+        )
+    except Exception as e:
+        logger.debug("[vision_text_bridge] _log_registered_instance 异常: %s", e)
 
 
 def remove_provider(plugin) -> bool:
