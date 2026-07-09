@@ -317,48 +317,42 @@
     }
   },
   "OpenAI 兼容 provider": {
-    "description": "把本插件注册成 OpenAI 兼容 LLM 提供商。其他插件/代码通过 provider_manager 调用时, 本插件接 HTTP → 调 mmx → 返图像描述。",
+    "description": "把本插件注册成 OpenAI 兼容 LLM 提供商, 接管图像理解。其他插件/代码通过 provider_manager 调用时, 本插件接 HTTP → 调 mmx → 返图像描述。",
     "items": {
       "dashboard_port": {
         "description": "AstrBot 端口",
         "type": "int",
-        "hint": "本插件 endpoint 的端口 (和 AstrBot 主端口一致)。默认 6185。",
+        "hint": "插件 endpoint 端口, 同 AstrBot 主端口。",
         "default": 6185
       },
       "enabled": {
-        "description": "启用 OpenAI 兼容端点",
+        "description": "启用端点",
         "type": "bool",
-        "hint": "暴露 POST /v1/chat/completions 与 GET/POST /image/caption, 用于图像理解。默认开。",
+        "hint": "暴露 /v1/chat/completions 与 /image/caption。",
         "default": true
       },
       "auto_register": {
-        "description": "启动时自动注册提供商",
+        "description": "自动注册提供商",
         "type": "bool",
-        "hint": "启动时向 AstrBot provider_manager 注册 vision_text_bridge_compat。默认开。",
+        "hint": "启动时注册 vision_text_bridge_compat 到 AstrBot provider_manager。",
         "default": true
-      },
-      "api_base": {
-        "description": "API Base URL",
-        "type": "string",
-        "hint": "默认 http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions。留空用默认, 也可填反向代理或远程地址。",
-        "default": "http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
       },
       "api_key": {
         "description": "API Key",
         "type": "string",
-        "hint": "本端点不校验, 任意字符串 (含空)。",
-        "default": ""
+        "hint": "任意字符串, 本端点不校验。",
+        "default": "placeholder"
       },
       "model_name": {
         "description": "模型名",
         "type": "string",
-        "hint": "注册到 AstrBot 对话模型下拉框的展示名。任意字符串均可。",
+        "hint": "下拉框显示名, 任意字符串。",
         "default": "vision-bridge"
       },
       "caption_format": {
         "description": "返回格式",
         "type": "string",
-        "hint": "mmx (推荐): 原样返 mmx 描述; json: 包装为 {\"tags\": [...]}。",
+        "hint": "mmx (推荐) / json。",
         "default": "mmx"
       }
     },

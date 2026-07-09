@@ -4,7 +4,7 @@ API:
   - cfg_int / cfg_str / cfg_bool: 平铺 config 读
   - cfg_group_int / cfg_group_str / cfg_group_bool: 嵌套 group 读
 
-作者: Mavis
+作者: uuutt
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """image_utils.py - 通用图片 URL helper。
 
 API: _is_cacheable_url / extract_image_url / collect_image_urls_from_components / is_bot_avatar_url
-作者: Mavis
+作者: uuutt
 """
 
 from __future__ import annotations

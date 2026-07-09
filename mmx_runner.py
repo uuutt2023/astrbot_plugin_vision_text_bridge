@@ -9,7 +9,7 @@
   - diagnose_mmx_error: 错误诊断
   - redact_text / redact_args: 脱敏
 
-作者: Mavis
+作者: uuutt
 """
 
 from __future__ import annotations

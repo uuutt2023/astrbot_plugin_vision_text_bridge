@@ -279,7 +279,6 @@ def test_schema_has_smart_imagechat_hub_group():
     # v1.1.2+: 重命名为 openai_compat_*
     assert "enabled" in items
     assert "auto_register" in items
-    assert "api_base" in items
     assert "api_key" in items
     assert "model_name" in items
     assert "caption_format" in items
@@ -305,17 +304,13 @@ def test_main_detect_smart_imagechat_hub_logs_info():
     print("✓ test_main_detect_smart_imagechat_hub_logs_info")
 
 def test_build_provider_config_structure():
-    """: build_provider_config 返正确结构 (含 type/id/enable/api_base/model/key)."""
     cfg = smart_imagechat_hub_integration.build_provider_config(
-        api_base="http://localhost:6185/api/plug/.../v1/chat/completions",
         api_key="",
         model="vision-bridge",
     )
-    assert cfg["type"] == "openai_chat_completion"
+    assert cfg["type"] == "vision_bridge_compat"
     assert cfg["id"] == "vision_text_bridge_compat"
     assert cfg["enable"] is True
-    assert cfg["api_base"].endswith("/v1/chat/completions")
-    assert cfg["api_base"].endswith("/v1/chat/completions")
     assert cfg["key"] == ["placeholder"]  # v1.1.1+: 空时用占位符, 防 AstrBot Missing credentials
     assert cfg["model"] == "vision-bridge"
     assert cfg["provider_type"] == "chat_completion"
@@ -325,14 +320,14 @@ def test_build_provider_config_structure():
 def test_build_provider_config_with_api_key():
     """: build_provider_config 接受 API Key."""
     cfg = smart_imagechat_hub_integration.build_provider_config(
-        api_base="http://x", api_key="sk-test"
+        api_key="sk-test",
     )
     assert cfg["key"] == ["sk-test"]
     print("✓ test_build_provider_config_with_api_key")
 
 def test_build_provider_config_uses_placeholder_when_no_api_key():
     """: 反向验证: api_key 留空时用占位符 'placeholder' (AstrBot OpenAI provider 校验必填)."""
-    cfg = smart_imagechat_hub_integration.build_provider_config(api_base="http://x")
+    cfg = smart_imagechat_hub_integration.build_provider_config()
     # 必须有 key 字段 (不能空 list)
     assert cfg["key"], "api_key 留空时必须用占位符, 否则 AstrBot 报 Missing credentials"
     assert cfg["key"] == ["placeholder"]

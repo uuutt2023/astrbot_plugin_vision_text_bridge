@@ -1,7 +1,7 @@
 """chat_archive_integration.py - 与 astrbot_plugin_chat_archive 协同。
 
 设计: 检测安装 / 缩略图走 web_cache / 过期清理交 chat_archive
-作者: Mavis
+作者: uuutt
 """
 from __future__ import annotations
 

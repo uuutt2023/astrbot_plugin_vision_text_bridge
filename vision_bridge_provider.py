@@ -15,7 +15,7 @@
   - auto_register_provider() 直接 instantiate 本 class + add to provider_manager.provider_insts
   - 不走 load_provider(provider_config) 路径 (会触发 openai SDK 校验)
 
-作者: Mavis
+作者: uuutt
 """
 from __future__ import annotations
 

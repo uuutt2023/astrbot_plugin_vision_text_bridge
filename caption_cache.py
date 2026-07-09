@@ -2,7 +2,7 @@
 
 数据: image_md5 + description + image_url + image_b64 + created_at + 缓存字段
 API: get / put / delete / list / clean_expired / count / daily_buckets
-作者: Mavis
+作者: uuutt
 """
 
 from __future__ import annotations

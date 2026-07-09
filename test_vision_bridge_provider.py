@@ -233,14 +233,19 @@ def test_auto_register_skipped_when_already_registered():
 # dashboard_port 优先级 + api_base 默认 URL
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 新版 schema 默认值 + 共享常量
+# ---------------------------------------------------------------------------
+
 def test_dashboard_port_uses_schema_value():
-    """: schema dashboard_port=8888 → 用 8888, 不用 AstrBot dashboard.port."""
+    """: schema dashboard_port=8888 → 用 8888."""
     from tests.stub_helpers import make_test_plugin
     import main
     plugin = make_test_plugin(main)
     fake_pm = MagicMock()
     fake_pm.provider_insts = []
     fake_pm.providers = {}
+    fake_pm.provider_class_map = {}
     plugin.context.provider_manager = fake_pm
     fake_ac = MagicMock()
     fake_ac.config = {"dashboard": {"host": "1.2.3.4", "port": 1234}}
@@ -249,43 +254,90 @@ def test_dashboard_port_uses_schema_value():
 
     asyncio.run(smart_imagechat_hub_integration.auto_register_provider(plugin))
 
-    inst = fake_pm.provider_insts[0]
-    assert "8888" in inst.api_base, f"expected 8888 in api_base, got {inst.api_base}"
+    inst = fake_pm.provider_insts[-1]
+    assert "8888" in inst.api_base
     print("✓ test_dashboard_port_uses_schema_value")
 
 
-def test_api_base_default_url_in_dashboard():
-    """: schema api_base 默认值是完整 URL (input 框预填)."""
+def test_schema_no_api_base_field():
+    """: schema 移除自定义 api_base 字段 (只保留 dashboard_port + auto 推断 URL)."""
     import json
     schema = json.loads(open("_conf_schema.json").read())
-    group = schema.get("OpenAI 兼容 provider", {})
-    items = group.get("items", {})
-    api_base_field = items.get("api_base", {})
-    default_val = api_base_field.get("default", "")
-    assert default_val.startswith("http://")
-    assert "/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions" in default_val
-    print("✓ test_api_base_default_url_in_dashboard")
+    items = schema["OpenAI 兼容 provider"]["items"]
+    assert "api_base" not in items, "api_base 字段应已移除"
+    for required in ["dashboard_port", "enabled", "auto_register", "api_key", "model_name", "caption_format"]:
+        assert required in items
+    print("✓ test_schema_no_api_base_field")
 
 
 def test_schema_keys_simplified():
-    """: schema key 精简 - 没 openai_compat_ 前缀."""
+    """: schema key 精简 + hint 短."""
     import json
     schema = json.loads(open("_conf_schema.json").read())
     items = schema["OpenAI 兼容 provider"]["items"]
     for key in items.keys():
-        assert not key.startswith("openai_compat_"), f"key {key!r} still has openai_compat_ prefix"
-    for required in ["enabled", "auto_register", "api_base", "api_key", "model_name", "caption_format", "dashboard_port"]:
-        assert required in items, f"missing required key {required!r}"
+        assert not key.startswith("openai_compat_"), f"key {key!r} 仍有 openai_compat_ 前缀"
+    # hint 短
+    for key, val in items.items():
+        if "hint" in val and len(val["hint"]) > 60:
+            assert len(val["hint"]) <= 60, f"hint 仍长: {key!r}: {val['hint']!r}"
     print("✓ test_schema_keys_simplified")
 
 
 def test_shared_constants_match_main():
-    """: 共享常量 (PLUGIN_ROUTE_PREFIX/OPENAI_COMPAT_PATH/DEFAULT_DASHBOARD_PORT) 与 main.py 一致."""
+    """: 共享常量与 main.py 一致."""
     import main as main_mod
     assert smart_imagechat_hub_integration.PLUGIN_ROUTE_PREFIX == main_mod.PLUGIN_ROUTE_PREFIX
     assert smart_imagechat_hub_integration.OPENAI_COMPAT_PATH == main_mod.OPENAI_COMPAT_PATH
     assert smart_imagechat_hub_integration.DEFAULT_DASHBOARD_PORT == main_mod.DEFAULT_DASHBOARD_PORT
     print("✓ test_shared_constants_match_main")
+
+
+def test_inject_provider_class_map():
+    """: auto_register 注入 custom type class 到 provider_manager.provider_class_map."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    plugin = make_test_plugin(main)
+    fake_pm = MagicMock()
+    fake_pm.provider_insts = []
+    fake_pm.providers = {}
+    fake_pm.provider_class_map = {}  # framework 给的空 map
+    plugin.context.provider_manager = fake_pm
+    fake_ac = MagicMock()
+    fake_ac.config = {"dashboard": {"host": "127.0.0.1", "port": 6185}}
+    plugin.context.astr_context = fake_ac
+
+    asyncio.run(smart_imagechat_hub_integration.auto_register_provider(plugin))
+
+    # : provider_class_map["vision_bridge_compat"] = VisionBridgeProvider
+    assert "vision_bridge_compat" in fake_pm.provider_class_map
+    assert fake_pm.provider_class_map["vision_bridge_compat"] is vision_bridge_provider.VisionBridgeProvider
+    print("✓ test_inject_provider_class_map")
+
+
+def test_override_broken_framework_instance():
+    """: framework 残留 broken instance (None 或非 VisionBridgeProvider) → 我方覆盖."""
+    from tests.stub_helpers import make_test_plugin
+    import main
+    plugin = make_test_plugin(main)
+    # 模拟 AstrBot 启动时 framework instantiate 失败后留下的 None
+    fake_pm = MagicMock()
+    fake_pm.provider_insts = [None, None]  # 2 个 None 位置
+    fake_pm.providers = {"vision_text_bridge_compat": None}  # None value
+    fake_pm.provider_class_map = {}
+    plugin.context.provider_manager = fake_pm
+    fake_ac = MagicMock()
+    fake_ac.config = {"dashboard": {"host": "127.0.0.1", "port": 6185}}
+    plugin.context.astr_context = fake_ac
+
+    asyncio.run(smart_imagechat_hub_integration.auto_register_provider(plugin))
+
+    # : None 被替换为 VisionBridgeProvider instance
+    inst = fake_pm.providers["vision_text_bridge_compat"]
+    assert isinstance(inst, vision_bridge_provider.VisionBridgeProvider)
+    # provider_insts 第一个 None 被替换
+    assert isinstance(fake_pm.provider_insts[0], vision_bridge_provider.VisionBridgeProvider)
+    print("✓ test_override_broken_framework_instance")
 
 
 if __name__ == "__main__":
@@ -300,8 +352,10 @@ if __name__ == "__main__":
     test_auto_register_does_not_call_load_provider()
     test_auto_register_skipped_when_already_registered()
     test_dashboard_port_uses_schema_value()
-    test_api_base_default_url_in_dashboard()
+    test_schema_no_api_base_field()
     test_schema_keys_simplified()
     test_shared_constants_match_main()
+    test_inject_provider_class_map()
+    test_override_broken_framework_instance()
     print("---")
     print("ALL VISION_BRIDGE_PROVIDER TESTS PASSED")

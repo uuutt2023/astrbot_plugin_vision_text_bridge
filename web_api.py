@@ -8,7 +8,7 @@
   - /v1/chat/completions (smart_imagechat_hub 兼容, OpenAI compatible)
   - /image/caption (smart_imagechat_hub 兼容, 简单 mmx 描述)
 
-作者: Mavis
+作者: uuutt
 """
 
 from __future__ import annotations

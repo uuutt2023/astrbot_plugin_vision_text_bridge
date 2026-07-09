@@ -8,7 +8,7 @@
   - 配置兼容: _flatten_group_config (处理 3 种 schema 格式)
   - 跨插件兼容检测: _check_compatibility / _detect_smart_imagechat_hub / _auto_register_sih_provider
 
-作者: Mavis - 协议: MIT
+作者: uuutt - 协议: MIT
 """
 
 from __future__ import annotations
@@ -31,7 +31,13 @@ _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
 
-from astrbot.api import AstrBotConfig, logger
+try:
+    from astrbot.api import AstrBotConfig
+    from astrbot.api import logger as _astr_logger
+except Exception:  # v4.26.4 偶发 logger 不存在 — 兜底
+    _astr_logger = None
+import logging
+logger = _astr_logger if _astr_logger is not None else logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
