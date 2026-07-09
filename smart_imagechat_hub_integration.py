@@ -56,6 +56,67 @@ def _find_cmd_config_file() -> "_Path | None":
     return None
 
 
+def _sanitize_cmd_config_file() -> bool:
+    """: 清理 cmd_config.json provider list 中所有非 dict 项 — 防 'str' object has no attribute 'get' 错误.
+
+    用户 log 00:53:50 framework 启动 AttributeError 报错说明 cmd_config.json 里 provider
+    list 含某种 string entry (可能是老 _patch_user_config_type 写入损坏数据).
+    framework load_provider() 调用 get_merged_provider_config(provider_config) → pc.get(...)
+    → 当 pc 是 str 肘抛 AttributeError.
+
+    修: 读 cmd_config.json, 过滤 provider list, 删除非 dict entry, 写回.
+
+    Returns: True 清理成功, False 跳过。
+    """
+    cfg_path = _find_cmd_config_file()
+    if cfg_path is None:
+        logger.debug("_sanitize_cmd_config_file: 未找到 cmd_config.json, 跳过")
+        return False
+    try:
+        data = _json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("_sanitize_cmd_config_file: 读 cmd_config.json 失败: %s", e)
+        return False
+    # 找 provider list
+    providers = None
+    if isinstance(data.get("provider"), list):
+        providers = data["provider"]
+    elif isinstance(data.get("providers"), list):
+        providers = data["providers"]
+    if providers is None:
+        logger.debug("_sanitize_cmd_config_file: cmd_config.json 无 provider list, 跳过")
+        return False
+    # 过滤非 dict entry
+    original_count = len(providers)
+    clean_providers = [
+        entry for entry in providers if isinstance(entry, dict) and entry.get("id")
+    ]
+    removed_count = original_count - len(clean_providers)
+    if removed_count <= 0:
+        logger.debug("_sanitize_cmd_config_file: cmd_config.json provider list 无非 dict entry, 跳过")
+        return False
+    logger.warning(
+        "_sanitize_cmd_config_file: cmd_config.json provider list 清理 %d 个非 dict entry "
+        "(原=%d, 现在=%d)",
+        removed_count, original_count, len(clean_providers),
+    )
+    # 写回
+    if isinstance(data.get("provider"), list):
+        data["provider"] = clean_providers
+    else:
+        data["providers"] = clean_providers
+    try:
+        cfg_path.write_text(
+            _json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("_sanitize_cmd_config_file: cmd_config.json 清理成功")
+        return True
+    except Exception as e:
+        logger.warning("_sanitize_cmd_config_file: 写 cmd_config.json 失败: %s", e)
+        return False
+
+
 def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
     """: 改写 AstrBot cmd_config.json 里 provider_id 的 entry — 完整修复.
 
@@ -442,9 +503,11 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
     若已注册则直接返回 True。
     """
     logger.debug("auto_register_provider: 开始自动注册流程")
-    # : 关键 — 先改写 user config, 否则 framework 启动时用老 type 加载 → 失败
+    # : 关键 — 先调用 framework create_provider 接口 — dashboard 「模型提供商」页面实时可见
     # 持久化改写 user config — 保留 type=openai_chat_completion (framework 原生支持), 但补全 key/api_key/api_base
     _patch_user_config_type(PROVIDER_ID, "openai_chat_completion")
+    # : 清理 cmd_config.json 中可能的损坏 entry (str entry  → framework AttributeError)
+    _sanitize_cmd_config_file()
     if is_provider_already_registered(plugin):
         logger.debug("auto_register_provider: 已注册，直接返回 True")
         return True
@@ -570,6 +633,56 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                 }
                 providers_config[PROVIDER_ID] = full_config
                 logger.debug("auto_register_provider: 同步 pm.providers_config[id] type=%s", full_config["type"])
+
+        # : P1 fix — 调 framework create_provider 让 dashboard「模型提供商」页面实时显示我方
+        #   这是 dashboard "新增模型提供商" 走的标准后端 API, 我方模拟同一调用
+        #   也避免 cmd_config.json 仍有 str 损环 entry 导致框架启动 AttributeError
+        #   create_provider 内部: append to config['provider'] + load_provider() + save
+        try:
+            if hasattr(pm, "create_provider"):
+                # 检查 entry 是否已存在 (framework 用 id 判定 — 重复会抛 ValueError)
+                existing = None
+                if isinstance(getattr(pm, "providers_config", None), list):
+                    for ec in pm.providers_config:
+                        if isinstance(ec, dict) and ec.get("id") == PROVIDER_ID:
+                            existing = ec
+                            break
+                if existing is None:
+                    logger.info(
+                        "auto_register_provider: 调 framework pm.create_provider(%s) — 让 dashboard 模型提供商页面实时看到",
+                        PROVIDER_ID,
+                    )
+                    create_cfg = {
+                        "id": PROVIDER_ID,
+                        "type": "openai_chat_completion",
+                        "provider_type": "chat_completion",
+                        "enable": True,
+                        "key": ["placeholder"],
+                        "api_key": "placeholder",
+                        "api_base": api_base,
+                        "model": full_model_name,
+                        "model_config": {"model": full_model_name},
+                    }
+                    try:
+                        await pm.create_provider(create_cfg)
+                        logger.info("auto_register_provider: pm.create_provider 成功 — instance 已 instantiate")
+                    except ValueError as ve:
+                        # : Provider ID exists — 更新 (update_provider reload)
+                        if "already exists" in str(ve):
+                            logger.debug("auto_register_provider: pm.create_provider 报重复 id, 走 update_provider")
+                            try:
+                                await pm.update_provider(PROVIDER_ID, create_cfg)
+                                logger.info("auto_register_provider: pm.update_provider 成功")
+                            except Exception as ue:
+                                logger.debug("auto_register_provider: update_provider 失败: %s", ue)
+                        else:
+                            logger.debug("auto_register_provider: pm.create_provider ValueError: %s", ve)
+                else:
+                    logger.debug("auto_register_provider: pm.providers_config 已有 %s entry, skip create", PROVIDER_ID)
+            else:
+                logger.debug("auto_register_provider: pm 没有 create_provider 方法, skip")
+        except Exception as pe:
+            logger.debug("auto_register_provider: 调 framework create_provider 异常 (不影响其它): %s", pe)
 
         logger.info(
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, type=%s, api_base=%s, model=%s",
