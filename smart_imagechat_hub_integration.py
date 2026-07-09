@@ -292,20 +292,20 @@ def is_provider_already_registered(plugin) -> bool:
         if pm is None:
             logger.debug("is_provider_already_registered: provider_manager 不存在")
             return False
+        # : P1 fix — 加查 pm.providers 字典 (framework 启动时 instantiate 进入)
+        prov_dict = getattr(pm, "providers", None)
+        if isinstance(prov_dict, dict) and prov_dict.get(PROVIDER_ID) is not None:
+            logger.debug("is_provider_already_registered: pm.providers[%s] 已有 instance", PROVIDER_ID)
+            return True
         # 检查已实例化的 provider 列表中是否已有 VisionBridgeProvider
         for i, prov in enumerate(getattr(pm, "provider_insts", [])):
-            logger.debug("is_provider_already_registered: 检查实例[%d] type=%s", i, type(prov).__name__)
             if isinstance(prov, VisionBridgeProvider):
                 logger.debug("is_provider_already_registered: 发现 VisionBridgeProvider 实例，已注册")
                 return True
-            # 兼容性检查：也可能保留了旧的 openai_chat_completion 实例
             cfg = getattr(prov, "provider_config", None)
-            if isinstance(cfg, dict):
-                cfg_id = cfg.get("id")
-                logger.debug("is_provider_already_registered: 实例[%d] config.id=%s", i, cfg_id)
-                if cfg_id == PROVIDER_ID:
-                    logger.debug("is_provider_already_registered: 根据 config.id 判定已注册")
-                    return True
+            if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
+                logger.debug("is_provider_already_registered: provider_insts[%d] id=PROVIDER_ID, 已注册", i)
+                return True
         logger.debug("is_provider_already_registered: 未找到已注册实例")
         return False
     except Exception as e:
@@ -470,9 +470,12 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         logger.debug("auto_register_provider: api_base=%s, api_key_is_set=%s, model=%s",
                      api_base, bool(api_key), model_name)
 
-        # 步骤1：确保自定义类型已注册
-        logger.debug("auto_register_provider: 步骤1 - 注册自定义类型")
-        _register_custom_provider_type(pm)
+        # : P0 fix — 不再调 _register_custom_provider_type!
+        #   之前该函数最后 "pm.provider_class_map = {PROVIDER_TYPE: VisionBridgeProvider}"
+        #   **重置** framework 内部 map (如果 framework 用这个 attr) — 杀掉其它 25 个 provider entry 实例化
+        #   我方 meta() **已** override 返 openai_chat_completion type — 框架已注册
+        #   **不** 需要注册 custom type — 跳这一步
+        logger.debug("auto_register_provider: 步骤1 跳过 _register_custom_provider_type (P0 fix)")
 
         # 步骤2：清理可能残留的错误实例
         logger.debug("auto_register_provider: 步骤2 - 清理残留实例")
