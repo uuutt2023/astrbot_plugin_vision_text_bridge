@@ -38,3 +38,7 @@ data/
 # 单元测试临时目录
 tmp/
 test_workspace/
+
+# 删了不要恢复 - 单元测试文件
+test_*.py
+tests/
