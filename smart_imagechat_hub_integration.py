@@ -278,7 +278,7 @@ def build_provider_config(
         "api_base": api_base.rstrip("/"),
         "key": [api_key] if api_key else ["placeholder"],
         "api_key": api_key if api_key else "placeholder",
-        "model": model,
+        "model": model_name,
         "provider_type": PROVIDER_TYPE,
     }
     logger.debug("build_provider_config: 生成配置=%s", config)
@@ -450,14 +450,15 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             or plugin.config.get("openai_compat_api_key", "")
             or plugin.config.get("smart_imagechat_hub_api_key", "")
         )
-        model = (
+        model_name = (
             plugin.config.get("model_name")
             or plugin.config.get("openai_compat_model_name")
             or plugin.config.get("smart_imagechat_hub_model_name")
             or PROVIDER_DEFAULT_MODEL
         )
+        full_model_name = model_name  # 重命名 — 在后面 provider_config 改写里用
         logger.debug("auto_register_provider: api_base=%s, api_key_is_set=%s, model=%s",
-                     api_base, bool(api_key), model)
+                     api_base, bool(api_key), model_name)
 
         # 步骤1：确保自定义类型已注册
         logger.debug("auto_register_provider: 步骤1 - 注册自定义类型")
@@ -470,27 +471,61 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         # 步骤3：构造配置（已包含 api_key 占位和正确的 provider_type）
         logger.debug("auto_register_provider: 步骤3 - 构造配置")
         config = {
-            "type": PROVIDER_TYPE,
+            "type": "openai_chat_completion",  # 关键 — framework 加载 ProviderOpenAIOfficial (provider_cls_map 里有)
             "id": PROVIDER_ID,
             "enable": True,
             "api_base": api_base,
             "key": [api_key] if api_key else ["placeholder"],
             "api_key": api_key if api_key else "placeholder",
-            "model": model,
-            "provider_type": PROVIDER_TYPE,
+            "model": model_name,
+            "provider_type": "chat_completion",
         }
         logger.debug("auto_register_provider: 配置内容=%s", config)
 
-        # 步骤4：实例化并插入管理器
-        logger.debug("auto_register_provider: 步骤4 - 实例化 VisionBridgeProvider")
-        inst = VisionBridgeProvider(
-            provider_config=config,
-            provider_settings={},
-        )
-        _add_or_replace_inst(inst_list, prov_dict, inst)
+        # : 关键 - **不** 覆盖 framework 已加载的 ProviderOpenAIOfficial instance
+        #   之前我方 instantiate VisionBridgeProvider + replace pm.providers[id] →
+        #   meta() 调 provider_cls_map["vision_bridge_compat"] (我方 type) → 抛 'Provider type not registered'
+        #   框架加载走 type=openai_chat_completion → ProviderOpenAIOfficial 已在 pm.providers[id]
+        #   我们只 verify 存在 + 补全 model_config 字段, 不动 instance.
 
-        # : 同步写 pm.providers_config[id] = config — framework 查模型时可能读这个 dict
-        #   (走 'model_config.model' 字段) — 不写则 smart_imagechat_hub 等插件查不到模型
+        framework_inst = prov_dict.get(PROVIDER_ID) if isinstance(prov_dict, dict) else None
+        if framework_inst is None:
+            # : 没 instance (framework 跳过加载) → 主动 instantiate 我方 VisionBridgeProvider
+            #   这是 fallback 路径 — 正常情况不会走
+            logger.warning(
+                "auto_register_provider: pm.providers[id] 无 instance, 走 fallback — "
+                "instantiate 我方 VisionBridgeProvider"
+            )
+            inst = VisionBridgeProvider(
+                provider_config=config,
+                provider_settings={},
+            )
+            _add_or_replace_inst(inst_list, prov_dict, inst)
+            framework_inst = inst
+        else:
+            # 修 framework instance 的 provider_config — 补全 model_config 字段
+            if hasattr(framework_inst, "provider_config") and isinstance(framework_inst.provider_config, dict):
+                if "model_config" not in framework_inst.provider_config or not isinstance(
+                    framework_inst.provider_config.get("model_config"), dict
+                ):
+                    framework_inst.provider_config["model_config"] = {
+                        "model": full_model_name,
+                    }
+                    logger.debug("auto_register_provider: 补全 framework instance.model_config")
+            # 修 model_name (Provider.set_model)
+            if hasattr(framework_inst, "set_model"):
+                try:
+                    framework_inst.set_model(full_model_name)
+                except Exception as e:
+                    logger.debug("auto_register_provider: set_model 失败: %s", e)
+            # 修 model (Provider.model_name attribute)
+            if hasattr(framework_inst, "model_name"):
+                try:
+                    framework_inst.model_name = full_model_name
+                except Exception:
+                    pass
+
+        # : 同步写 pm.providers_config[id] = config — framework 查模型时读这个 dict
         if isinstance(prov_dict, dict):
             providers_config = getattr(pm, "providers_config", None)
             if not isinstance(providers_config, dict):
@@ -501,18 +536,24 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     providers_config = None
             if isinstance(providers_config, dict):
                 # : 构造完整 config — 跟 ProviderOpenAIOfficial 期望的格式一致
-                full_config = dict(config)
-                # model_config 字段 (smart_imagechat_hub 查模型时读)
-                if "model_config" not in full_config or not isinstance(full_config.get("model_config"), dict):
-                    full_config["model_config"] = {"model": full_config.get("model", PROVIDER_DEFAULT_MODEL)}
-                elif not full_config["model_config"].get("model"):
-                    full_config["model_config"]["model"] = full_config.get("model", PROVIDER_DEFAULT_MODEL)
+                #   必须含 type='openai_chat_completion' 才能让 meta() 找到 provider_cls_map
+                full_config = {
+                    "id": PROVIDER_ID,
+                    "type": "openai_chat_completion",   # 关键 — framework 走 meta() 找此 type
+                    "provider_type": "chat_completion",
+                    "enable": True,
+                    "key": config["key"],
+                    "api_key": config["api_key"],
+                    "api_base": api_base,
+                    "model": full_model_name,
+                    "model_config": {"model": full_model_name},
+                }
                 providers_config[PROVIDER_ID] = full_config
-                logger.debug("auto_register_provider: 同步 pm.providers_config[id]=%s", full_config)
+                logger.debug("auto_register_provider: 同步 pm.providers_config[id] type=%s", full_config["type"])
 
         logger.info(
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, type=%s, api_base=%s, model=%s",
-            PROVIDER_ID, PROVIDER_TYPE, api_base, model,
+            PROVIDER_ID, "openai_chat_completion", api_base, model_name,
         )
         if log_details:
             _log_registered_instance(plugin)
