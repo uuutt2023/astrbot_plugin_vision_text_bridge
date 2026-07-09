@@ -108,19 +108,12 @@ _sibling_cache = _load_sibling_module("caption_cache")
 CaptionCache = _sibling_cache.CaptionCache
 CaptionEntry = _sibling_cache.CaptionEntry
 
-PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
-
-# : AstrBot dashboard 默认端口 — 用户可通过 schema "dashboard_port" 覆盖
-DEFAULT_DASHBOARD_PORT = 6185
-
-# : 共享常量 - 减少插件内魔法字符串
-#   web_api.py / vision_bridge_provider.py / smart_imagechat_hub_integration.py 都从这里导入
-PLUGIN_ROUTE_PREFIX = "/api/plug/" + PLUGIN_NAME
-OPENAI_COMPAT_PATH = "/v1/chat/completions"
-IMAGE_CAPTION_PATH = "/image/caption"
-PROVIDER_ID = "vision_text_bridge_compat"
-DEFAULT_MODEL = "vision-bridge"
-PLACEHOLDER_API_KEY = "placeholder"
+# : 共享常量 (单一定义) — 跨模块 import 来源
+from constants import (
+    PLUGIN_NAME, DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX,
+    OPENAI_COMPAT_PATH, IMAGE_CAPTION_PATH, PROVIDER_ID,
+    DEFAULT_MODEL, PLACEHOLDER_API_KEY,
+)
 
 # AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
 # priority 在 import 时锁定，调配置后需重启 AstrBot。
@@ -890,13 +883,6 @@ class VisionTextBridgePlugin(Star):
                     len(removed), list(removed),
                 )
                 saved_urls = filtered
-        # : 诊断——打 saved_urls 头部看看 AstrBot 到底注入了什么
-        if saved_urls:
-            logger.info(
-                "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
-                len(saved_urls),
-                [u[:120] + ("..." if isinstance(u, str) and len(u) > 120 else "") for u in saved_urls],
-            )
 
         # 1b) 清空
         req.image_urls = []
@@ -1011,44 +997,70 @@ class VisionTextBridgePlugin(Star):
         self._pending_contexts = None
 
     async def _describe_urls(self, urls):
-        """串行调 mmx（受 semaphore 限流）。返回 [(idx, url, desc), ...]。"""
-        results = []
-        for i, url in enumerate(urls, 1):
-            results.append((i, url, await self._describe_one(url)))
-        return results
+        """: 并行调 mmx (并发度由 _describe_via_mmx 内部 _vision_semaphore 控制).
+
+        之前是串行 — 5 张图 5s/张 = 25s.
+        现在 asyncio.gather 让 mmx 并发跑, max_concurrent_vision 在 _describe_via_mmx
+        内部 _vision_semaphore 真正生效.
+
+        : 不要在 gather 任务内再次 acquire self._vision_semaphore —
+          _describe_via_mmx 已经做了, 外层再加会死锁 (value=1 时).
+        """
+        if not urls:
+            return []
+        # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
+        descs = await asyncio.gather(*[self._describe_one(u) for u in urls])
+        return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
 
     async def _describe_one(self, url: str) -> str:
+        """: 单张图的描述查找 — 内存缓存 → SQLite 缓存 → mmx.
+
+        P0 优化: 缓存命中时**完全跳过**下载图片 (md5 image_bytes 是昂贵 IO 操作).
+        群聊大量重复图场景下省一次 HTTP/磁盘读.
+        """
         url = (url or "").strip()
         if not url:
             return ""
         cacheable = self.config.get("cache_descriptions", True) and _is_cacheable_url(url, self.config)
+
+        # : 快路径 — URL 自身的 md5 当 id 查 (廉价, 不下载图)
+        #   即使后来 md5(image_bytes) 命中不同 id, 也能在内存缓存找到常见 case
+        if cacheable:
+            quick_key = CaptionCache.make_id_from_url(url)
+            # 1) 内存缓存
+            if quick_key in self._description_cache:
+                if self._should_log("cache_trace"):
+                    logger.info("[vision_text_bridge] 命中内存缓存 (快路径, 跳过下载): key=%s, url=%s",
+                                quick_key[:16], self._preview(url))
+                return self._description_cache[quick_key]
+            # 2) SQLite 缓存
+            if self._caption_cache is not None:
+                entry = self._caption_cache.get(quick_key)
+                if entry is not None:
+                    self._description_cache[quick_key] = entry.description
+                    if self._should_log("cache_trace"):
+                        logger.info("[vision_text_bridge] 命中 SQLite 缓存 (快路径): key=%s, hits=%d",
+                                    quick_key[:16], entry.hit_count)
+                    return entry.description
+
+        # : 慢路径 — 真要 mmx 前必须算 md5(image_bytes) (防 content-based 重复)
         cache_key, image_bytes = await self._compute_image_cache_key(url) if cacheable else (None, b"")
-        # cache_key 同步存 instance 临时字段, 给 _persist 复用 image_bytes (避免重读)
         if cacheable and cache_key:
-            # lazy init (测试可能跳过 initialize 直接 new_plugin)
             cache = getattr(self, "_last_image_bytes", None)
             if cache is None:
                 cache = self._last_image_bytes = {}
             cache[url] = image_bytes
 
-        # 1) 内存缓存
-        if cacheable and cache_key and cache_key in self._description_cache:
-            self._last_image_bytes.pop(url, None)
-            if self._should_log("cache_trace"):
-                logger.info("[vision_text_bridge] 命中内存缓存: key=%s, url=%s",
-                            cache_key[:16], self._preview(url))
-            return self._description_cache[cache_key]
-
-        # 2) SQLite 缓存
-        if cacheable and cache_key and self._caption_cache is not None:
-            entry = self._caption_cache.get(cache_key)
-            if entry is not None:
+        # 再走一次真 key 命中检查 (与快路径不同, 内容 hash)
+        if cacheable and cache_key and cache_key != quick_key:
+            if cache_key in self._description_cache:
                 self._last_image_bytes.pop(url, None)
-                if self._should_log("cache_trace"):
-                    logger.info("[vision_text_bridge] 命中 SQLite 缓存: key=%s, hits=%d",
-                                cache_key[:16], entry.hit_count)
-                self._description_cache[cache_key] = entry.description
-                return entry.description
+                return self._description_cache[cache_key]
+            if self._caption_cache is not None:
+                entry = self._caption_cache.get(cache_key)
+                if entry is not None:
+                    self._description_cache[cache_key] = entry.description
+                    return entry.description
 
         # 3) 调 mmx
         return await self._describe_via_mmx(url, cache_key, cacheable)
@@ -1364,11 +1376,6 @@ class VisionTextBridgePlugin(Star):
 
     def _redact(self, args):
         return _redact_args_fn(args, self.config)
-
-    _SENSITIVE = (
-        re.compile(r"(sk-[A-Za-z0-9_-]{8,})"),
-        re.compile(r"(?i)(token|signature|x-sign)=[^&\s]+"),
-    )
 
     @staticmethod
     def _redact_text(text: str) -> str:

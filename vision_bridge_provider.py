@@ -161,12 +161,14 @@ class VisionBridgeProvider:
             for part in extra_user_content_parts:
                 if isinstance(part, dict):
                     user_content.append(part)
-        if user_content:
-            if len(user_content) == 1 and user_content[0].get("type") == "text":
-                # 纯文本 - 简化为 string
-                messages.append({"role": "user", "content": user_content[0]["text"]})
-            else:
-                messages.append({"role": "user", "content": user_content})
+        # : P0 兜底 - 即使空 prompt + 空 image_urls 也要保证 messages 非空 (后端 400)
+        if not user_content:
+            user_content.append({"type": "text", "text": "(空请求)"})
+        if len(user_content) == 1 and user_content[0].get("type") == "text":
+            # 纯文本 - 简化为 string
+            messages.append({"role": "user", "content": user_content[0]["text"]})
+        else:
+            messages.append({"role": "user", "content": user_content})
 
         body = {
             "model": model or self._current_model or self.model,
@@ -231,18 +233,13 @@ class VisionBridgeProvider:
 
 
 # 暴露 register 用的 metadata
-# : 共享常量从 main.py 导入 (PLUGIN_NAME / PROVIDER_ID / DEFAULT_MODEL / PLACEHOLDER_API_KEY)
+# : 共享常量从 constants.py 导入 (单一定义来源, 避免 main.py 改值后脱节)
 try:
-    from main import (
-        PROVIDER_ID as _MAIN_PROVIDER_ID,
-        DEFAULT_MODEL as _MAIN_DEFAULT_MODEL,
-        PLACEHOLDER_API_KEY as _MAIN_PLACEHOLDER_API_KEY,
+    from constants import (
+        PROVIDER_ID, DEFAULT_MODEL, PLACEHOLDER_API_KEY,
     )
-    PROVIDER_ID = _MAIN_PROVIDER_ID
-    DEFAULT_MODEL = _MAIN_DEFAULT_MODEL
-    PLACEHOLDER_API_KEY = _MAIN_PLACEHOLDER_API_KEY
 except ImportError:
-    # 沙箱 import 失败 (main 依赖 astrbot 装不上) → fallback
+    # 沙箱 fallback (constants.py 缺失)
     PROVIDER_ID = "vision_text_bridge_compat"
     DEFAULT_MODEL = "vision-bridge"
     PLACEHOLDER_API_KEY = "placeholder"

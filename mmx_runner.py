@@ -96,7 +96,11 @@ async def run_mmx(
             proc.kill()
         except ProcessLookupError:
             pass
-        await proc.wait()
+        # : 二次超时保护 — wait() 本身可能再 hang (僵尸进程), 2s 兜底
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
         logger.warning(
             "[vision_text_bridge] mmx 子进程超时(%ss): %s",
             timeout, redact_text(" ".join(args)),

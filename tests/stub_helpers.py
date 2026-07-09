@@ -114,6 +114,8 @@ def make_test_plugin(main_module, **config_overrides):
     p._caption_cache = None
     p._description_cache = {}
     p._vision_semaphore = asyncio.Semaphore(1)
+    # : 同步 __init__ 里初始化的所有 instance 字段 (新加字段也跟上)
+    p._last_image_bytes = {}
     return p
 
 

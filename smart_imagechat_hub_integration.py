@@ -11,13 +11,13 @@ from typing import Optional
 
 from vision_bridge_provider import VisionBridgeProvider
 try:
-    from main import (
+    from constants import (
         DEFAULT_DASHBOARD_PORT,
         PLUGIN_ROUTE_PREFIX,
         OPENAI_COMPAT_PATH,
     )
 except ImportError:
-    # main 依赖 astrbot, 沙箱可能装不上 — fallback 共享常量
+    # 沙箱 fallback (constants.py 自身 import 失败 — 不应发生)
     DEFAULT_DASHBOARD_PORT = 6185
     PLUGIN_ROUTE_PREFIX = "/api/plug/astrbot_plugin_vision_text_bridge"
     OPENAI_COMPAT_PATH = "/v1/chat/completions"
@@ -134,43 +134,83 @@ def is_provider_already_registered(plugin) -> bool:
         return False
 
 
+def _build_api_base(plugin) -> str:
+    """: 算 api_base - schema dashboard_port > AstrBot dashboard.port > 默认."""
+    try:
+        ac = plugin.context.astr_context
+        cfg = ac.config if hasattr(ac, "config") else {}
+        dashboard = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
+        host = dashboard.get("host", "localhost")
+        port = plugin.config.get("dashboard_port") or dashboard.get("port", DEFAULT_DASHBOARD_PORT)
+        port = int(port)
+    except Exception:
+        host, port = "localhost", DEFAULT_DASHBOARD_PORT
+    return f"http://{host}:{port}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+
+
+def _inject_provider_class_map(pm) -> None:
+    """: 注入 custom type class — 避开 openai SDK 校验."""
+    for attr in ("provider_class_map", "provider_classes", "_provider_classes", "provider_cls_map"):
+        cls_map = getattr(pm, attr, None)
+        if isinstance(cls_map, dict):
+            cls_map[PROVIDER_TYPE] = VisionBridgeProvider
+            return
+    try:
+        pm.provider_class_map = {PROVIDER_TYPE: VisionBridgeProvider}
+    except Exception:
+        pass
+
+
+def _cleanup_broken_instances(pm) -> tuple[dict, list]:
+    """: 清理 framework 残留 broken instance — 单轮扫 provider_insts.
+
+    返 (prov_dict, inst_list) — 都直接引用 pm 上字段, 后续 mutate 会影响原对象.
+    """
+    prov_dict = getattr(pm, "providers", None)
+    inst_list = getattr(pm, "provider_insts", None)
+    if not isinstance(inst_list, list):
+        inst_list = []
+    if isinstance(inst_list, list):
+        for i, p_inst in enumerate(inst_list):
+            if p_inst is None or isinstance(p_inst, VisionBridgeProvider):
+                continue
+            cfg = getattr(p_inst, "provider_config", None) or {}
+            if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
+                inst_list[i] = None
+    if isinstance(prov_dict, dict) and PROVIDER_ID in prov_dict:
+        broken = prov_dict.get(PROVIDER_ID)
+        if broken is None or not isinstance(broken, VisionBridgeProvider):
+            prov_dict[PROVIDER_ID] = None
+    return (prov_dict if isinstance(prov_dict, dict) else {}, inst_list)
+
+
+def _add_or_replace_inst(inst_list: list, prov_dict: dict, inst) -> None:
+    """: 加 inst — 优先替换 None 占位."""
+    for i, p in enumerate(inst_list):
+        if p is None:
+            inst_list[i] = inst
+            break
+    else:
+        inst_list.append(inst)
+    prov_dict[PROVIDER_ID] = inst
+
+
 async def auto_register_provider(plugin) -> bool:
-    """: 在 AstrBot 启动时注册我方 OpenAI compatible provider.
+    """: 调度 — 4 步走, 各 helper 失败互不影响.
 
-    效果:
-    - 启动后, AstrBot provider_manager 里有 vision_text_bridge_compat provider
-    - 它的 api_base 指向我方 /v1/chat/completions endpoint
-    - 用户在 smart_imagechat_hub 配 default_image_caption_provider_id = vision_text_bridge_compat 即可
-    - smart_imagechat_hub 调 LLM (text_chat) → AstrBot ProviderOpenAIOfficial 发 HTTP 到我方
-    - 我方 endpoint 收到 → 调 mmx → 返 mmx 描述
-
-    Returns:
-        True: 注册成功
-        False: 失败 (provider_manager 不可用 / load_provider 抛错)
+    1. 算 api_base
+    2. 注入 custom type class map (避开 openai SDK)
+    3. 清理 framework 残留 broken instance
+    4. instantiate 我方 provider + add to provider_manager
     """
     if is_provider_already_registered(plugin):
         return True
-
     try:
         pm = getattr(plugin.context, "provider_manager", None)
         if pm is None:
             logger.debug("[vision_text_bridge] provider_manager 不可用, 跳过自动注册")
             return False
-        # : 端口优先级 — schema dashboard_port > AstrBot dashboard.port > 默认
-        #   这样用户在可视化配置里改 dashboard_port 即可生效
-        try:
-            ac = plugin.context.astr_context
-            cfg = ac.config if hasattr(ac, "config") else {}
-            dashboard = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
-            host = dashboard.get("host", "localhost")
-            port = plugin.config.get("dashboard_port") or dashboard.get("port", DEFAULT_DASHBOARD_PORT)
-            port = int(port)
-        except Exception:
-            host, port = "localhost", DEFAULT_DASHBOARD_PORT
-        api_base = f"http://{host}:{port}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
-        # : 用户不能手动覆盖 api_base (移除自定义 base api url)
-        #   api_base 始终从 dashboard_port + host 推断
-        # 兼容老 key - 静默忽略
+        api_base = _build_api_base(plugin)
         api_key = (
             plugin.config.get("api_key", "")
             or plugin.config.get("openai_compat_api_key", "")
@@ -182,59 +222,13 @@ async def auto_register_provider(plugin) -> bool:
             or plugin.config.get("smart_imagechat_hub_model_name")
             or PROVIDER_DEFAULT_MODEL
         )
-        # : 关键 - 注入 custom type class 到 provider_manager
-        #   这样 AstrBot 启动时 'vision_bridge_compat' type 用我方 VisionBridgeProvider instantiate, 不走 openai SDK
-        cls_attr_names = ("provider_class_map", "provider_classes", "_provider_classes", "provider_cls_map")
-        injected = False
-        for attr in cls_attr_names:
-            cls_map = getattr(pm, attr, None)
-            if isinstance(cls_map, dict):
-                cls_map[PROVIDER_TYPE] = VisionBridgeProvider
-                injected = True
-                break
-        if not injected:
-            # v4.26.4 没暴露 class_map - 直接挂一个 dict 上去 (覆盖默认 fallback)
-            try:
-                pm.provider_class_map = {PROVIDER_TYPE: VisionBridgeProvider}
-                injected = True
-            except Exception:
-                pass
-
-        # : 清理 framework 残留的 broken instance (type=openai_chat_completion 失败的)
-        #   AstrBot 启动时 'Loading model openai_chat_completion(vision_text_bridge_compat)' 失败
-        #   会留一个 None 或 broken instance 在 pm.providers[id] - 我方覆盖
-        prov_dict = getattr(pm, "providers", None)
-        if isinstance(prov_dict, dict) and PROVIDER_ID in prov_dict:
-            broken = prov_dict.get(PROVIDER_ID)
-            # 如果是 None 或 不是 VisionBridgeProvider — 替换
-            if broken is None or not isinstance(broken, VisionBridgeProvider):
-                prov_dict[PROVIDER_ID] = None  # 先清, 避免 framework 重试
-        inst_list = getattr(pm, "provider_insts", None)
-        if isinstance(inst_list, list):
-            for i, p_inst in enumerate(inst_list):
-                if not isinstance(p_inst, VisionBridgeProvider):
-                    cfg = getattr(p_inst, "provider_config", None) or {}
-                    if isinstance(cfg, dict) and cfg.get("id") == PROVIDER_ID:
-                        # 是我方 id 但不是 VisionBridgeProvider — 替换
-                        inst_list[i] = None  # 占位, 后面用新 inst 替换
-
-        # : instantiate 我方 Provider + add to provider_insts
+        _inject_provider_class_map(pm)
+        prov_dict, inst_list = _cleanup_broken_instances(pm)
         inst = VisionBridgeProvider(
             provider_config={"api_base": api_base, "key": [api_key or "placeholder"], "model": model},
             provider_settings={},
         )
-        if isinstance(inst_list, list):
-            # 替换所有 None 位置 + 追加
-            replaced = False
-            for i, p_inst in enumerate(inst_list):
-                if p_inst is None:
-                    inst_list[i] = inst
-                    replaced = True
-                    break
-            if not replaced:
-                inst_list.append(inst)
-        if isinstance(prov_dict, dict):
-            prov_dict[PROVIDER_ID] = inst
+        _add_or_replace_inst(inst_list, prov_dict, inst)
         logger.info(
             "[vision_text_bridge] 已自动注册 OpenAI compatible provider: id=%s, api_base=%s, model=%s",
             PROVIDER_ID, api_base, model,
@@ -242,7 +236,6 @@ async def auto_register_provider(plugin) -> bool:
         return True
     except Exception as e:
         logger.warning("[vision_text_bridge] auto_register_provider 失败: %s", e)
-        return False
         return False
 
 

@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -113,7 +115,7 @@ def read_args() -> dict:
 # ---------------------------------------------------------------------------
 # key 提取 — 4 路径防御 (~37 调试沉淀)
 # ---------------------------------------------------------------------------
-async def read_key_from_request(context, debug: bool = True) -> str:
+async def read_key_from_request(context, debug: bool = False) -> str:
     """从请求体里读 'key' 参数。
 
     4 路径按顺序:
@@ -499,53 +501,59 @@ async def api_chat_completions(plugin, *args, **kwargs):
     smart_imagechat_hub 配 default_image_caption_provider_id = 本插件 endpoint 时,
     它会调这个 API 走 mmx 路径, 不再走原 LLM 多模态.
     """
-    import smart_imagechat_hub_integration as _sih_int
     try:
         body = await quart_request.get_json(force=True, silent=True) or {}
     except Exception:
         try:
             raw = (await quart_request.get_data(as_text=True)) or "{}"
-            import json as _json
             body = _json.loads(raw)
         except Exception as e:
             return err(f"无法解析请求体: {e}", 400)
     messages = body.get("messages") or []
     if not messages:
         return err("messages 不能为空", 400)
-    # 收集所有 image_url (从 multimodal content 块)
-    image_urls = []
-    prompt_text = ""
+    # : 收集所有 image_url + 收集 prompt text (后续可传给 mmx vision_prompt)
+    image_urls: list[str] = []
+    prompt_parts: list[str] = []
     for msg in messages:
         content = msg.get("content")
         if isinstance(content, list):
             for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "image_url":
-                        u = (part.get("image_url") or {}).get("url") or ""
-                        if u:
-                            image_urls.append(u)
-                    elif part.get("type") == "text":
-                        prompt_text += part.get("text", "")
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url":
+                    u = (part.get("image_url") or {}).get("url") or ""
+                    if u:
+                        image_urls.append(u)
+                elif ptype == "text":
+                    t = part.get("text")
+                    if t:
+                        prompt_parts.append(t)
         elif isinstance(content, str):
-            prompt_text += content
+            prompt_parts.append(content)
     if not image_urls:
         return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
-    # 调 mmx 描述 (复用 plugin._describe_one)
+    # : P0 修复 — 处理所有 image_url, 不再只取 [0]
+    captions: list[str] = []
     try:
-        caption = await plugin._describe_one(image_urls[0])
+        for u in image_urls:
+            cap = await plugin._describe_one(u)
+            if cap:
+                captions.append(cap)
     except Exception as e:
         logger.exception("[vision_text_bridge] chat_completions 调 mmx 失败: %s", e)
         return err(f"mmx 描述失败: {e}", 500)
-    if not caption:
+    if not captions:
         return err("mmx 描述返回空", 500)
+    # 多张图拼成一段 (用换行分隔, LLM 看到是结构化列表)
+    caption = "\n".join(f"[图片{i+1}] {c}" for i, c in enumerate(captions))
     # 包装成 OpenAI ChatCompletion response
-    import time as _t
-    import uuid as _uuid
     model = body.get("model") or "vision_text_bridge"
     return ok({
-        "id": f"chatcmpl-{_uuid.uuid4().hex[:24]}",
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
-        "created": int(_t.time()),
+        "created": int(int(time.time())),
         "model": model,
         "choices": [{
             "index": 0,

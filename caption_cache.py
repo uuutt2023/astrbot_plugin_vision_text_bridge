@@ -226,6 +226,7 @@ class CaptionCache:
                 (image_id, url, description, mime_type, file_size, width, height, image_b64, now),
             )
             conn.commit()
+        return True
 
     def delete(self, image_id: str) -> bool:
         """删除一条记录。"""
@@ -260,10 +261,11 @@ class CaptionCache:
         """
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
-        order_sql = {
-            "created_at_desc": "created_at DESC",
-            "created_at_asc": "created_at ASC",
-        }.get(order_by, "created_at DESC")
+        # : 用列下标 (1=created_at) + ASC/DESC 标识 - 避免 f-string 拼 order_by
+        #   白名单兜底 - 未知值默认 created_at DESC
+        _order_dir = "ASC" if order_by.endswith("_asc") else "DESC" if order_by.endswith("_desc") else "DESC"
+        # 只认 2 个列下标
+        order_clause = f"ORDER BY 1 {_order_dir}"
 
         with self._lock, self._connect() as conn:
             if search:
@@ -271,12 +273,12 @@ class CaptionCache:
                 rows = conn.execute(
                     f"SELECT * FROM image_captions "
                     f"WHERE image_url LIKE ? OR description LIKE ? "
-                    f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                    f"{order_clause} LIMIT ? OFFSET ?",
                     (like, like, limit, offset),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    f"SELECT * FROM image_captions ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                    f"SELECT * FROM image_captions {order_clause} LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
         return [

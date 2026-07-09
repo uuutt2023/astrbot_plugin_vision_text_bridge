@@ -122,7 +122,8 @@ def test_api_chat_completions_returns_openai_format():
     assert data["ok"] is True, f"ok 应为 True, 实际 {data}"
     choices = data["data"]["choices"]
     assert len(choices) == 1
-    assert choices[0]["message"]["content"] == "图片里有一只橘猫在窗台上晒太阳"
+    # : 兼容多图拼格式 (1 张图也加 [图片1] 前缀)
+    assert choices[0]["message"]["content"] == "[图片1] 图片里有一只橘猫在窗台上晒太阳"
     assert data["data"]["object"] == "chat.completion"
     print("✓ test_api_chat_completions_returns_openai_format")
 def test_api_chat_completions_no_image_url_returns_error():

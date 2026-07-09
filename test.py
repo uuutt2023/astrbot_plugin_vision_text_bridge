@@ -136,6 +136,8 @@ def new_plugin(**overrides):
     p._pending_urls = None
     p._pending_parts = None
     p._pending_contexts = None
+    # : 跨 _describe_one -> _persist 复用刚读过的图片 bytes
+    p._last_image_bytes = {}
     # 注入一个 mock context，让 _register_web_apis / initialize 不报错
     p.context = SimpleNamespace(
         request=SimpleNamespace(args={}, json=None),
@@ -2535,6 +2537,7 @@ def test_main_imports_without_sys_path_modification():
 # ------------------------------------------------------------------ runner
 
 def run_all():
+    import sys as _sys
     tests = [
         test_is_cacheable_url,
         test_truncate,
