@@ -59,25 +59,23 @@ def _find_cmd_config_file() -> "_Path | None":
 def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
     """: 改写 AstrBot cmd_config.json 里 provider_id 的 entry — 完整修复.
 
-    根因 (2026-07-09 AstrBot 4.26.4):
-      - openai_chat_completion type 用 ProviderOpenAIOfficial, 读 config["key"]
-      - 老 config 默认 key=[] (空 list), chosen_api_key = api_keys[0] if api_keys else None
-      - AsyncOpenAI(api_key=None) → 报 'Missing credentials' 错
-      - 不管 type 改成啥, framework 加载 user config 时仍可能 read 到空 key
+    策略: **保留** entry, 让 framework 用 openai_chat_completion type 加载
+    ProviderOpenAIOfficial instance (含 model_config.model=vision-bridge) — 这样
+    smart_imagechat_hub 列表 filter 'openai_chat_completion' 能看到我方.
+
+    framework 加载时 'Loading model openai_chat_completion(provider_id)' 走
+    ProviderOpenAIOfficial(api_key='placeholder', base_url=我方 endpoint),
+    openai SDK 不校验 placeholder, 发 HTTP 请求到我方, 我方 /v1/chat/completions
+    接到后调 mmx, 返 OpenAI 格式 response. 全链路 OK, smart_imagechat_hub 列表能看到.
 
     完整修复 (针对老 openai_chat_completion entry):
       1. 保留 type='openai_chat_completion' (framework 已实现)
-      2. key=[] → key=['placeholder'] (openai SDK 拿到 string 'placeholder' 不报)
-      3. api_key='' → api_key='placeholder' (部分版本读这个字段)
-      4. api_base='' → 设成我方 endpoint (OpenAI SDK 发 HTTP 过来)
-      5. model='' → 设成 'vision-bridge' (我方可用任意)
+      2. key=[] → key=['placeholder'] (openai SDK 拿 string 'placeholder' 不报)
+      3. api_key='' → api_key='placeholder'
+      4. api_base='' → 设成我方 endpoint
+      5. model_config 缺/空 → 补 {'model': 'vision-bridge'} (关键 — smart_imagechat_hub 查模型时读)
 
-    这样 framework 启动时 'Loading model openai_chat_completion(provider_id)' 走
-    ProviderOpenAIOfficial(api_key='placeholder', base_url=我方 endpoint),
-    openai SDK 不校验 placeholder, 发请求到我方, 我方 /v1/chat/completions 接到后调 mmx,
-    返 OpenAI 格式 response. 全链路 OK, 不再 Missing credentials.
-
-    Returns: True 改写成功, False 没找到 file / entry.
+    Returns: True 改写成功 / entry 不存在时 append, False 没找到 file.
     """
     cfg_path = _find_cmd_config_file()
     if cfg_path is None:
@@ -88,70 +86,64 @@ def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
     except Exception as e:
         logger.debug("[vision_text_bridge] 读 cmd_config.json 失败: %s", e)
         return False
-    # AstrBot cmd_config.json 格式: {"provider": [{"id": "...", "type": "...", "key": [], ...}, ...]}
     if isinstance(data.get("provider"), list):
         providers = data["provider"]
-        provider_key = "provider"
     elif isinstance(data.get("providers"), list):
         providers = data["providers"]
-        provider_key = "providers"
     else:
         logger.debug("[vision_text_bridge] cmd_config.json 无 provider 列表, 跳过")
         return False
-    # : 找 target_entry — 但先 **删** (让 framework 不 instantiate openai_chat_completion 覆盖我方 instance)
-    # 之前是 append/改 entry — framework 启动时 'Loading model openai_chat_completion(vision_text_bridge_compat)'
-    # 用 ProviderOpenAIOfficial 类 instantiate, **覆盖** 我方 VisionBridgeProvider instance.
-    # smart_imagechat_hub 调 pm.providers[id].get_models() 拿到 ProviderOpenAIOfficial,
-    # 它 model_config 字段没设, get_models() 不返 vision-bridge → 查不到模型.
-    #
-    # 修: user config 里**不要**留 vision_text_bridge_compat entry, framework 不 instantiate
-    # 我方 plugin 启动时 pm.providers[id] = VisionBridgeProvider() 是**唯一** instance.
-    target_idx = None
-    for i, entry in enumerate(providers):
+    # 找 target_entry (不删, 改它)
+    target_entry = None
+    for entry in providers:
         if isinstance(entry, dict) and entry.get("id") == provider_id:
-            # 删
-            removed_entry = providers.pop(i)
-            logger.info(
-                "[vision_text_bridge] cmd_config.json 删除 provider entry: id=%s (type=%s) — "
-                "避免 framework 用 openai_chat_completion 覆盖我方 VisionBridgeProvider instance",
-                provider_id, removed_entry.get("type", "?"),
-            )
+            target_entry = entry
             break
-    # 写回 disk (改后立刻持久化)
-    try:
-        cfg_path.write_text(
-            _json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    # entry 不存在 → append 新 entry
+    if target_entry is None:
+        try:
+            from constants import DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX, OPENAI_COMPAT_PATH
+            default_base = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        except ImportError:
+            default_base = "http://localhost:6185/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
+        target_entry = {
+            "id": provider_id,
+            "type": "openai_chat_completion",
+            "enable": True,
+            "key": ["placeholder"],
+            "api_key": "placeholder",
+            "api_base": default_base,
+            "model_config": {"model": PROVIDER_DEFAULT_MODEL},
+        }
+        providers.append(target_entry)
+        logger.info(
+            "[vision_text_bridge] cmd_config.json append 新 provider entry: id=%s, type=openai_chat_completion, model=%s",
+            provider_id, PROVIDER_DEFAULT_MODEL,
         )
-    except Exception as e:
-        logger.warning("[vision_text_bridge] 删 entry 后写 cmd_config.json 失败: %s", e)
-    # entry 已删, 走后面 _add_or_replace_inst 添加我方 VisionBridgeProvider instance
-    return True
 
     changes = []
-    # 1. type 改 openai_chat_completion (保留 framework 原生支持)
-    old_type = target_entry.get("type", "")
-    if old_type != "openai_chat_completion":
+    # 1. type 改 openai_chat_completion
+    if target_entry.get("type") != "openai_chat_completion":
+        old_type = target_entry.get("type", "")
         changes.append(f"type {old_type!r} → 'openai_chat_completion'")
         target_entry["type"] = "openai_chat_completion"
 
-    # 2. key=[] 或空 → key=["placeholder"]
+    # 2. key 补 placeholder
     key = target_entry.get("key")
     if not isinstance(key, list) or not key or not all(isinstance(k, str) and k.strip() for k in key):
         old_key_repr = repr(key)[:30]
         target_entry["key"] = ["placeholder"]
         changes.append(f"key {old_key_repr} → ['placeholder']")
 
-    # 3. api_key 空 → 'placeholder'
+    # 3. api_key 补 placeholder
     api_key = target_entry.get("api_key", "")
     if not api_key or not isinstance(api_key, str) or not api_key.strip():
         target_entry["api_key"] = "placeholder"
         changes.append("api_key '' → 'placeholder'")
 
-    # 4. api_base 空 → 设成我方 endpoint
+    # 4. api_base 补 我方 endpoint
     api_base = target_entry.get("api_base", "")
     if not api_base or not isinstance(api_base, str) or not api_base.strip():
-        # 用默认值 (从 main.py 拿 dashboard_port + host)
         try:
             from constants import DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX, OPENAI_COMPAT_PATH
             default_base = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
@@ -160,19 +152,18 @@ def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
         target_entry["api_base"] = default_base
         changes.append(f"api_base '' → {default_base!r}")
 
-    # 5. model 空 → 'vision-bridge'
-    model_cfg = target_entry.get("model_config") or {}
-    if not isinstance(model_cfg, dict):
-        model_cfg = {"model": "vision-bridge"}
-        target_entry["model_config"] = model_cfg
-        changes.append("model_config → {'model': 'vision-bridge'}")
-    elif not model_cfg.get("model"):
-        model_cfg["model"] = "vision-bridge"
-        changes.append("model_config.model '' → 'vision-bridge'")
+    # 5. model_config 补 {'model': 'vision-bridge'} — 关键: smart_imagechat_hub 查模型时读
+    model_cfg = target_entry.get("model_config")
+    if not isinstance(model_cfg, dict) or not model_cfg.get("model"):
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+            target_entry["model_config"] = model_cfg
+        model_cfg["model"] = PROVIDER_DEFAULT_MODEL
+        changes.append(f"model_config.model = {PROVIDER_DEFAULT_MODEL!r}")
 
     if not changes:
         logger.debug("[vision_text_bridge] cmd_config.json id=%s 已正确, 跳过", provider_id)
-        return False
+        return True
 
     logger.info(
         "[vision_text_bridge] 改写 cmd_config.json id=%s: %s",
@@ -187,8 +178,6 @@ def _patch_user_config_type(provider_id: str, new_type: str) -> bool:
     except Exception as e:
         logger.warning("[vision_text_bridge] 写 cmd_config.json 失败: %s", e)
         return False
-
-
 
 
 PLUGIN_NAME = "astrbot_plugin_smart_imagechat_hub"
