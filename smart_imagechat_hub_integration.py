@@ -450,7 +450,7 @@ def _add_or_replace_inst(inst_list: list, prov_dict: dict, inst) -> None:
     logger.debug("_add_or_replace_inst: 字典已更新 key=%s", PROVIDER_ID)
 
 
-async def auto_register_provider(plugin) -> bool:
+async def auto_register_provider(plugin, log_details: bool = False) -> bool:
     """调度注册流程：先持久化改写 user config → 计算参数 → 注册类型 → 清理 → 实例化并加入管理器。
 
     若已注册则直接返回 True。

@@ -281,7 +281,7 @@ def _read_file_bytes_sync(path: str) -> bytes:
 # ===========================================================================
 @register(
     "astrbot_plugin_vision_text_bridge",
-    "Mavis",
+    "uuutt",
     "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
     PLUGIN_VERSION,
 )

@@ -1,4 +1,4 @@
-/* 图片转文字 · Mavis 图像理解 · Webui Logic
+/* 图片转文字 · uuutt 图像理解 · Webui Logic
  *
  * 重写：glassmorphism 风格 + 缩略图 + 模态详情
  * 全面接入 logger.js（控制台双输出 + on-screen panel）

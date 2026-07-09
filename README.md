@@ -1,4 +1,4 @@
-# 图片转文字 · Mavis 图像理解
+# 图片转文字 · uuutt 图像理解
 
 AstrBot 插件。在消息发往大模型前，将图片替换为 MiniMax 图像理解服务返回的描述文本，让 LLM 通过文字描述「理解」图片内容，请求中不再包含真实图片二进制。
 
@@ -53,7 +53,7 @@ npm install -g mmx-cli
 1. 复制插件目录到 AstrBot 插件目录：`<AstrBot>/data/plugins/astrbot_plugin_vision_text_bridge/`
 2. 重启 AstrBot，插件自动加载
 3. 在 AstrBot 管理面板的插件配置中填入 MiniMax API Key
-4. 打开缓存页面：控制台 → 插件 → 图片转文字 · Mavis → 「缓存管理」
+4. 打开缓存页面：控制台 → 插件 → 图片转文字 · uuutt → 「缓存管理」
 
 ## 配置
 
@@ -230,7 +230,7 @@ chat_plus（priority=-1）会在主钩子之后 merge 工具集合到 `req.func_
 2. smart_imagechat_hub 配 `default_image_caption_provider_id` = 这个 provider id
 3. 它的 image caption 请求会走本插件的 mmx 流程，不再调 LLM 多模态
 
-**配置开关**（插件 → 图片转文字 · Mavis → 智能图像聊天 兼容）：
+**配置开关**（插件 → 图片转文字 · uuutt → 智能图像聊天 兼容）：
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
@@ -247,7 +247,7 @@ chat_plus（priority=-1）会在主钩子之后 merge 工具集合到 `req.func_
 
 ## 缓存管理页面
 
-路径：控制台 → 插件 → 图片转文字 · Mavis → 「缓存管理」
+路径：控制台 → 插件 → 图片转文字 · uuutt → 「缓存管理」
 
 | 功能 | 说明 |
 | --- | --- |
