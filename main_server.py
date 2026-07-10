@@ -1,164 +1,199 @@
-"""独立 OpenAI 兼容 HTTP server — bypass framework legacy_router JWT middleware.
+"""独立 OpenAI 兼容 HTTP server on 127.0.0.1:<port> — bypass framework legacy_router JWT.
 
 Why: framework /api/plug/<plugin>/* 路径 require_dashboard_user (JWT 必需).
 openai SDK 发 'Authorization: Bearer placeholder' → 不匹配 JWT → framework 401 'Token 无效'.
 
-解决: 我方 start 独立 quart ASGI server on 127.0.0.1:<port> (loopback only).
+解决: 我方 start 独立 HTTP server on 127.0.0.1:<port>. zero deps (Python stdlib + asyncio).
 框架 ProviderOpenAIOfficial uses openai SDK → POST 我方独立 server (no JWT) → 200.
-
-使用 quart.run_task() in-place asyncio server — 跑 in main asyncio loop
-(兼容 plugin 已经跑的 event loop)。
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
 
 logger = logging.getLogger(__name__)
 
-try:
-    from quart import Quart, request as quart_request
-    HAS_QUART = True
-except ImportError:
-    HAS_QUART = False
-
-
-_task: "asyncio.Task | None" = None
-_shutdown: "asyncio.Event | None" = None
-_app = None
+_server: "asyncio.AbstractServer | None" = None
 _port: int = 6188
 
 
-def _make_app(plugin):
-    """构造 quart app 注册 /v1/chat/completions endpoint."""
-    app = Quart("vision_text_bridge_solo")
+def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
+    """构造 HTTP/1.1 响应."""
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    reason = "OK" if status == 200 else ("Bad Request" if status == 400 else "Internal Server Error")
+    headers = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: application/json; charset=utf-8\r\n"
+        f"Content-Length: {len(payload)}\r\n"
+        f"Access-Control-Allow-Origin: *\r\n"
+        f"Connection: close\r\n"
+        "\r\n"
+    ).encode("utf-8")
+    return headers + payload
 
-    @app.post("/v1/chat/completions")
-    async def chat_completions():
-        """独立 OpenAI compatible /v1/chat/completions — no JWT required."""
+
+async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, plugin) -> None:
+    """处理一个 HTTP request — 解析 + 调 plugin._describe_one."""
+    try:
+        # 读 request line
+        request_line = await reader.readline()
+        if not request_line:
+            writer.close()
+            return
         try:
-            body = await quart_request.get_json(force=True, silent=True) or {}
-        except Exception:
+            method, path, _ = request_line.decode("utf-8", errors="replace").split(" ", 2)
+        except ValueError:
+            response_bytes = _build_response({"status": "error", "message": "bad request"}, 400); writer.write(response_bytes)
+            await writer.drain()
+            writer.close()
+            return
+
+        # 读 headers
+        headers = {}
+        while True:
+            line = await reader.readline()
+            if line in (b"\r\n", b"", b"\n"):
+                break
             try:
-                raw = (await quart_request.get_data(as_text=True)) or "{}"
-                import json as _json
-                body = _json.loads(raw)
+                k, _, v = line.decode("utf-8", errors="replace").rstrip("\r\n").partition(":")
+                headers[k.strip().lower()] = v.strip()
+            except Exception:
+                pass
+
+        # 读 body (if Content-Length)
+        content_length = int(headers.get("content-length", "0") or "0")
+        body_bytes = b""
+        if content_length > 0:
+            body_bytes = await reader.readexactly(content_length)
+
+        # 路由
+        if method.upper() == "POST" and path == "/v1/chat/completions":
+            try:
+                body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             except Exception as e:
-                return {"status": "error", "message": f"无法解析请求体: {e}"}, 400
-        messages = body.get("messages") or []
-        if not messages:
-            return {"status": "error", "message": "messages 不能为空"}, 400
-        image_urls: list[str] = []
-        prompt_parts: list[str] = []
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if not isinstance(part, dict):
-                        continue
-                    ptype = part.get("type")
-                    if ptype == "image_url":
-                        url = (part.get("image_url") or {}).get("url")
-                        if isinstance(url, str) and url:
-                            image_urls.append(url)
-                    elif ptype == "text":
-                        t = part.get("text")
-                        if t:
-                            prompt_parts.append(t)
-            elif isinstance(content, str):
-                prompt_parts.append(content)
-        if not image_urls:
-            return {"status": "error", "message": "未提供 image_url"}, 400
-        # Call plugin._describe_one (mmx-via)
-        captions: list[str] = []
+                response_bytes = _build_response({"status": "error", "message": f"无法解析请求体: {e}"}, 400)
+                writer.write(response_bytes)
+                await writer.drain()
+                writer.close()
+                return
+            response_body, status = await _handle_chat_completions(body, plugin)
+            response_bytes = _build_response(response_body, status)
+            writer.write(response_bytes)
+            await writer.drain()
+        elif method.upper() == "GET" and path == "/health":
+            response_bytes = _build_response({"status": "ok", "server": "vision_text_bridge_solo"}, 200)
+            writer.write(response_bytes)
+            await writer.drain()
+        else:
+            response_bytes = _build_response({"status": "error", "message": f"未找到路由: {method} {path}"}, 400)
+            writer.write(response_bytes)
+            await writer.drain()
+    except Exception as e:
+        logger.warning("[vision_text_bridge] solo server handler 异常: %s", e)
+    finally:
         try:
-            for u in image_urls:
-                cap = plugin._describe_one(u)
-                if asyncio.iscoroutine(cap):
-                    cap = await cap
-                if cap:
-                    captions.append(cap)
-        except Exception as e:
-            logger.exception("chat_completions 调用 mmx 失败: %s", e)
-            return {"status": "error", "message": f"mmx 描述失败: {e}"}, 500
-        if not captions:
-            return {"status": "error", "message": "mmx 描述返回空"}, 500
-        caption_text = "\n".join(f"[图片{i+1}] {c}" for i, c in enumerate(captions))
-        model = body.get("model") or "vision_text_bridge"
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": caption_text},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        }
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
 
-    @app.get("/health")
-    async def health():
-        return {"status": "ok", "server": "vision_text_bridge_solo"}
 
-    return app
+async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
+    """OpenAI compatible /v1/chat/completions handler."""
+    messages = body.get("messages") or []
+    if not messages:
+        return {"status": "error", "message": "messages 不能为空"}, 400
+    image_urls: list[str] = []
+    prompt_parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url":
+                    url = (part.get("image_url") or {}).get("url")
+                    if isinstance(url, str) and url:
+                        image_urls.append(url)
+                elif ptype == "text":
+                    t = part.get("text")
+                    if t:
+                        prompt_parts.append(t)
+        elif isinstance(content, str):
+            prompt_parts.append(content)
+    if not image_urls:
+        return {"status": "error", "message": "未提供 image_url"}, 400
+    # Call plugin._describe_one (mmx-via)
+    captions: list[str] = []
+    try:
+        for u in image_urls:
+            cap = plugin._describe_one(u)
+            if asyncio.iscoroutine(cap):
+                cap = await cap
+            if cap:
+                captions.append(cap)
+    except Exception as e:
+        logger.exception("chat_completions 调 mmx 失败: %s", e)
+        return {"status": "error", "message": f"mmx 描述失败: {e}"}, 500
+    if not captions:
+        return {"status": "error", "message": "mmx 描述返回空"}, 500
+    caption_text = "\n".join(f"[图片{i+1}] {c}" for i, c in enumerate(captions))
+    model = body.get("model") or "vision_text_bridge"
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": caption_text},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }, 200
 
 
 async def start_solo_server(plugin, port: int = 6188) -> bool:
-    """启动 quart.run_task() on 127.0.0.1:<port> in main asyncio loop."""
-    global _task, _app, _port
-    if not HAS_QUART:
-        logger.warning(
-            "[vision_text_bridge] quart 未安装, skip solo server "
-            "(HAS_QUART=%s, HAS_QUART=%s)",
-            HAS_QUART, HAS_QUART,
-        )
-        return False
-    if _task is not None and not _task.done():
-        logger.debug("[vision_text_bridge] solo server 已在跑, port=%d", _port)
+    """启动 asyncio TCP server on 127.0.0.1:<port>. zero deps."""
+    global _server, _port
+    if _server is not None:
+        logger.info("[vision_text_bridge] solo server 已在跑, port=%d", _port)
         return True
+    logger.info("[vision_text_bridge] start_solo_server 调用: port=%d", port)
     try:
-        _app = _make_app(plugin)
+        _server = await asyncio.start_server(
+            lambda r, w: _handle_request(r, w, plugin),
+            host="127.0.0.1",
+            port=port,
+        )
         _port = port
-
-        # quart.run_task() 直接 in-place asyncio server (no hypercorn)
-        async def _serve():
-            try:
-                await _app.run_task(host="127.0.0.1", port=port, debug=False)
-            except asyncio.CancelledError:
-                logger.debug("[vision_text_bridge] solo server cancelled")
-            except Exception as e:
-                logger.warning("[vision_text_bridge] solo server 异常: %s", e)
-
-        loop = asyncio.get_event_loop()
-        _task = loop.create_task(_serve(), name="vision_text_bridge_solo_server")
-        # Give server a moment to bind
-        await asyncio.sleep(0.3)
         logger.info(
             "[vision_text_bridge] ✓ solo openai-compat server 启动: "
-            "http://127.0.0.1:%d/v1/chat/completions (bypass JWT)",
+            "http://127.0.0.1:%d/v1/chat/completions (bypass framework JWT, zero deps)",
             port,
         )
         return True
+    except OSError as e:
+        # port in use
+        if "Address already in use" in str(e) or "in use" in str(e):
+            logger.warning("[vision_text_bridge] port %d 已被占用, skip", port)
+        else:
+            logger.exception("[vision_text_bridge] solo server 启动失败: %s", e)
+        return False
     except Exception as e:
-        logger.exception("[vision_text_bridge] solo server 启动失败: %s", e)
+        logger.exception("[vision_text_bridge] solo server 启动异常: %s", e)
         return False
 
 
 async def stop_solo_server():
     """停止 solo server."""
-    global _task, _shutdown
-    if _shutdown is None:
-        _shutdown = asyncio.Event()
-    _shutdown.set()
-    if _task is not None and not _task.done():
-        _task.cancel()
-        try:
-            await _task
-        except asyncio.CancelledError:
-            pass
-    _task = None
-    logger.debug("[vision_text_bridge] solo server stopped")
+    global _server
+    if _server is not None:
+        _server.close()
+        await _server.wait_closed()
+        _server = None
+        logger.debug("[vision_text_bridge] solo server stopped")

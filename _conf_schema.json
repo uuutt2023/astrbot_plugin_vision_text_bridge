@@ -320,10 +320,10 @@
     "description": "把本插件注册成 OpenAI 兼容 LLM 提供商, 接管图像理解。其他插件/代码通过 provider_manager 调用时, 本插件接 HTTP → 调 mmx → 返图像描述。",
     "items": {
       "dashboard_port": {
-        "description": "AstrBot 端口",
+        "description": "独立 OpenAI 兼容 server 端口",
         "type": "int",
-        "hint": "插件 endpoint 端口, 同 AstrBot 主端口。",
-        "default": 6185
+        "hint": "本插件启动一个独立 HTTP server 在 127.0.0.1:<端口> 接收 OpenAI 兼容的 chat completions 请求。绕过 AstrBot dashboard JWT 验证。默认 6188 (如果端口被占用, plugin log 会 warn)。",
+        "default": 6188
       },
       "enabled": {
         "description": "启用端点",

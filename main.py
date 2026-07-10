@@ -446,11 +446,20 @@ class VisionTextBridgePlugin(Star):
         # 2.5 启动独立 OpenAI 兼容 server on 127.0.0.1:<openai_compat_port>
         #     bypass framework legacy_router JWT 验证 (401 'Token 无效' 是因为 /api/plug/<plugin>/*
         #     路由需要 JWT, openai SDK 发 Bearer placeholder 不匹配 → 报 401 'Token 无效')
-        try:
+        if main_server is None:
+            logger.warning("[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动")
+        else:
             openai_compat_port = int(self.config.get("openai_compat_port") or 6188)
-            await main_server.start_solo_server(self, port=openai_compat_port)
-        except Exception as exc:
-            logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
+            logger.info(
+                "[vision_text_bridge] 启动独立 OpenAI 兼容 server 在 127.0.0.1:%d ...",
+                openai_compat_port,
+            )
+            try:
+                ok = await main_server.start_solo_server(self, port=openai_compat_port)
+                if not ok:
+                    logger.warning("[vision_text_bridge] main_server.start_solo_server 返回 False")
+            except Exception as exc:
+                logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
 
         # 3. mmx 安装 + 预登录
         if not self.mmx_path and self.config.get("auto_install_cli", True):
@@ -563,11 +572,16 @@ class VisionTextBridgePlugin(Star):
                 "跳过自动注册 OpenAI compatible provider"
             )
             return
+        logger.info("[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册")
         try:
-            # : 不传 log_details=True 兼容老版本 sih_integration (用户 AstrBot zip 缓存 stale)
             ok = await smart_imagechat_hub_integration.auto_register_provider(self)
         except Exception as e:
-            logger.warning("[vision_text_bridge] _auto_register_sih_provider 失败: %s", e)
+            logger.exception("[vision_text_bridge] _auto_register_sih_provider 异常: %s", e)
+            return
+        if ok:
+            logger.info("[vision_text_bridge] webui API 注册成功")
+        else:
+            logger.warning("[vision_text_bridge] webui API 注册返回 False — 请检查 webui password")
 
         # : 集中 log 由 _log_registered_instance (在 webui API 注册成功路径上自动调) 处理
         if ok:

@@ -2,6 +2,4 @@
 # 如果启动报 ModuleNotFoundError: No module named 'httpx', 装一下:
 # httpx>=0.24
 
-# 独立 OpenAI 兼容 server (bypass framework legacy_router JWT middleware):
-hypercorn>=0.14
-quart>=0.18
+# No additional HTTP deps — main_server.py uses Python stdlib (asyncio.start_server)
