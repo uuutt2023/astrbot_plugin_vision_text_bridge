@@ -51,17 +51,47 @@ def is_smart_imagechat_hub_installed() -> bool:
 
 
 def _read_webui_credentials(plugin) -> tuple[str, str, int]:
-    """读 dashboard.{username,password,port} from AstrBotConfig."""
-    username = "admin"
+    """读 dashboard.{username,password,port}.
+
+    优先级 (用户 16:38 要求):
+      1. plugin.config['webui_username'] / ['webui_password'] (本插件用户手动配)
+      2. AstrBotConfig dashboard.{username,password} (framework 主配置)
+      3. 默认值 'admin' / '' (若以上都未设 — 警告提示用户)
+    """
+    username = ""
     password = ""
     port = DEFAULT_OPENAI_COMPAT_PORT
     try:
+        # 1. 本插件配置 (优先)
+        pc = plugin.config if plugin and hasattr(plugin, "config") else {}
+        plugin_set_user = False
+        plugin_set_pwd = False
+        if isinstance(pc, dict):
+            cu = pc.get("webui_username") or pc.get("dashboard_username")
+            cp = pc.get("webui_password") or pc.get("dashboard_password")
+            if cu:
+                username = cu.strip()
+                plugin_set_user = True
+            if cp:
+                password = cp.strip()
+                plugin_set_pwd = True
+        # 2. framework 配置 (作为 fallback — 仅 plugin 未设时才用)
         ac = plugin.context.astr_context
-        cfg = ac.config if hasattr(ac, "config") else {}
-        dashboard = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
-        port = int(dashboard.get("port", 6185))
-        username = dashboard.get("username", "admin") or "admin"
-        password = dashboard.get("password", "") or ""
+        if ac is not None and hasattr(ac, "config"):
+            cfg = ac.config if hasattr(ac, "config") else {}
+            if isinstance(cfg, dict):
+                dashboard = cfg.get("dashboard", {}) or {}
+                dash_port = int(dashboard.get("port", 6185))
+                if dash_port > 0 and dash_port != 65535:
+                    port = dash_port
+                if not plugin_set_pwd:
+                    fpw = dashboard.get("password", "")
+                    if fpw:
+                        password = fpw.strip()
+                if not plugin_set_user:
+                    fun = dashboard.get("username", "")
+                    if fun and fun.strip():
+                        username = fun.strip()
     except Exception as e:
         logger.debug("_read_webui_credentials 异常: %s", e)
     return username, password, port

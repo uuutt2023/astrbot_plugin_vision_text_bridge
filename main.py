@@ -18,7 +18,6 @@ import base64
 import importlib.util
 import io
 import json
-import os
 import re
 import shutil
 import sys
@@ -407,57 +406,64 @@ class VisionTextBridgePlugin(Star):
         max_concurrent = max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
 
-        # 1. 环境变量注入 — 支持 DASHBOARD_PASSWORD 自动配置 webui 密码
-        # (框架默认 dashboard.password 为空, 不显示在前端 UI — 用户必须 SSH 编辑 或用环境变量注入)
+        # 1. plugin.config 'webui_password' → 同步到 framework dashboard.password
+        # (用户 16:38 要求: dashboard.password 字段不在 framework schema 暴露,
+        #  在本插件 schema 提供 webui_password 字段让用户手动输入)
         try:
-            env_pwd = os.environ.get("DASHBOARD_PASSWORD", "").strip()
-            env_user = os.environ.get("DASHBOARD_USERNAME", "").strip()
-            if env_pwd:
+            cfg_pwd = (
+                self.config.get("webui_password")
+                or self.config.get("dashboard_password")
+                or ""
+            )
+            cfg_user = (
+                self.config.get("webui_username")
+                or self.config.get("dashboard_username")
+                or ""
+            )
+            if cfg_pwd:
                 ac = getattr(self.context, "astr_context", None)
-                if ac is not None and hasattr(ac, "config"):
-                    dashboard = ac.config.get("dashboard") or {}
-                    old_pwd = dashboard.get("password", "") or ""
-                    if old_pwd != env_pwd:
-                        dashboard["password"] = env_pwd
-                        if env_user:
-                            dashboard["username"] = env_user
-                        ac.config["dashboard"] = dashboard
-                        # 持久化 — framework core_lifecycle.config_manager 是 AstrBotConfigManager
-                        # acm.default_conf 是 AstrBotConfig 对象 — 通过它 save_config() 或 update_profile()
-                        saved = False
-                        try:
-                            cfgmgr = getattr(ac, "config_manager", None)
-                            if cfgmgr is not None:
-                                # framework API: update_profile / save_config
-                                fn = getattr(cfgmgr, "update_profile", None) or getattr(cfgmgr, "save_config", None)
-                                if callable(fn):
+                if ac is not None:
+                    # 写 in-memory + 尝试持久化
+                    target_dict = getattr(ac, "config", None)
+                    if isinstance(target_dict, dict):
+                        dashboard = target_dict.get("dashboard") or {}
+                        dashboard["password"] = cfg_pwd
+                        if cfg_user:
+                            dashboard["username"] = cfg_user
+                        target_dict["dashboard"] = dashboard
+                    # 尝试 save to disk via AstrBotConfigManager
+                    saved = False
+                    try:
+                        cfgmgr = getattr(ac, "config_manager", None)
+                        if cfgmgr is not None:
+                            fn = getattr(cfgmgr, "update_profile", None) or getattr(cfgmgr, "save_config", None)
+                            if callable(fn):
+                                try:
+                                    fn("default", ac.config)
+                                    saved = True
+                                except Exception:
+                                    pass
+                        if not saved:
+                            confs = getattr(cfgmgr, "confs", None) if cfgmgr else None
+                            if not confs:
+                                confs = getattr(ac, "confs", None) or getattr(ac, "_confs", None)
+                            if isinstance(confs, dict):
+                                conf = confs.get("default")
+                                save_fn = getattr(conf, "save_config", None)
+                                if callable(save_fn):
                                     try:
-                                        fn("default", ac.config)
+                                        save_fn()
                                         saved = True
                                     except Exception:
                                         pass
-                            # 不行? 直接改底层 conftest via deep get
-                            if not saved:
-                                confs = getattr(ac, "confs", None) or getattr(ac, "_confs", None)
-                                if isinstance(confs, dict):
-                                    conf = confs.get("default")
-                                    save_fn = getattr(conf, "save_config", None)
-                                    if callable(save_fn):
-                                        try:
-                                            save_fn()
-                                            saved = True
-                                        except Exception:
-                                            pass
-                        except Exception as e:
-                            logger.debug("[vision_text_bridge] 保存 dashboard config 异常: %s", e)
-                        if saved:
-                            logger.info(
-                                "[vision_text_bridge] 已通过 DASHBOARD_PASSWORD 配置 webui 密码 (持久化)",
-                            )
-                        else:
-                            logger.info(
-                                "[vision_text_bridge] 已通过 DASHBOARD_PASSWORD 配置 webui 密码 (仅本次进程内存)",
-                            )
+                    except Exception as e:
+                        logger.debug("[vision_text_bridge] 同步 dashboard 密码到 framework 异常: %s", e)
+                    logger.info(
+                        "[vision_text_bridge] 已设置 webui 密码到 framework (来源: plugin.config.webui_password)"
+                        + (" (持久化)" if saved else " (仅本次进程)"),
+                    )
+        except Exception as e:
+            logger.debug("[vision_text_bridge] webui_password 处理异常: %s", e)
         except Exception as e:
             logger.debug("[vision_text_bridge] DASHBOARD_PASSWORD env 处理异常: %s", e)
 
