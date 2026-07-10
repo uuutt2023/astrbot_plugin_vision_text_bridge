@@ -1,3 +1,7 @@
 # AstrBot 内置 httpx (AsyncOpenAI 依赖), 通常无需额外安装
 # 如果启动报 ModuleNotFoundError: No module named 'httpx', 装一下:
 # httpx>=0.24
+
+# 独立 OpenAI 兼容 server (bypass framework legacy_router JWT middleware):
+hypercorn>=0.14
+quart>=0.18

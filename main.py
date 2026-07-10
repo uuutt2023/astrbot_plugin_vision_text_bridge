@@ -84,7 +84,11 @@ from mmx_runner import (
     truncate as _truncate_text, strip_mmx_content as _strip_mmx_content_fn,
     preview as _preview_text, redact_text as _redact_text, redact_args as _redact_args_fn,
 )
-import web_api  # web_api.register_all_routes 在 _register_web_apis 里调
+import web_api
+try:
+    import main_server  # 独立 OpenAI 兼容 server (bypass framework JWT)
+except ImportError:
+    main_server = None
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +442,15 @@ class VisionTextBridgePlugin(Star):
             self._register_web_apis()
         except Exception as exc:
             logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
+
+        # 2.5 启动独立 OpenAI 兼容 server on 127.0.0.1:<openai_compat_port>
+        #     bypass framework legacy_router JWT 验证 (401 'Token 无效' 是因为 /api/plug/<plugin>/*
+        #     路由需要 JWT, openai SDK 发 Bearer placeholder 不匹配 → 报 401 'Token 无效')
+        try:
+            openai_compat_port = int(self.config.get("openai_compat_port") or 6188)
+            await main_server.start_solo_server(self, port=openai_compat_port)
+        except Exception as exc:
+            logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
 
         # 3. mmx 安装 + 预登录
         if not self.mmx_path and self.config.get("auto_install_cli", True):

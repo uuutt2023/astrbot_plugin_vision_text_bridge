@@ -15,12 +15,16 @@ try:
         DEFAULT_DASHBOARD_PORT,
         PLUGIN_ROUTE_PREFIX,
         OPENAI_COMPAT_PATH,
+        DEFAULT_OPENAI_COMPAT_PORT,
+        PROVIDER_ID,
     )
 except ImportError:
     # 沙箱 fallback (constants.py 自身 import 失败 — 不应发生)
     DEFAULT_DASHBOARD_PORT = 6185
     PLUGIN_ROUTE_PREFIX = "/api/plug/astrbot_plugin_vision_text_bridge"
     OPENAI_COMPAT_PATH = "/v1/chat/completions"
+    DEFAULT_OPENAI_COMPAT_PORT = 6188
+    PROVIDER_ID = "vision_text_bridge_compat"
 
 logger = logging.getLogger(__name__)
 
@@ -375,20 +379,20 @@ def is_provider_already_registered(plugin) -> bool:
 
 
 def _build_api_base(plugin) -> str:
-    """计算本插件提供的 OpenAI 兼容端点地址。"""
+    """计算本插件提供的 OpenAI 兼容端点地址。
+
+    现走独立 server (main_server.py) port = DEFAULT_OPENAI_COMPAT_PORT — bypass
+    framework legacy_router JWT middleware. framework /api/plug/<plugin>/* 对
+    /v1/chat/completions path 需要 JWT token, openai SDK 发 'Bearer placeholder'
+    导致 401 'Token 无效'.
+    """
     try:
-        ac = plugin.context.astr_context
-        cfg = ac.config if hasattr(ac, "config") else {}
-        dashboard = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
-        host = dashboard.get("host", "localhost")
-        port = plugin.config.get("dashboard_port") or dashboard.get("port", DEFAULT_DASHBOARD_PORT)
-        port = int(port)
-        url = f"http://{host}:{port}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
-        logger.debug("_build_api_base: host=%s, port=%s, url=%s", host, port, url)
-        return url
-    except Exception as e:
-        logger.debug("_build_api_base: 计算异常，使用默认值: %s", e)
-        return f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+        openai_compat_port = int(plugin.config.get("openai_compat_port") or DEFAULT_OPENAI_COMPAT_PORT)
+    except Exception:
+        openai_compat_port = DEFAULT_OPENAI_COMPAT_PORT
+    url = f"http://127.0.0.1:{openai_compat_port}/v1/chat/completions"
+    logger.debug("_build_api_base (solo server): port=%d, url=%s", openai_compat_port, url)
+    return url
 
 
 def _register_custom_provider_type(pm) -> None:

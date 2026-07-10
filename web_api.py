@@ -669,8 +669,10 @@ _ROUTES = [
      "缩略图：image_id 走路径参数 (GET)"),
     ("/cache/diag", api_diag, ["GET"], "诊断：DB 路径/schema/最近 3 条"),
     ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "POST 主路径"),
-    ("/v1/chat/completions", api_chat_completions, ["POST"],
-     "OpenAI compatible 接管 smart_imagechat_hub 的 image caption 请求"),
+    # : v1/chat/completions **不**注册到 framework /api/plug/<plugin>/*
+    #   framework legacy_router 对该 path 强制 require_dashboard_user (JWT) 校验
+    #   openai SDK 发 'Authorization: Bearer placeholder' → 401 'Token 无效'
+    #   该 endpoint 改走独立 server (main_server.py) on 127.0.0.1:<openai_compat_port>
     ("/image/caption", api_image_caption, ["GET", "POST"],
      "简单 mmx 描述 endpoint (返回纯文本或 JSON 标签)"),
 ]

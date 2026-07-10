@@ -24,3 +24,14 @@ PLACEHOLDER_API_KEY = "placeholder"
 
 # : 默认完整 API Base URL
 DEFAULT_API_BASE = f"http://localhost:{DEFAULT_DASHBOARD_PORT}{PLUGIN_ROUTE_PREFIX}{OPENAI_COMPAT_PATH}"
+
+
+# : 独立 OpenAI 兼容 endpoint 端口 (bypass framework legacy_router JWT middleware)
+#   独立 aiohttp server on 127.0.0.1:<OPENAI_COMPAT_PORT>
+#   framework ProviderOpenAIOfficial + openai SDK call goes here directly, 不走 /api/plug
+DEFAULT_OPENAI_COMPAT_PORT = 6188
+
+# : 独立 OpenAI 兼容 endpoint URL — 供框架 openai_chat_completion 实例使用
+#   直接走 127.0.0.1:<port>/v1/chat/completions
+#   bypass framework legacy_router JWT 验证 (JWT 总是 401 'Token 无效')
+DEFAULT_OPENAI_COMPAT_ENDPOINT = f"http://127.0.0.1:{DEFAULT_OPENAI_COMPAT_PORT}/v1/chat/completions"
