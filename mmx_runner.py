@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 from astrbot.api import logger
 
-from config_helpers import cfg_int, cfg_str
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +315,7 @@ def _warn_once(_diagnosed: set[str], key: str, message: str) -> None:
 
 def truncate(text: str, config: dict) -> str:
     """按 ``max_description_length`` (默认 800) 截断, 加省略号。"""
-    max_len = cfg_int(config, "max_description_length", 800)
+    max_len = _safe_int(config, "max_description_length", 800)
     if max_len <= 0 or len(text) <= max_len:
         return text
     return text[:max_len] + "…"

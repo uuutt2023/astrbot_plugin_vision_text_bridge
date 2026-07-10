@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-import asyncio
+
 import json
 import sqlite3
 import time
@@ -24,9 +24,18 @@ if TYPE_CHECKING:
     from .main import VisionTextBridgePlugin
 
 from astrbot.api import logger
-from config_helpers import cfg_int
 import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
-import smart_imagechat_hub_integration  # : smart_imagechat_hub 兼容
+
+# ---------------------------------------------------------------------------
+# 本地 helper (替代 deleted config_helpers.py)
+# ---------------------------------------------------------------------------
+def _safe_int(v, default):
+    try:
+        return int(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+import provider_registration  # : smart_imagechat_hub 兼容
 
 
 # 顶层常量
@@ -264,12 +273,12 @@ async def api_stats(plugin):
     s["in_memory_cache_size"] = len(plugin._description_cache)
     s["memory_cache_ttl_seconds"] = int(plugin.config.get("memory_cache_ttl_seconds", 300) or 0)
     s["memory_cache_max_size"] = int(plugin.config.get("memory_cache_max_size", 500) or 0)
-    s["sqlite_cache_ttl_days"] = cfg_int(plugin.config, "sqlite_cache_ttl_days", 7)
-    s["sqlite_clean_interval_hours"] = cfg_int(plugin.config, "sqlite_clean_interval_hours", 1)
+    s["sqlite_cache_ttl_days"] = _safe_int(plugin.config, "sqlite_cache_ttl_days", 7)
+    s["sqlite_clean_interval_hours"] = _safe_int(plugin.config, "sqlite_clean_interval_hours", 1)
 
     # 下次后台清理预计时间 (UTC 戳)
     last = getattr(plugin, "_last_clean_at", 0.0) or 0.0
-    interval_h = cfg_int(plugin.config, "sqlite_clean_interval_hours", 1)
+    interval_h = _safe_int(plugin.config, "sqlite_clean_interval_hours", 1)
     if interval_h > 0 and last > 0:
         s["next_clean_at"] = last + interval_h * 3600
     else:
@@ -316,7 +325,7 @@ async def api_integration_status(plugin):
 
     # : smart_imagechat_hub 兼容状态
     try:
-        sih_installed = smart_imagechat_hub_integration.is_smart_imagechat_hub_installed()
+        sih_installed = provider_registration.is_smart_imagechat_hub_installed()
     except Exception as ex:
         logger.debug(f"[vision_text_bridge] 检测外部图片理解插件失败: {ex}")
         sih_installed = False
@@ -465,7 +474,7 @@ async def api_clean_expired(plugin):
     miss = _require_caption_cache(plugin)
     if miss is not None:
         return miss
-    ttl_days = cfg_int(plugin.config, "sqlite_cache_ttl_days", 7)
+    ttl_days = _safe_int(plugin.config, "sqlite_cache_ttl_days", 7)
     if ttl_days <= 0:
         return err("sqlite_cache_ttl_days=0，未启用过期清理", 400)
     try:
