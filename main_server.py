@@ -161,7 +161,7 @@ async def start_solo_server(plugin, port: int = 6188) -> bool:
     """启动 asyncio TCP server on 127.0.0.1:<port>. zero deps."""
     global _server, _port
     if _server is not None:
-        logger.info("[vision_text_bridge] solo server 已在跑, port=%d", _port)
+        logger.info("[vision_text_bridge] solo server 已在跑, port=%d — 跳过启动", _port)
         return True
     logger.info("[vision_text_bridge] start_solo_server 调用: port=%d", port)
     try:
@@ -180,7 +180,7 @@ async def start_solo_server(plugin, port: int = 6188) -> bool:
     except OSError as e:
         # port in use
         if "Address already in use" in str(e) or "in use" in str(e):
-            logger.warning("[vision_text_bridge] port %d 已被占用, skip", port)
+            logger.warning("[vision_text_bridge] ⚠ port %d 已被占用 (另一进程在跑?) — solo server 未启动. 改 openai_compat_port 重试.", port)
         else:
             logger.exception("[vision_text_bridge] solo server 启动失败: %s", e)
         return False

@@ -8,7 +8,7 @@
   - 配置兼容: _flatten_group_config (处理 3 种 schema 格式)
   - 跨插件兼容检测: _check_compatibility / _detect_smart_imagechat_hub / _auto_register_sih_provider
 
-作者: uuutt - 协议: MIT
+MIT License
 """
 
 from __future__ import annotations
@@ -47,10 +47,9 @@ except Exception:  # noqa: BLE001
     TextPart = None  # 测试沙箱/未来重命名兼容
 
 # : 同级模块直接 import (sys.path 已加, AstrBot + 测试沙箱都能解析)
-from config_helpers import cfg_int as _cfg_int, cfg_str as _cfg_str
+
 from image_utils import is_image_url_part as _is_image_url_part, extract_url_from_item as _extract_url_from_item, extract_urls_from_parts as _extract_urls_from_parts, extract_urls_from_context_list as _extract_urls_from_context_list, is_data_url as _is_data_url, strip_image_urls as _strip_image_urls
-from image_meta import to_text_part as _to_text_part, sniff_image_meta as _sniff_image_meta, is_cacheable_url as _is_cacheable_url
-from image_fetch import read_image_bytes as _read_image_bytes, _read_file_bytes_sync
+from image_utils import to_text_part as _to_text_part, sniff_image_meta as _sniff_image_meta, is_cacheable_url as _is_cacheable_url, read_image_bytes as _read_image_bytes, _read_file_bytes_sync
 try:
     from image_utils import collect_image_urls_from_components as _collect_image_urls_from_components
 except ImportError:
@@ -73,7 +72,7 @@ except ImportError:
     logger.warning("[vision_text_bridge] 旧版 image_utils.py 无 collect_image_urls_from_components — 已用本地 fallback, 嵌套扫描将失效。git pull 后重启 AstrBot 解决。")
 from tool_filter import match_tool_name as _match_tool_name, filter_disabled_tools as _filter_disabled_tools
 import chat_archive_integration
-import smart_imagechat_hub_integration  # : smart_imagechat_hub 兼容 (顶部 import, 避免函数内 import 重复)
+import provider_registration  # webui HTTP API 注册 provider (顶部 import)
 from mmx_runner import (
     MmxResult, build_vision_command as _build_vision_command,
     run_mmx as _run_mmx_fn, install_mmx_cli as _install_mmx_cli_fn,
@@ -566,7 +565,7 @@ class VisionTextBridgePlugin(Star):
 
         # 5. 联动检测
         self._check_compatibility()
-        # 6. smart_imagechat_hub 兼容检测
+        # 6. external image caption 兼容检测 (smart_imagechat_hub 等)
         self._detect_smart_imagechat_hub()
         # 7. smart_imagechat_hub OpenAI compatible provider 自动注册
         await self._auto_register_sih_provider()
@@ -602,7 +601,7 @@ class VisionTextBridgePlugin(Star):
     def _detect_smart_imagechat_hub(self) -> None:
         """: 启动期检测 smart_imagechat_hub 是否安装 + 打印提示。"""
         try:
-            installed = smart_imagechat_hub_integration.is_smart_imagechat_hub_installed()
+            installed = provider_registration.is_smart_imagechat_hub_installed()
         except Exception as e:
             logger.debug("[vision_text_bridge] 检测外部图片理解插件失败: %s", e)
             return
@@ -634,7 +633,7 @@ class VisionTextBridgePlugin(Star):
             return
         logger.info("[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册")
         try:
-            ok = await smart_imagechat_hub_integration.auto_register_provider(self)
+            ok = await provider_registration.auto_register_provider(self)
         except Exception as e:
             logger.exception("[vision_text_bridge] _auto_register_sih_provider 异常: %s", e)
             return
