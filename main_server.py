@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 import uuid
 
-logger = logging.getLogger(__name__)
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
 _server: "asyncio.AbstractServer | None" = None
-_port: int = 6188
+_port: int = 2023
 
 
 def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
@@ -157,12 +160,19 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     }, 200
 
 
-async def start_solo_server(plugin, port: int = 6188) -> bool:
-    """启动 asyncio TCP server on 127.0.0.1:<port>. zero deps."""
+async def start_solo_server(plugin, port: int = 2023) -> int | None:
+    """启动 asyncio TCP server on 127.0.0.1:<port>。
+
+    Args:
+        port: 绑定端口，默认 2023
+
+    Returns:
+        实际绑定的端口 (int)，失败返 None。
+    """
     global _server, _port
     if _server is not None:
         logger.info("[vision_text_bridge] solo server 已在跑, port=%d — 跳过启动", _port)
-        return True
+        return _port
     logger.info("[vision_text_bridge] start_solo_server 调用: port=%d", port)
     try:
         _server = await asyncio.start_server(
@@ -170,23 +180,25 @@ async def start_solo_server(plugin, port: int = 6188) -> bool:
             host="127.0.0.1",
             port=port,
         )
-        _port = port
+        # 获取实际绑定的端口（port=0 时 OS 自动分配）
+        sockets = _server.sockets or []
+        actual_port = sockets[0].getsockname()[1] if sockets else port
+        _port = actual_port
         logger.info(
-            "[vision_text_bridge] ✓ solo openai-compat server 启动: "
+            "[vision_text_bridge] solo openai-compat server 启动: "
             "http://127.0.0.1:%d/v1/chat/completions (bypass framework JWT, zero deps)",
-            port,
+            actual_port,
         )
-        return True
+        return actual_port
     except OSError as e:
-        # port in use
         if "Address already in use" in str(e) or "in use" in str(e):
-            logger.warning("[vision_text_bridge] ⚠ port %d 已被占用 (另一进程在跑?) — solo server 未启动. 改 openai_compat_port 重试.", port)
+            logger.warning("[vision_text_bridge] port %d 已被占用 — solo server 未启动.", port)
         else:
             logger.exception("[vision_text_bridge] solo server 启动失败: %s", e)
-        return False
+        return None
     except Exception as e:
         logger.exception("[vision_text_bridge] solo server 启动异常: %s", e)
-        return False
+        return None
 
 
 async def stop_solo_server():

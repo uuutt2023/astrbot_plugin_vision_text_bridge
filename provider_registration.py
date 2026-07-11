@@ -4,7 +4,7 @@
   - 不改 cmd_config.json
   - 不注入 framework 内部状态 (pm.providers / pm.provider_insts)
   - 通过 webui 接口 (POST /api/v1/providers) 注册
-  - endpoint 用独立 server (127.0.0.1:6188) — bypass framework legacy_router JWT
+  - endpoint 用独立 server (127.0.0.1:2023) — bypass framework legacy_router JWT
 """
 from __future__ import annotations
 
@@ -100,7 +100,8 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             )
             return False
 
-        api_base = f"http://127.0.0.1:{DEFAULT_OPENAI_COMPAT_PORT}/v1/chat/completions"
+        actual_port = getattr(plugin, "_openai_compat_port", None) or DEFAULT_OPENAI_COMPAT_PORT
+        api_base = f"http://127.0.0.1:{actual_port}/v1/chat/completions"
 
         api_key = (
             plugin.config.get("api_key", "")

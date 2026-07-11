@@ -69,7 +69,7 @@ Dashboard → 插件管理 → 图片转文字 → 配置。
 
 ## OpenAI 兼容 endpoint
 
-插件启动独立 HTTP server on `127.0.0.1:6188`：
+插件启动独立 HTTP server on `127.0.0.1:2023`：
 
 - 绕过 AstrBot JWT，loopback only
 - 接收 OpenAI 格式请求 → 调 mmx → 返 ChatCompletion 响应
@@ -77,14 +77,14 @@ Dashboard → 插件管理 → 图片转文字 → 配置。
 注意两个端口的区别：
 
 - **6185** = AstrBot Dashboard（向这里发请求注册 provider）
-- **6188** = 插件自己的 OpenAI server（注册成功后供外部插件调用）
+- **2023** = 插件自己的 OpenAI server（注册成功后供外部插件调用）
 
 外部插件配置：
 
 ```json
 {
   "type": "openai_chat_completion",
-  "api_base": "http://127.0.0.1:6188/v1/chat/completions",
+  "api_base": "http://127.0.0.1:2023/v1/chat/completions",
   "api_key": "placeholder",
   "model": "vision-bridge"
 }

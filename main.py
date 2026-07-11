@@ -425,15 +425,17 @@ class VisionTextBridgePlugin(Star):
         if main_server is None:
             logger.warning("[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动")
         else:
-            openai_compat_port = 6188
-            logger.info(
-                "[vision_text_bridge] 启动独立 OpenAI 兼容 server 在 127.0.0.1:%d ...",
-                openai_compat_port,
-            )
+            self._openai_compat_port: int | None = None
             try:
-                ok = await main_server.start_solo_server(self, port=openai_compat_port)
-                if not ok:
-                    logger.warning("[vision_text_bridge] main_server.start_solo_server 返回 False")
+                actual_port = await main_server.start_solo_server(self, port=2023)
+                if actual_port is None:
+                    logger.warning("[vision_text_bridge] main_server.start_solo_server 失败")
+                else:
+                    self._openai_compat_port = actual_port
+                    logger.info(
+                        "[vision_text_bridge] 独立 OpenAI 兼容 server 启动: 127.0.0.1:%d",
+                        actual_port,
+                    )
             except Exception as exc:
                 logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
 
