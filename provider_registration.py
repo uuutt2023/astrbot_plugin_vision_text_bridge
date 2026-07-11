@@ -8,13 +8,16 @@
 """
 from __future__ import annotations
 
-import logging
 from pathlib import Path as _Path
 from typing import Optional
 
 import httpx as _httpx
 
-logger = logging.getLogger("astrbot_plugin_vision_text_bridge")
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
 from constants import (
     PROVIDER_ID,
@@ -82,9 +85,11 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         username, password, dash_port = _read_webui_credentials(plugin)
 
         use_bearer = bool(openapi_key)
-        logger.info(
-            "[vision_text_bridge] provider 注册: bearer=%s, username=%s, password_len=%d, dash_port=%d",
+        logger.warning(
+            "[vision_text_bridge] provider 注册尝试: bearer=%s, username=%r, password_len=%d, "
+            "dash_port=%d, openapi_key_prefix=%s",
             use_bearer, username, len(password), dash_port,
+            openapi_key[:8] + "***" if openapi_key else "(empty)",
         )
         if not use_bearer and not password:
             logger.warning(

@@ -74,6 +74,11 @@ Dashboard → 插件管理 → 图片转文字 → 配置。
 - 绕过 AstrBot JWT，loopback only
 - 接收 OpenAI 格式请求 → 调 mmx → 返 ChatCompletion 响应
 
+注意两个端口的区别：
+
+- **6185** = AstrBot Dashboard（向这里发请求注册 provider）
+- **6188** = 插件自己的 OpenAI server（注册成功后供外部插件调用）
+
 外部插件配置：
 
 ```json
