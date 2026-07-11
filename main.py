@@ -13,11 +13,15 @@ MIT License
 
 from __future__ import annotations
 
+# : 如果报 'cannot import name X from image_utils' / 'name register is not defined' 等 import 错误:
+#   1. pkill -9 AstrBot
+#   2. rm -rf /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge/__pycache__
+#   3. 重启 AstrBot
+#   (__pycache__ 缓存了 stale .pyc — 手动清)
+
 import asyncio
 import base64
 import importlib.util
-import io
-import json
 import re
 import shutil
 import sys
@@ -48,28 +52,18 @@ except Exception:  # noqa: BLE001
 
 # : 同级模块直接 import (sys.path 已加, AstrBot + 测试沙箱都能解析)
 
-from image_utils import is_image_url_part as _is_image_url_part, extract_urls_from_parts as _extract_urls_from_parts, extract_urls_from_context_list as _extract_urls_from_context_list, strip_image_urls as _strip_image_urls
-from image_utils import to_text_part as _to_text_part, sniff_image_meta as _sniff_image_meta, is_cacheable_url as _is_cacheable_url, read_image_bytes as _read_image_bytes, _read_file_bytes_sync
-try:
-    from image_utils import collect_image_urls_from_components as _collect_image_urls_from_components
-except ImportError:
-    # 向后兼容: 旧版 image_utils.py 没有这个函数 (v0.8.37 之前) — 本地 fallback 复制
-    # 让插件不 import 失败, 走老逻辑 (不递归扫嵌套 comp)
-    async def _collect_image_urls_from_components(components, dedupe=None):
-        added = 0
-        for comp in components:
-            ctype = getattr(comp, "type", None)
-            if ctype in ("image", "Image") and callable(getattr(comp, "convert_to_file_path", None)):
-                try:
-                    fp = await comp.convert_to_file_path()
-                except Exception:
-                    fp = None
-                if fp and (dedupe is None or fp not in dedupe):
-                    if dedupe is not None:
-                        dedupe.append(fp)
-                    added += 1
-        return added
-    logger.warning("[vision_text_bridge] 旧版 image_utils.py 无 collect_image_urls_from_components — 已用本地 fallback, 嵌套扫描将失效。git pull 后重启 AstrBot 解决。")
+from image_utils import (
+    is_image_url_part as _is_image_url_part,
+    extract_urls_from_parts as _extract_urls_from_parts,
+    extract_urls_from_context_list as _extract_urls_from_context_list,
+    strip_image_urls as _strip_image_urls,
+    to_text_part as _to_text_part,
+    sniff_image_meta as _sniff_image_meta,
+    is_cacheable_url as _is_cacheable_url,
+    read_image_bytes as _read_image_bytes,
+    _read_file_bytes_sync,
+    collect_image_urls_from_components as _collect_image_urls_from_components,
+)
 from tool_filter import filter_disabled_tools as _filter_disabled_tools
 import chat_archive_integration
 import provider_registration  # webui HTTP API 注册 provider (顶部 import)

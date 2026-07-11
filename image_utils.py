@@ -1,12 +1,35 @@
 """image_utils.py - 通用图片 URL helper。
 
 API: _is_cacheable_url / extract_image_url / collect_image_urls_from_components / is_bot_avatar_url
-作者: uuutt
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
+
+__all__ = [
+    # 检测/提取
+    "is_image_url_part",
+    "extract_url_from_item",
+    "extract_urls_from_parts",
+    "extract_urls_from_context_list",
+    "is_data_url",
+    "strip_image_urls",
+    # 异步扫描
+    "_extract_image_url_from_component",
+    "collect_image_urls_from_components",
+    # TextPart 包装
+    "to_text_part",
+    # 元数据
+    "sniff_image_meta",
+    # URL 过滤
+    "is_cacheable_url",
+    # 字节读取
+    "read_image_bytes",
+    "_read_file_bytes_sync",
+    "_normalize_file_url",
+    "_is_windows_absolute",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +348,6 @@ def is_cacheable_url(url: str, config: Any) -> bool:
 
 
 import asyncio
-import os
-from urllib.parse import unquote
 
 
 def _read_file_bytes_sync(path: str) -> bytes:
@@ -367,6 +388,3 @@ async def read_image_bytes(url: str) -> bytes:
         return await asyncio.to_thread(_read_file_bytes_sync, url)
     raise ValueError(f"unsupported scheme: {url[:50]}")
 
-
-# 保留模块级兼容 shim — 老测试可能 ``from main import _read_file_bytes_sync``
-__all__ = ["read_image_bytes", "_read_file_bytes_sync"]

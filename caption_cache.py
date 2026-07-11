@@ -16,7 +16,6 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 _log = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
