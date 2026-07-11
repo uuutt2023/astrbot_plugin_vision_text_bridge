@@ -341,12 +341,6 @@
         "obvious_hint": true,
         "hint": "在 Dashboard「设置→OpenAPI」创建。使用 Bearer token 认证，优先级高于 webui_password。"
       },
-      "dashboard_port": {
-        "description": "独立 server 端口",
-        "type": "int",
-        "hint": "默认 6188。",
-        "default": 6188
-      },
       "enabled": {
         "description": "启用端点",
         "type": "bool",

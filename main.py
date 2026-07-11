@@ -425,7 +425,7 @@ class VisionTextBridgePlugin(Star):
         if main_server is None:
             logger.warning("[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动")
         else:
-            openai_compat_port = int(self.config.get("openai_compat_port") or 6188)
+            openai_compat_port = 6188
             logger.info(
                 "[vision_text_bridge] 启动独立 OpenAI 兼容 server 在 127.0.0.1:%d ...",
                 openai_compat_port,
