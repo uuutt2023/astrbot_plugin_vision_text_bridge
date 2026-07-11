@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from constants import (
     PROVIDER_ID,
     DEFAULT_OPENAI_COMPAT_PORT,
+    DEFAULT_DASHBOARD_PORT,
     DEFAULT_MODEL,
 )
 
@@ -60,7 +61,7 @@ def _read_webui_credentials(plugin) -> tuple[str, str, int]:
     """
     username = ""
     password = ""
-    port = DEFAULT_OPENAI_COMPAT_PORT
+    port = DEFAULT_DASHBOARD_PORT
     try:
         # 1. 本插件配置 (优先)
         pc = plugin.config if plugin and hasattr(plugin, "config") else {}
