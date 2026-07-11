@@ -98,14 +98,23 @@ def _read_webui_credentials(plugin) -> tuple[str, str, int]:
 
 
 async def auto_register_provider(plugin, log_details: bool = False) -> bool:
-    """通过 webui HTTP API 注册 OpenAI compatible provider (OpenAI-compat mode)."""
+    """通过 webui HTTP API 注册 OpenAI compatible provider (OpenAI-compat mode).
+
+    支持两种认证方式 (优先级从高到低):
+      1. OpenAPI Key (Bearer token) — 在 Dashboard「设置→OpenAPI」创建
+      2. username + password — 在 plugin.config 配 webui_password
+    """
     try:
+        openapi_key = (plugin.config.get("openapi_key") or "").strip()
         username, password, dash_port = _read_webui_credentials(plugin)
-        if not password:
+
+        use_bearer = bool(openapi_key)
+        if not use_bearer and not password:
             logger.warning(
-                "[vision_text_bridge] webui password 未配置 — "
+                "[vision_text_bridge] OpenAPI Key 和 webui password 均未配置 — "
                 "无法通过 webui API 注册 provider. "
-                "请在 webui「系统配置 → dashboard」配置 password."
+                "请在 webui「设置 → OpenAPI」创建 Key 填入 openapi_key, "
+                "或在「系统配置 → dashboard」配置 password."
             )
             return False
 
@@ -139,27 +148,36 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
 
         base_url = f"http://localhost:{dash_port}"
         async with _httpx.AsyncClient(timeout=15.0) as client:
-            # 1. Login dashboard
-            login_resp = await client.post(
-                f"{base_url}/api/auth/login",
-                json={"username": username, "password": password},
-            )
-            if login_resp.status_code not in (200, 204):
-                logger.warning(
-                    "[vision_text_bridge] webui 登录失败 (status=%d, username=%s) — "
-                    "请检查 password 配置", login_resp.status_code, username,
+            headers = {}
+            if use_bearer:
+                # Bearer token 认证 — 跳过 login, 直接带 Authorization header
+                headers["Authorization"] = f"Bearer {openapi_key}"
+                logger.info(
+                    "[vision_text_bridge] 使用 OpenAPI Key (Bearer) 认证注册 provider"
                 )
-                return False
+            else:
+                # 传统 username/password 登录
+                login_resp = await client.post(
+                    f"{base_url}/api/auth/login",
+                    json={"username": username, "password": password},
+                )
+                if login_resp.status_code not in (200, 204):
+                    logger.warning(
+                        "[vision_text_bridge] webui 登录失败 (status=%d, username=%s) — "
+                        "请检查 password 配置", login_resp.status_code, username,
+                    )
+                    return False
 
             # 2. POST provider (id 重复 → 400/409 with "already exists")
             try:
                 create_resp = await client.post(
                     f"{base_url}/api/v1/providers",
                     json=config,
+                    headers=headers,
                 )
                 if create_resp.status_code in (200, 201):
                     logger.info(
-                        "[vision_text_bridge] ✓ 通过 webui API 注册 provider 成功: id=%s, "
+                        "[vision_text_bridge] 通过 webui API 注册 provider 成功: id=%s, "
                         "api_base=%s, model=%s", PROVIDER_ID, api_base, model_name,
                     )
                     if log_details:
@@ -174,10 +192,11 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     f"{base_url}/api/v1/providers/by-id",
                     params={"provider_id": PROVIDER_ID},
                     json=config,
+                    headers=headers,
                 )
                 if update_resp.status_code in (200, 204):
                     logger.info(
-                        "[vision_text_bridge] ✓ 通过 webui API 更新 provider 成功: id=%s",
+                        "[vision_text_bridge] 通过 webui API 更新 provider 成功: id=%s",
                         PROVIDER_ID,
                     )
                     if log_details:

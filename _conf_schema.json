@@ -331,6 +331,13 @@
         "default": "",
         "hint": "用于 AstrBot webui 登录的密码。framework dashboard schema 默认不暴露此字段, 在本插件这里设置。plugin 启动时会自动同步到框架 dashboard.password, 用于 auto_register via webui API。"
       },
+      "openapi_key": {
+        "description": "OpenAPI 开发者访问密钥 (替代密码登录)",
+        "type": "string",
+        "default": "",
+        "obvious_hint": true,
+        "hint": "在 Dashboard「设置 → OpenAPI」创建 Key, 粘贴到这里。使用 Bearer token 方式认证, 无需 username/password。优先级高于 webui_password。"
+      },
       "dashboard_port": {
         "description": "独立 OpenAI 兼容 server 端口",
         "type": "int",

@@ -612,11 +612,11 @@ class VisionTextBridgePlugin(Star):
 
     async def _auto_register_sih_provider(self) -> None:
         """: 启动期自动注册 OpenAI compatible provider (默认开, 让 smart_imagechat_hub 直接用)."""
-        if not (self.config.get("auto_register_openai_compat_provider")
-          or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
+        if not (self.config.get("auto_register")
+                or self.config.get("auto_register_openai_compat_provider")
+                or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
             logger.info(
-                "[vision_text_bridge] auto_register_openai_compat_provider=False (合并老配置 key), "
-                "跳过自动注册 OpenAI compatible provider"
+                "[vision_text_bridge] auto_register=False, 跳过自动注册 OpenAI compatible provider"
             )
             return
         logger.info("[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册")
@@ -628,7 +628,7 @@ class VisionTextBridgePlugin(Star):
         if ok:
             logger.info("[vision_text_bridge] webui API 注册成功")
         else:
-            logger.warning("[vision_text_bridge] webui API 注册返回 False — 请检查 webui password")
+            logger.warning("[vision_text_bridge] webui API 注册返回 False — 请检查 openapi_key 或 webui_password 配置")
 
         # : 集中 log 由 _log_registered_instance (在 webui API 注册成功路径上自动调) 处理
         if ok:
