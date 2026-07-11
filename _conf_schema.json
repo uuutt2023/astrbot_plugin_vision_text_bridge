@@ -339,7 +339,7 @@
         "type": "string",
         "default": "",
         "obvious_hint": true,
-        "hint": "在 Dashboard「设置→OpenAPI」创建。使用 Bearer token 认证，优先级高于 webui_password。"
+        "hint": "在 Dashboard「设置→OpenAPI」创建。X-API-Key 方式认证，优先级高于 webui_password。"
       },
       "enabled": {
         "description": "启用端点",

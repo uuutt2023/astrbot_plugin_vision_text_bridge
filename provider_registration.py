@@ -122,10 +122,9 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         async with _httpx.AsyncClient(timeout=15.0) as client:
             headers = {}
             if use_bearer:
-                # Bearer token 认证 — 跳过 login, 直接带 Authorization header
-                headers["Authorization"] = f"Bearer {openapi_key}"
+                headers["X-API-Key"] = openapi_key
                 logger.info(
-                    "[vision_text_bridge] 使用 OpenAPI Key (Bearer) 认证注册 provider"
+                    "[vision_text_bridge] 使用 OpenAPI Key (X-API-Key) 认证注册 provider"
                 )
             else:
                 # 传统 username/password 登录
@@ -240,20 +239,26 @@ def _log_registered_instance(plugin) -> None:
 
 
 async def remove_provider(plugin) -> bool:
-    """通过 webui DELETE 卸载 provider。"""
+    """通过 webui DELETE 卸载 provider。支持 OpenAPI Key (X-API-Key) 或 username/password。"""
     try:
+        openapi_key = (plugin.config.get("openapi_key") or "").strip()
         username, password, dash_port = _read_webui_credentials(plugin)
-        if not password:
+        if not openapi_key and not password:
             return False
         base_url = f"http://localhost:{dash_port}"
+        headers = {}
         async with _httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
-                f"{base_url}/api/auth/login",
-                json={"username": username, "password": password},
-            )
+            if openapi_key:
+                headers["X-API-Key"] = openapi_key
+            else:
+                await client.post(
+                    f"{base_url}/api/auth/login",
+                    json={"username": username, "password": password},
+                )
             r = await client.delete(
                 f"{base_url}/api/v1/providers/by-id",
                 params={"provider_id": PROVIDER_ID},
+                headers=headers,
             )
             return r.status_code in (200, 204)
     except Exception:
