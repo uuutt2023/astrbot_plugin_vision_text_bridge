@@ -109,6 +109,10 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         username, password, dash_port = _read_webui_credentials(plugin)
 
         use_bearer = bool(openapi_key)
+        logger.info(
+            "[vision_text_bridge] provider 注册: bearer=%s, username=%s, password_len=%d, dash_port=%d",
+            use_bearer, username, len(password), dash_port,
+        )
         if not use_bearer and not password:
             logger.warning(
                 "[vision_text_bridge] OpenAPI Key 和 webui password 均未配置 — "
@@ -183,6 +187,10 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     if log_details:
                         _log_registered_instance(plugin)
                     return True
+                logger.warning(
+                    "[vision_text_bridge] POST /api/v1/providers 返回 %d: %s",
+                    create_resp.status_code, (create_resp.text or "")[:300],
+                )
             except Exception as e:
                 logger.debug("create exception: %s", e)
 
@@ -202,6 +210,10 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     if log_details:
                         _log_registered_instance(plugin)
                     return True
+                logger.warning(
+                    "[vision_text_bridge] PUT /api/v1/providers/by-id 返回 %d: %s",
+                    update_resp.status_code, (update_resp.text or "")[:300],
+                )
             except Exception as e:
                 logger.debug("update exception: %s", e)
 

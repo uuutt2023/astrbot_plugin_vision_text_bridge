@@ -360,9 +360,9 @@
         "default": true
       },
       "api_key": {
-        "description": "API Key",
+        "description": "端点 API Key（非 OpenAPI 密钥）",
         "type": "string",
-        "hint": "任意占位字符串。",
+        "hint": "本端点不校验，填 placeholder 即可。注册用 openapi_key 字段。",
         "default": "placeholder"
       },
       "model_name": {
