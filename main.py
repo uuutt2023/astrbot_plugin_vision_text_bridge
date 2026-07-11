@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib.util
+import io
+import json
 import re
 import shutil
 import sys
@@ -26,6 +29,249 @@ from typing import Any
 _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
+
+try:
+    from astrbot.api import AstrBotConfig
+    from astrbot.api import logger as _astr_logger
+except Exception:  # v4.26.4 偶发 logger 不存在 — 兜底
+    _astr_logger = None
+import logging
+logger = _astr_logger if _astr_logger is not None else logging.getLogger(__name__)
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import ProviderRequest
+from astrbot.api.star import Context, Star, register
+try:
+    # : 把图说作为 Pydantic ContentPart 注入 req.extra_user_content_parts
+    from astrbot.core.agent.message import TextPart  # type: ignore
+except Exception:  # noqa: BLE001
+    TextPart = None  # 测试沙箱/未来重命名兼容
+
+# : 同级模块直接 import (sys.path 已加, AstrBot + 测试沙箱都能解析)
+
+from image_utils import is_image_url_part as _is_image_url_part, extract_urls_from_parts as _extract_urls_from_parts, extract_urls_from_context_list as _extract_urls_from_context_list, strip_image_urls as _strip_image_urls
+from image_utils import to_text_part as _to_text_part, sniff_image_meta as _sniff_image_meta, is_cacheable_url as _is_cacheable_url, read_image_bytes as _read_image_bytes, _read_file_bytes_sync
+try:
+    from image_utils import collect_image_urls_from_components as _collect_image_urls_from_components
+except ImportError:
+    # 向后兼容: 旧版 image_utils.py 没有这个函数 (v0.8.37 之前) — 本地 fallback 复制
+    # 让插件不 import 失败, 走老逻辑 (不递归扫嵌套 comp)
+    async def _collect_image_urls_from_components(components, dedupe=None):
+        added = 0
+        for comp in components:
+            ctype = getattr(comp, "type", None)
+            if ctype in ("image", "Image") and callable(getattr(comp, "convert_to_file_path", None)):
+                try:
+                    fp = await comp.convert_to_file_path()
+                except Exception:
+                    fp = None
+                if fp and (dedupe is None or fp not in dedupe):
+                    if dedupe is not None:
+                        dedupe.append(fp)
+                    added += 1
+        return added
+    logger.warning("[vision_text_bridge] 旧版 image_utils.py 无 collect_image_urls_from_components — 已用本地 fallback, 嵌套扫描将失效。git pull 后重启 AstrBot 解决。")
+from tool_filter import filter_disabled_tools as _filter_disabled_tools
+import chat_archive_integration
+import provider_registration  # webui HTTP API 注册 provider (顶部 import)
+from mmx_runner import (
+    MmxResult, build_vision_command as _build_vision_command,
+    run_mmx as _run_mmx_fn, install_mmx_cli as _install_mmx_cli_fn,
+    install_mmx_local as _install_mmx_local_fn,
+    find_local_mmx as _find_local_mmx_fn,
+    diagnose_mmx_error as _diagnose_mmx_error_fn,
+    truncate as _truncate_text, strip_mmx_content as _strip_mmx_content_fn,
+    preview as _preview_text, redact_text as _redact_text, redact_args as _redact_args_fn,
+)
+import web_api
+try:
+    import main_server  # 独立 OpenAI 兼容 server (bypass framework JWT)
+except ImportError:
+    main_server = None
+
+
+# ---------------------------------------------------------------------------
+# 动态加载同级 caption_cache.py（AstrBot 不会把插件目录加到 sys.path）
+# ---------------------------------------------------------------------------
+def _load_sibling_module(name: str):
+    here = Path(__file__).resolve().parent
+    target = here / f"{name}.py"
+    if not target.exists():
+        raise ImportError(f"插件目录中找不到依赖文件: {target}")
+    spec = importlib.util.spec_from_file_location(
+        f"astrbot_plugin_vision_text_bridge.{name}", target
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_sibling_cache = _load_sibling_module("caption_cache")
+CaptionCache = _sibling_cache.CaptionCache
+CaptionEntry = _sibling_cache.CaptionEntry
+
+# : 共享常量 (单一定义) — 跨模块 import 来源
+from constants import (
+    PLUGIN_NAME, DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX,
+    OPENAI_COMPAT_PATH, IMAGE_CAPTION_PATH, PROVIDER_ID,
+    DEFAULT_MODEL, PLACEHOLDER_API_KEY,
+)
+
+# AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
+# priority 在 import 时锁定，调配置后需重启 AstrBot。
+DEFAULT_PRIORITY = 100
+
+# Module-level: 预编译 bot 头像 URL 过滤 regex
+# 避免每个 hook 入口都 re.compile() (虽然 Python 内部有 cache, 但显式更快更清晰)
+_BOT_AVATAR_PAT = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
+
+# : 预编译的 markdown 清理 regex 抽到 mmx_runner.py ()
+
+
+class _MemoryCache:
+    """: 内存热缓存——带 TTL + LRU size 上限。
+
+    - 防御资源泄露：之前是裸 dict，永远不会过期也不会被淘汰
+    - 过期处理：get() 检查 ``expire_at``（同 _sibling_cache.CaptionCache 5 分钟去重窗口一致）
+    - LRU 淘汰：set 越上限删最久未访问项
+    - 本类是单线程使用（asyncio 事件循环），不需要锁
+    """
+
+    __slots__ = ("_m", "_max_size", "_ttl")
+
+    def __init__(self, ttl_seconds: int, max_size: int):
+        # dict 是有序的（Python 3.7+），插入/更新顺序即为 LRU 顺序
+        self._m: dict[str, tuple[str, float]] = {}
+        self._max_size = max(1, int(max_size))
+        self._ttl = max(0, int(ttl_seconds))
+
+    def get(self, key: str) -> str | None:
+        """取并刷新 LRU 顺序；过期或不存在返 None。"""
+        v = self._m.get(key)
+        if v is None:
+            return None
+        text, expire_at = v
+        if self._ttl > 0 and time.time() >= expire_at:
+            # 过期，懒删除
+            self._m.pop(key, None)
+            return None
+        # 刷新 LRU：pop + set（Python dict 重赋值同 key **不**会动插入顺序）
+        if self._max_size > 0:
+            self._m.pop(key, None)
+            self._m[key] = v
+        return text
+
+    def put(self, key: str, value: str) -> None:
+        if self._max_size <= 0:
+            return
+        if key in self._m:
+            self._m.pop(key, None)
+        expire = time.time() + self._ttl if self._ttl > 0 else float("inf")
+        self._m[key] = (value, expire)
+        # 越上限——从头开始删（最久未访问）
+        while len(self._m) > self._max_size:
+            oldest = next(iter(self._m))
+            self._m.pop(oldest, None)
+
+    def pop(self, key: str) -> str | None:
+        v = self._m.pop(key, None)
+        return v[0] if v else None
+
+    def clear(self) -> None:
+        self._m.clear()
+
+    def __len__(self) -> int:
+        return len(self._m)
+
+    def __contains__(self, key: str) -> bool:
+        return self.get(key) is not None
+
+    # 字典语法糖——允许 ``cache[key] = v`` / ``cache[key]`` 老用法
+    def __setitem__(self, key: str, value: str) -> None:
+        self.put(key, value)
+
+    def __getitem__(self, key: str) -> str:
+        v = self.get(key)
+        if v is None:
+            raise KeyError(key)
+        return v
+
+
+def _read_plugin_version() -> str:
+    """从 metadata.yaml 读版本号（避免 @register 装饰器硬编码跟 metadata.yaml 脱节）。"""
+    try:
+        import yaml  # AstrBot 依赖 PyYAML
+        meta_path = Path(__file__).resolve().parent / "metadata.yaml"
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return str(data.get("version", "0.0.0"))
+    except Exception:
+        return "0.0.0"
+
+
+# : 配置读取 helper——原模式 ``int(self.config.get(k, d) or d)`` 重复 15+ 次
+def _cfg_int(config, key: str, default: int) -> int:
+    v = config.get(key, default)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cfg_str(config, key: str, default: str) -> str:
+    v = config.get(key, default)
+    if v is None:
+        return default
+    return str(v)
+
+
+PLUGIN_VERSION = _read_plugin_version()
+
+
+def _flatten_group_config(config: dict) -> dict:
+    """: 展平嵌套 group config — 旧读法兼容。
+
+    支持 3 种输入格式 (AstrBot 不同版本可能给不同格式):
+
+    格式 A: ``{"基础": {"description": "...", "items": {"enabled": True, "priority": 100}}}``
+      - 新 schema 完整定义 (有 items 键)
+      - 展平后: ``{"基础": {...}, "enabled": True, "priority": 100}``
+
+    格式 B: ``{"MiniMax CLI": {"minimax_api_key": "sk-xxx", "auto_login": True}}``
+      - AstrBot 已把 schema 解析完, 只剩用户填的字段 (无 items)
+      - 展平后: ``{"MiniMax CLI": {...}, "minimax_api_key": "sk-xxx", "auto_login": True}``
+
+    格式 C: ``{"minimax_api_key": "sk-xxx", "enabled": True}``
+      - 完全扁平 (老 schema 或无 group 包装)
+      - 不动
+    """
+    if not isinstance(config, dict):
+        return config
+    flat = dict(config)  # 浅拷贝, 保留 group 引用
+    SCHEMA_META_KEYS = {"description", "type", "hint", "default", "obvious_hint", "items"}
+    for _key, value in list(config.items()):
+        if not isinstance(value, dict):
+            continue
+        if "items" in value and isinstance(value["items"], dict):
+            # 格式 A: schema definition with items wrapper
+            for ik, iv in value["items"].items():
+                flat[ik] = iv
+        else:
+            # 格式 B: group 容器只有字段, 无 items 包装
+            is_schema_def = any(mk in value for mk in ("description", "type", "hint", "default", "obvious_hint"))
+            if not is_schema_def:
+                # 普通 user-data group, 展平
+                for ik, iv in value.items():
+                    if ik not in flat:  # 不覆盖已有顶层 key
+                        flat[ik] = iv
+    return flat
+def _read_file_bytes_sync(path: str) -> bytes:
+    """供 asyncio.to_thread 调用的同步读文件。"""
+    with open(path, "rb") as f:
+        return f.read()
+
 
 # ===========================================================================
 # 数据结构 (MmxResult 移到 mmx_runner.py — 在 import 区域透传过来)
@@ -1252,4 +1498,7 @@ class VisionTextBridgePlugin(Star):
 # : image url 工具已抽到 image_utils, 工具过滤到 tool_filter
 # 这里是 shim 留旧名, 方便  时期测试还能 import (向后兼容过渡)
 # ===========================================================================
+import fnmatch as _fnmatch
+def _glob_match(name: str, pattern: str) -> bool:
+    return _fnmatch.fnmatchcase(name, pattern)
 

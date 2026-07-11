@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-
 import json
 import sqlite3
 import time
@@ -24,7 +23,6 @@ if TYPE_CHECKING:
     from .main import VisionTextBridgePlugin
 
 from astrbot.api import logger
-import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
 
 # ---------------------------------------------------------------------------
 # 本地 helper (替代 deleted config_helpers.py)
@@ -35,6 +33,8 @@ def _safe_int(v, default):
     except (TypeError, ValueError):
         return default
 
+
+import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
 import provider_registration  # : smart_imagechat_hub 兼容
 
 

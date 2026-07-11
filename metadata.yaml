@@ -3,7 +3,6 @@ display_name: 图片转文字 — 图像理解桥接
 desc: 拦截 LLM 请求中的图片，调用 MiniMax CLI 图像理解后以【图片：理解内容】格式替换，再转发给对话模型。
 short_desc: 把图片转成文本再喂给 LLM。
 version: 1.1.0
-author: "uuutt"
 repo: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge
 astrbot_version: ">=4.0.0"
 support_platforms:

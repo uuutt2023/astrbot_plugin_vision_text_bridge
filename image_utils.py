@@ -5,7 +5,9 @@ API: _is_cacheable_url / extract_image_url / collect_image_urls_from_components 
 """
 
 from __future__ import annotations
+
 from typing import Any, Iterable
+
 
 # ---------------------------------------------------------------------------
 # 检测 / 提取
@@ -20,6 +22,7 @@ def is_image_url_part(part: Any) -> bool:
     if isinstance(part, dict):
         return part.get("type") == "image_url"
     return getattr(part, "type", None) == "image_url"
+
 
 def extract_url_from_item(item: Any) -> str:
     """从 image_url 类型的 part / dict 取 URL。
@@ -43,6 +46,7 @@ def extract_url_from_item(item: Any) -> str:
         return iu
     return getattr(iu, "url", "") or ""
 
+
 def extract_urls_from_parts(parts: Iterable[Any]) -> list[str]:
     """从 parts list 抽全部非空 URL。"""
     urls: list[str] = []
@@ -51,6 +55,7 @@ def extract_urls_from_parts(parts: Iterable[Any]) -> list[str]:
         if u:
             urls.append(u)
     return urls
+
 
 def extract_urls_from_context_list(content_list: Any) -> list[str]:
     """从 ``req.contexts[i].content`` list 抽 image_url 字段的 URL。"""
@@ -64,6 +69,7 @@ def extract_urls_from_context_list(content_list: Any) -> list[str]:
                 urls.append(u)
     return urls
 
+
 # ---------------------------------------------------------------------------
 # 类型判定
 # ---------------------------------------------------------------------------
@@ -74,6 +80,7 @@ def is_data_url(url: str) -> bool:
     只看前 64 字符就够 — data URL header 都很短。
     """
     return bool(url) and url.startswith("data:image/") and ";base64," in url[:64]
+
 
 # ---------------------------------------------------------------------------
 # 链末 hook 用: 按条件删 image_url 字段
@@ -136,6 +143,7 @@ def strip_image_urls(req: Any, only_data_url: bool) -> int:
 
     return removed
 
+
 # ---------------------------------------------------------------------------
 # 从 message chain 里取图 (event.message_obj.message)
 # ---------------------------------------------------------------------------
@@ -146,6 +154,7 @@ _NESTED_TYPES = frozenset((
 ))
 _NESTED_ATTRS = ("message", "messages", "content", "data", "nodes", "_message", "_data")
 
+
 async def _extract_image_url_from_component(comp) -> str | None:
     """从一个 component 取图片本地路径 (调 convert_to_file_path)。失败返 None。"""
     if not callable(getattr(comp, "convert_to_file_path", None)):
@@ -154,6 +163,7 @@ async def _extract_image_url_from_component(comp) -> str | None:
         return await comp.convert_to_file_path()
     except Exception:
         return None
+
 
 async def collect_image_urls_from_components(components, dedupe: list[str] | None = None) -> int:
     """递归从 message chain (顶层 + 嵌套 reply/Reference/forward/node) 拿图片。
@@ -181,9 +191,11 @@ async def collect_image_urls_from_components(components, dedupe: list[str] | Non
                 added += 1
     return added
 
+
 """image_meta.py - 图片元数据提取 (尺寸/格式)。"""
 
-##MERGE_KEEP_FIRST##import io
+
+import io
 from typing import Any
 
 #  AstrBot 把 Pydantic TextPart 作为 content part 注入。
@@ -192,6 +204,7 @@ try:
     from astrbot.core.agent.message import TextPart  # type: ignore
 except Exception:  # noqa: BLE001
     TextPart = None  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # TextPart 包装
@@ -205,6 +218,7 @@ def to_text_part(part_dict: dict) -> Any:
     if TextPart is not None and isinstance(part_dict, dict):
         return TextPart(text=part_dict.get("text", ""))
     return part_dict
+
 
 # ---------------------------------------------------------------------------
 # mime / w / h 嗅探
@@ -243,6 +257,7 @@ def sniff_image_meta(data: bytes) -> tuple[str, int, int]:
         return _sniff_webp(data)
     return "", 0, 0
 
+
 def _sniff_jpeg(data: bytes) -> tuple[str, int, int]:
     """JPEG 复杂点 — SOF marker 嵌 w/h。返 (mime, w, h) 或 (mime, 0, 0) 失败。"""
     i = 2
@@ -258,6 +273,7 @@ def _sniff_jpeg(data: bytes) -> tuple[str, int, int]:
         i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
     return "image/jpeg", 0, 0
 
+
 def _sniff_webp(data: bytes) -> tuple[str, int, int]:
     """WEBP 容器, 内部 VP8 / VP8L / VP8X。返 (mime, w, h) 或 (mime, 0, 0) 失败。"""
     if data[12:16] == b"VP8 " and len(data) >= 30:
@@ -271,6 +287,7 @@ def _sniff_webp(data: bytes) -> tuple[str, int, int]:
         h = (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6)) + 1
         return "image/webp", w, h
     return "image/webp", 0, 0
+
 
 # ---------------------------------------------------------------------------
 # URL 缓存策略
@@ -303,14 +320,19 @@ def is_cacheable_url(url: str, config: Any) -> bool:
         return bool(config.get("cache_file_paths", True))
     return False
 
+
 """image_fetch.py - 图片下载 + 缓存 (用于 mmx 子进程读图)。"""
 
 
 import asyncio
+import os
+from urllib.parse import unquote
+
 
 def _read_file_bytes_sync(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()
+
 
 def _normalize_file_url(url: str) -> str:
     """``file:///C:/path`` → ``C:/path`` (Windows) / ``file:///foo`` → ``/foo`` (Unix)。"""
@@ -319,8 +341,10 @@ def _normalize_file_url(url: str) -> str:
         path = path[1:]
     return path
 
+
 def _is_windows_absolute(path: str) -> bool:
     return len(path) >= 2 and path[1] == ":"
+
 
 async def read_image_bytes(url: str) -> bytes:
     """读 url 指向的图片字节。
@@ -342,6 +366,7 @@ async def read_image_bytes(url: str) -> bytes:
     if lo.startswith("/") or _is_windows_absolute(lo):
         return await asyncio.to_thread(_read_file_bytes_sync, url)
     raise ValueError(f"unsupported scheme: {url[:50]}")
+
 
 # 保留模块级兼容 shim — 老测试可能 ``from main import _read_file_bytes_sync``
 __all__ = ["read_image_bytes", "_read_file_bytes_sync"]

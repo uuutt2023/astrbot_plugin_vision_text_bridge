@@ -19,6 +19,21 @@ import json
 import re
 from dataclasses import dataclass
 
+
+def _safe_int(v, default):
+    try:
+        return int(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_str(v, default=""):
+    if v is None:
+        return default
+    return str(v)
+
+
+
 from astrbot.api import logger
 
 
