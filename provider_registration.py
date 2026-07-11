@@ -42,6 +42,7 @@ def is_smart_imagechat_hub_installed() -> bool:
     if root is None:
         return False
     candidates = [
+        root / "data" / "plugins" / "astrbot_plugin_smart_imagechat_hub" / "main.py",
     ]
     for c in candidates:
         if c.is_file():

@@ -261,10 +261,6 @@ def _flatten_group_config(config: dict) -> dict:
                     if ik not in flat:  # 不覆盖已有顶层 key
                         flat[ik] = iv
     return flat
-def _read_file_bytes_sync(path: str) -> bytes:
-    """供 asyncio.to_thread 调用的同步读文件。"""
-    with open(path, "rb") as f:
-        return f.read()
 
 
 # ===========================================================================
@@ -457,8 +453,6 @@ class VisionTextBridgePlugin(Star):
                     )
         except Exception as e:
             logger.debug("[vision_text_bridge] webui_password 处理异常: %s", e)
-        except Exception as e:
-            logger.debug("[vision_text_bridge] DASHBOARD_PASSWORD env 处理异常: %s", e)
 
         # 1. SQLite 缓存
         try:

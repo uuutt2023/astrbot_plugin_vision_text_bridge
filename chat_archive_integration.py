@@ -129,10 +129,10 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
     """: 从图片字节解析宽高 (PNG/JPEG/WebP/GIF 头部读取)。"""
     if not data or len(data) < 24:
         return 0, 0
+    import struct
     # PNG
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         # IHDR: width (4B big-endian) + height (4B) at offset 16
-        import struct
         w, h = struct.unpack(">II", data[16:24])
         return int(w), int(h)
     # JPEG
@@ -146,7 +146,6 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
             i += 2
             # SOFn markers (start of frame)
             if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                import struct
                 h_, w_ = struct.unpack(">HH", data[i + 3:i + 7])
                 return int(w_), int(h_)
             # 跳过段
@@ -155,7 +154,6 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
         return 0, 0
     # GIF
     if data[:6] in (b"GIF87a", b"GIF89a"):
-        import struct
         w, h = struct.unpack("<HH", data[6:10])
         return int(w), int(h)
     # WebP (VP8X chunk)
@@ -169,7 +167,6 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
             h = 1 + (b[3] | (b[4] << 8) | (b[5] << 16))
             return int(w), int(h)
         if chunk == b"VP8 ":
-            import struct
             w, h = struct.unpack("<HH", data[26:30])
             return int(w), int(h)
         if chunk == b"VP8L":

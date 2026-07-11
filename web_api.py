@@ -273,12 +273,12 @@ async def api_stats(plugin):
     s["in_memory_cache_size"] = len(plugin._description_cache)
     s["memory_cache_ttl_seconds"] = int(plugin.config.get("memory_cache_ttl_seconds", 300) or 0)
     s["memory_cache_max_size"] = int(plugin.config.get("memory_cache_max_size", 500) or 0)
-    s["sqlite_cache_ttl_days"] = _safe_int(plugin.config, "sqlite_cache_ttl_days", 7)
-    s["sqlite_clean_interval_hours"] = _safe_int(plugin.config, "sqlite_clean_interval_hours", 1)
+    s["sqlite_cache_ttl_days"] = _safe_int(plugin.config.get("sqlite_cache_ttl_days", 7), 7)
+    s["sqlite_clean_interval_hours"] = _safe_int(plugin.config.get("sqlite_clean_interval_hours", 1), 1)
 
     # 下次后台清理预计时间 (UTC 戳)
     last = getattr(plugin, "_last_clean_at", 0.0) or 0.0
-    interval_h = _safe_int(plugin.config, "sqlite_clean_interval_hours", 1)
+    interval_h = _safe_int(plugin.config.get("sqlite_clean_interval_hours", 1), 1)
     if interval_h > 0 and last > 0:
         s["next_clean_at"] = last + interval_h * 3600
     else:
@@ -515,7 +515,7 @@ async def api_chat_completions(plugin, *args, **kwargs):
     except Exception:
         try:
             raw = (await quart_request.get_data(as_text=True)) or "{}"
-            body = _json.loads(raw)
+            body = json.loads(raw)
         except Exception as e:
             return err(f"无法解析请求体: {e}", 400)
     messages = body.get("messages") or []
