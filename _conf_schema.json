@@ -2,18 +2,18 @@
   "基础": {
     "description": "基础",
     "type": "object",
-    "hint": "插件总开关与执行优先级。",
+    "hint": "插件总开关与优先级。",
     "items": {
       "enabled": {
         "description": "启用插件",
         "type": "bool",
-        "hint": "关闭后, 插件不会拦截 LLM 请求, 也不会调用 MiniMax CLI 图像理解。",
+        "hint": "关闭后不拦截 LLM 请求。",
         "default": true
       },
       "priority": {
-        "description": "on_llm_request 钩子优先级",
+        "description": "钩子优先级",
         "type": "int",
-        "hint": "值越大越靠前。默认 100, 高于多数常见插件 (如 uni_nickname 的 0)。修改后需重启 AstrBot 生效。",
+        "hint": "越大越靠前，默认 100，重启生效。",
         "default": 100
       }
     }
@@ -21,37 +21,37 @@
   "MiniMax CLI": {
     "description": "MiniMax CLI",
     "type": "object",
-    "hint": "调用 mmx vision describe 所需的认证与子进程配置。",
+    "hint": "mmx vision describe 认证与超时。",
     "items": {
       "mmx_path": {
-        "description": "mmx 可执行文件路径",
+        "description": "mmx 路径",
         "type": "string",
-        "hint": "留空时从 PATH 自动查找 mmx。安装方式: npm install -g mmx-cli。",
+        "hint": "留空从 PATH 自动查找。安装: npm install -g mmx-cli。",
         "default": ""
       },
       "minimax_api_key": {
         "description": "MiniMax API Key",
         "type": "string",
-        "hint": "在 MiniMax 开放平台 Token Plan 页面获取 sk- 开头的 API Key。加载时会用 mmx auth login --api-key 自动登录; 已登录或 Key 留空时跳过。",
+        "hint": "MiniMax 开放平台获取 sk- 开头的 Key。",
         "obvious_hint": true,
         "default": ""
       },
       "auto_login": {
-        "description": "加载时自动登录 mmx",
+        "description": "自动登录 mmx",
         "type": "bool",
-        "hint": "开启后, 用 minimax_api_key 执行 mmx auth login。已登录或 Key 留空时跳过。",
+        "hint": "加载时用 minimax_api_key 执行 mmx auth login。",
         "default": true
       },
       "auto_install_cli": {
-        "description": "找不到 mmx 时自动安装 mmx-cli",
+        "description": "自动安装 mmx-cli",
         "type": "bool",
-        "hint": "默认开启。需系统装 Node.js/npm, 且 AstrBot 进程有全局安装权限。装失败时跳 warning + 详细错误信息, 不会崩溃。安装中 1-3 分钟。",
+        "hint": "找不到 mmx 时自动装到插件本地目录。需 Node.js/npm。",
         "default": true
       },
       "command_timeout": {
-        "description": "单次 mmx vision describe 超时（秒）",
+        "description": "单次超时（秒）",
         "type": "int",
-        "hint": "图像理解通常 10-30 秒; 大图或慢网络建议调高。",
+        "hint": "通常 10-30 秒，大图建议调高。",
         "default": 60
       }
     }
@@ -59,12 +59,12 @@
   "并发": {
     "description": "并发",
     "type": "object",
-    "hint": "单条消息内图片并行调用的数量。",
+    "hint": "单条消息内并行图片数。",
     "items": {
       "max_concurrent_vision": {
-        "description": "单条消息最多并发处理的图片数",
+        "description": "最大并发数",
         "type": "int",
-        "hint": "超过这个数量的图片会按串行处理。建议 1-4, 避免触发 MiniMax API 限流。",
+        "hint": "建议 1-4，避免 API 限流。",
         "default": 3
       }
     }
@@ -72,36 +72,36 @@
   "图像理解": {
     "description": "图像理解",
     "type": "object",
-    "hint": "传给 mmx 的提示词和返回的占位文本。",
+    "hint": "mmx 提示词与输出格式。",
     "items": {
       "vision_prompt": {
-        "description": "传给 mmx vision describe 的提示词",
+        "description": "视觉理解提示词",
         "type": "text",
-        "hint": "默认是「保守描述」提示词: 要求 mmx 客观列出图中可见元素, 严禁猜测未明确显示的游戏/番剧/品牌/角色名, 不确定时明说「无法确定」。这能避免 mmx 凭背景知识编造游戏名。",
+        "hint": "要求 mmx 客观描述，严禁猜测游戏/角色名。",
         "default": "请客观描述图中可见的元素，列出主体人物/物品、场景背景、出现的文字（原文）、色调、风格。\n严禁猜测未明确显示的游戏/番剧/品牌/角色名称——如果不能从图中明确看出，请说'无法确定'。\n描述中只能包含你看到的事实，不要补充背景知识或推断。"
       },
       "image_placeholder_template": {
         "description": "图片占位符模板",
         "type": "string",
-        "hint": "支持 {index}（图片序号, 从 1 开始）和 {description}（mmx 返回的描述）。默认: [Image {index} 描述] {description}。本占位符作为 user message 的 content block 注入到 extra_user_content_parts (不是 prompt 字符串), 防止其他插件重写 prompt 时丢失。",
+        "hint": "支持 {index} 和 {description} 变量。",
         "default": "[Image {index} 描述] {description}"
       },
       "max_description_length": {
-        "description": "单张图片描述的最大字符数",
+        "description": "描述最大字符数",
         "type": "int",
-        "hint": "超过会被截断, 避免 LLM 输入过长导致成本飙升或超出上下文窗口。0 表示不限制。",
+        "hint": "超长截断省 token。0 = 不限制。",
         "default": 800
       },
       "failure_message": {
-        "description": "图像理解失败时的占位文本",
+        "description": "失败占位文本",
         "type": "string",
-        "hint": "支持 {index}、{error}。默认: [Image {index} 描述] 理解失败: {error}",
+        "hint": "支持 {index}、{error} 变量。",
         "default": "[Image {index} 描述] 理解失败: {error}"
       },
       "strip_mmx_markdown": {
-        "description": "清理 mmx 返回的 markdown 噪音（**加粗**/列表前缀/多空行）",
+        "description": "清理 markdown 噪音",
         "type": "bool",
-        "hint": "默认开。关闭后会保留 mmx 的原始 markdown 输出。典型响应 520 字符可压到 380 字符, 省 25-30% token。",
+        "hint": "去掉加粗/列表前缀/多余空行，省 ~25% token。",
         "default": true
       }
     }
@@ -109,48 +109,48 @@
   "缓存": {
     "description": "缓存",
     "type": "object",
-    "hint": "图像理解结果缓存策略: 内存热缓存 + SQLite 持久化缓存。",
+    "hint": "内存热缓存 + SQLite 持久化。",
     "items": {
       "cache_descriptions": {
-        "description": "启用描述缓存",
+        "description": "启用缓存",
         "type": "bool",
-        "hint": "开启后, 相同图片不会重复调用 mmx, 显著降低耗时与 API 成本。使用图片内容 md5 作为缓存 key, file:// 临时路径也能命中 (看 cache_file_paths)。",
+        "hint": "相同图不重复调 mmx，以图片内容 md5 为 key。",
         "default": true
       },
       "cache_file_paths": {
-        "description": "缓存 file:// 本地临时文件",
+        "description": "缓存 file:// 本地文件",
         "type": "bool",
-        "hint": "QQ 群聊场景下 AstrBot 会把收到的图存为本地临时文件 (file:///AstrBot/data/temp/...), 默认会进入缓存。关闭后 file:// 路径不缓存, 只缓存 http(s) URL。",
+        "hint": "关掉后只缓存 http(s) URL。",
         "default": true
       },
       "max_b64_size_kb": {
-        "description": "SQLite 存图片 base64 的上限（KB）",
+        "description": "base64 存储上限（KB）",
         "type": "int",
-        "hint": "超过这个大小的图片**不**存 base64（description 仍然存）。如果检测到 chat_archive 插件, 缩略图走 chat_archive web_cache。0 表示不限制 (不推荐)。",
+        "hint": "超限不存缩略图（描述仍存）。0 = 不限制。",
         "default": 2048
       },
       "memory_cache_ttl_seconds": {
-        "description": "内存热缓存有效期（秒）",
+        "description": "内存缓存 TTL（秒）",
         "type": "int",
-        "hint": "超过这个时间未被访问的图片描述会从内存中清除（不删 SQLite）。0 = 不过期。建议 300。",
+        "hint": "0 = 不过期。建议 300。",
         "default": 300
       },
       "memory_cache_max_size": {
-        "description": "内存热缓存最大条数（LRU 淘汰）",
+        "description": "内存缓存最大条数",
         "type": "int",
-        "hint": "超过这个条数会淘汰最久未访问的项。0 = 不限制 (不推荐, 会 OOM)。",
+        "hint": "LRU 淘汰。0 = 不限制（不推荐）。",
         "default": 500
       },
       "sqlite_cache_ttl_days": {
-        "description": "SQLite 缓存有效期（天）",
+        "description": "SQLite 缓存 TTL（天）",
         "type": "int",
-        "hint": "超过这个天数的 SQLite 缓存会被自动清理。0 = 不过期。推荐 7。",
+        "hint": "0 = 不过期。建议 7。",
         "default": 7
       },
       "sqlite_clean_interval_hours": {
-        "description": "SQLite 过期清理任务间隔（小时）",
+        "description": "清理间隔（小时）",
         "type": "int",
-        "hint": "后台多久跑一次 clean_expired。0 = 启动时清理一次, 关闭后台任务。",
+        "hint": "0 = 仅启动时清理一次。",
         "default": 1
       }
     }
@@ -158,24 +158,24 @@
   "输入处理": {
     "description": "输入处理",
     "type": "object",
-    "hint": "从哪些字段扫描图片, 以及链末兜底策略。",
+    "hint": "图片来源扫描与链末兜底。",
     "items": {
       "include_history": {
-        "description": "处理历史对话中的图片",
+        "description": "处理历史图片",
         "type": "bool",
-        "hint": "开启后, 会扫描 req.contexts 历史记录中的图片并替换为文本。关闭时只处理当前用户消息里的图片。",
+        "hint": "扫描 req.contexts 历史记录中的图。",
         "default": false
       },
       "include_extra_parts": {
-        "description": "处理 extra_user_content_parts 中的图片",
+        "description": "处理 extra_parts 图片",
         "type": "bool",
-        "hint": "开启后, 会扫描 req.extra_user_content_parts 中的图片并替换为文本。多数场景下 AstrBot 把图片放在 image_urls 字段, 可关闭以提升性能。",
+        "hint": "多数场景图在 image_urls，可关掉省性能。",
         "default": true
       },
       "strip_all_image_urls_in_fallback": {
-        "description": "链末兜底: 删除所有 image_url（不仅是 data:base64）",
+        "description": "链末删除全部 image_url",
         "type": "bool",
-        "hint": "默认关闭, 仅删除 data:image/...;base64 残留。开启后, 链末钩子删除所有 image_url 组件 (不区分 URL 形式), 避免 LLM 报 'unknown variant image_url' 400 错误。代价: 主钩子未成功转述的图片信息会丢失。",
+        "hint": "默认仅删 data:base64 残留。",
         "default": false
       }
     }
@@ -183,18 +183,18 @@
   "LLM 提示": {
     "description": "LLM 提示",
     "type": "object",
-    "hint": "向 LLM 注入的额外提示, 引导其严格基于图片描述回答, 不补背景知识。",
+    "hint": "引导 LLM 严格基于图片描述回答。",
     "items": {
       "inject_system_prompt_guidance": {
-        "description": "向 system_prompt 注入「严格引用图片描述」提示",
+        "description": "注入引用提示",
         "type": "bool",
-        "hint": "开启后, 插件会向 req.system_prompt 追加一段指示, 告诉 LLM 严格基于 user message 中的 [Image 1 描述] 等标记的描述回答, 不要凭印象猜测游戏名/补充背景知识。默认开启。",
+        "hint": "追加一段指示让 LLM 基于 [Image N 描述] 回答。",
         "default": true
       },
       "inject_caption_text_to_system_prompt": {
-        "description": "同时把图说本身也注入到 system_prompt（冗余防覆盖）",
+        "description": "图说冗余注入 system_prompt",
         "type": "bool",
-        "hint": "图说默认已在 user message 的 extra_user_content_parts 中, 默认 False 节省 token。如果你的部署环境里某个插件连 user message 都重写 (极端情况), 可开启此选项把图说复制一份到 system_prompt。",
+        "hint": "极端情况下防其他插件覆盖 user message。默认关省 token。",
         "default": false
       }
     }
@@ -202,30 +202,30 @@
   "跨插件兼容": {
     "description": "跨插件兼容",
     "type": "object",
-    "hint": "与其他 AstrBot 插件协同的选项 (chat_plus, chat_archive, AngelHeart)。",
+    "hint": "chat_plus / chat_archive / AngelHeart 协同。",
     "items": {
       "tool_filter_mode": {
-        "description": "工具过滤器模式",
+        "description": "工具过滤模式",
         "type": "string",
-        "hint": "off = 不过滤; whitelist = 只保留列表里的工具; blacklist = 删除列表里的工具。默认 off。",
+        "hint": "off / whitelist / blacklist。",
         "default": "off"
       },
       "tool_filter_names": {
-        "description": "工具过滤名单（逗号分隔）",
+        "description": "过滤工具名单",
         "type": "string",
-        "hint": "配合 tool_filter_mode 使用。支持通配符 * (如 archive_*, pixiv_*, angel_*)。例: call_maid,set_user_nickname,archive_*,pixiv_*,angel_*,astrbot_execute_shell,astrbot_execute_python,astrbot_file_*,astrbot_grep_tool,future_task,send_message_to_user。",
+        "hint": "逗号分隔，支持通配符 *。",
         "default": ""
       },
       "tool_filter_extra_key": {
-        "description": "要从 event.get_extra() 取的待注入工具集 key（chat_plus 内部 key）",
+        "description": "待注入工具集 key",
         "type": "string",
-        "hint": "默认清 chat_plus 写入的 _group_chat_plus_func_tool。如果不是改它可换 key 或留空。",
+        "hint": "chat_plus 内部 key，默认 _group_chat_plus_func_tool。",
         "default": "_group_chat_plus_func_tool"
       },
       "keep_provider_modality_as_is": {
-        "description": "不修改 provider modalities（取消「骗 AstrBot」行为）",
+        "description": "保持 provider modality",
         "type": "bool",
-        "hint": "默认 false: 插件加载时给所有 provider 补上 image modality 标签, 避免 AstrBot 切 fallback provider。依赖: 本插件已在 on_llm_request 钩子入口清空 image_urls, 所以主 provider 不会被发图。开启此项后, 如果你的主 provider 真的不支持图, AstrBot 会切到 fallback (可能不是预期行为)。",
+        "hint": "默认补 image 标签防 fallback。开启后不做修改。",
         "default": false
       }
     }
@@ -233,36 +233,36 @@
   "日志": {
     "description": "日志",
     "type": "object",
-    "hint": "verbose 总开关 + 4 个细粒度开关。调试时不必 4 个都开, 定位到具体阶段后只开对应开关, 避免日志爆炸。",
+    "hint": "冗余日志开关，调试用。",
     "items": {
       "verbose_logging": {
-        "description": "冗余日志总开关（调试用）",
+        "description": "总开关",
         "type": "bool",
-        "hint": "开启后, 下面 4 个细粒度 verbose_* 开关全部生效。",
+        "hint": "开启后所有细粒度开关生效。",
         "default": false
       },
       "verbose_hook_trace": {
-        "description": "[细粒度] 钩子入口/出口、处理图片数量",
+        "description": "钩子追踪",
         "type": "bool",
-        "hint": "on_llm_request 钩子每次触发都输出一行 INFO 日志; 链末钩子也会报清理了哪些残留。",
+        "hint": "钩子入口/出口、图片数量。",
         "default": false
       },
       "verbose_mmx_subprocess": {
-        "description": "[细粒度] mmx 子进程完整命令 + stdout/stderr",
+        "description": "mmx 子进程",
         "type": "bool",
-        "hint": "打印 mmx 调用的完整命令行（脱敏）、stdout/stderr 完整内容。mmx 调用失败排错用。",
+        "hint": "完整命令行与 stdout/stderr。",
         "default": false
       },
       "verbose_cache_trace": {
-        "description": "[细粒度] 缓存命中/失效/写入",
+        "description": "缓存追踪",
         "type": "bool",
-        "hint": "内存缓存命中 / SQLite 缓存命中 / 写 SQLite 缓存 都报。调试「为什么不命中缓存」用。",
+        "hint": "命中/失效/写入日志。",
         "default": false
       },
       "verbose_id_computation": {
-        "description": "[细粒度] image_id (md5) 计算过程",
+        "description": "image_id 计算",
         "type": "bool",
-        "hint": "读图字节、计算 md5、退路原因都会报。调试「同一张图为什么不同 id」用。",
+        "hint": "md5 计算过程与退路原因。",
         "default": false
       }
     }
@@ -270,111 +270,113 @@
   "脱敏": {
     "description": "脱敏",
     "type": "object",
-    "hint": "日志中对 API Key、URL token 等敏感字段脱敏。",
+    "hint": "日志敏感字段脱敏。",
     "items": {
       "redact_sensitive": {
-        "description": "对 API Key、URL token 等敏感字段脱敏",
+        "description": "脱敏",
         "type": "bool",
-        "hint": "默认开启。关闭后日志会输出完整的图片 URL (可能含有签名参数)。",
+        "hint": "关闭后日志输出完整 URL。",
         "default": true
       }
     }
   },
   "权限控制": {
     "type": "object",
-    "description": "权限控制 - 控制插件在哪些群/用户生效",
+    "description": "权限控制",
+    "hint": "群/用户白名单与私聊限制。",
     "items": {
       "enable_group_whitelist": {
-        "description": "启用群白名单 (开启后仅白名单内群会被处理)",
+        "description": "启用群白名单",
         "type": "bool",
-        "hint": "默认关闭, 插件处理所有群消息。开启后, 只有 group_whitelist 列表内的群会被拦截。",
+        "hint": "仅白名单内的群生效。",
         "default": false
       },
       "group_whitelist": {
-        "description": "群白名单列表",
+        "description": "群白名单",
         "type": "list",
-        "hint": "QQ 群号列表, 多个用英文逗号或换行分隔。enable_group_whitelist=True 时生效。",
+        "hint": "QQ 群号列表。",
         "default": []
       },
       "enable_user_whitelist": {
-        "description": "启用用户白名单 (开启后仅白名单内用户会被处理)",
+        "description": "启用用户白名单",
         "type": "bool",
-        "hint": "默认关闭, 插件处理所有用户消息。开启后, 只有 user_whitelist 列表内的用户会被拦截。",
+        "hint": "仅白名单内的用户生效。",
         "default": false
       },
       "user_whitelist": {
-        "description": "用户白名单列表 (QQ 号)",
+        "description": "用户白名单",
         "type": "list",
-        "hint": "QQ 号列表, 多个用英文逗号或换行分隔。enable_user_whitelist=True 时生效。",
+        "hint": "QQ 号列表。",
         "default": []
       },
       "private_chat_only": {
-        "description": "仅私聊生效 (群聊消息完全跳过)",
+        "description": "仅私聊",
         "type": "bool",
-        "hint": "开启后, 群聊消息直接跳过 (不拦截, 也不消耗 mmx 资源)。",
+        "hint": "群聊消息跳过。",
         "default": false
       }
     }
   },
   "OpenAI 兼容 provider": {
-    "description": "把本插件注册成 OpenAI 兼容 LLM 提供商, 接管图像理解。其他插件/代码通过 provider_manager 调用时, 本插件接 HTTP → 调 mmx → 返图像描述。",
+    "description": "OpenAI 兼容 provider",
+    "type": "object",
+    "hint": "把本插件注册为 OpenAI 兼容提供商，供其他插件调用。",
     "items": {
       "webui_username": {
         "description": "Dashboard 用户名",
         "type": "string",
         "default": "admin",
-        "hint": "用于 AstrBot webui 登录的用户名（默认 admin）。如果 framework 自带的 dashboard 用户名不同, 在这里覆盖。"
+        "hint": "默认 admin。"
       },
       "webui_password": {
         "description": "Dashboard 密码",
         "type": "string",
         "default": "",
-        "hint": "用于 AstrBot webui 登录的密码。framework dashboard schema 默认不暴露此字段, 在本插件这里设置。plugin 启动时会自动同步到框架 dashboard.password, 用于 auto_register via webui API。"
+        "hint": "用于 webui API 登录注册 provider。"
       },
       "openapi_key": {
-        "description": "OpenAPI 开发者访问密钥 (替代密码登录)",
+        "description": "OpenAPI 访问密钥",
         "type": "string",
         "default": "",
         "obvious_hint": true,
-        "hint": "在 Dashboard「设置 → OpenAPI」创建 Key, 粘贴到这里。使用 Bearer token 方式认证, 无需 username/password。优先级高于 webui_password。"
+        "hint": "在 Dashboard「设置→OpenAPI」创建。使用 Bearer token 认证，优先级高于 webui_password。"
       },
       "dashboard_port": {
-        "description": "独立 OpenAI 兼容 server 端口",
+        "description": "独立 server 端口",
         "type": "int",
-        "hint": "本插件启动一个独立 HTTP server 在 127.0.0.1:<端口> 接收 OpenAI 兼容的 chat completions 请求。绕过 AstrBot dashboard JWT 验证。默认 6188 (如果端口被占用, plugin log 会 warn)。",
+        "hint": "默认 6188。",
         "default": 6188
       },
       "enabled": {
         "description": "启用端点",
         "type": "bool",
-        "hint": "暴露 /v1/chat/completions 与 /image/caption。",
+        "hint": "暴露 /v1/chat/completions。",
         "default": true
       },
       "auto_register": {
-        "description": "自动注册提供商",
+        "description": "自动注册",
         "type": "bool",
-        "hint": "启动时注册 vision_text_bridge_compat 到 AstrBot provider_manager。",
+        "hint": "启动时注册到 provider_manager。",
         "default": true
       },
       "api_key": {
         "description": "API Key",
         "type": "string",
-        "hint": "任意字符串, 本端点不校验。",
+        "hint": "任意占位字符串。",
         "default": "placeholder"
       },
       "model_name": {
-        "description": "模型名",
+        "description": "模型名称",
         "type": "string",
-        "hint": "下拉框显示名, 任意字符串。",
+        "hint": "显示名，任意字符串。",
         "default": "vision-bridge"
       },
       "caption_format": {
         "description": "返回格式",
         "type": "string",
-        "hint": "mmx (推荐) / json。",
+        "hint": "mmx（推荐）/ json。",
         "default": "mmx"
       }
-    },
-    "type": "object"
+    }
   }
 }

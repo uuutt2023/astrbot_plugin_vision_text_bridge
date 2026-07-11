@@ -1,23 +1,8 @@
-"""main.py - 插件入口 + 业务核心 + AstrBot 钩子实现。
-
-职责:
-  - 注册 plugin + 启动期初始化 (mmx / caption_cache / web API / 联动检测)
-  - 实现 on_llm_request 钩子 (priority=100): 拦截 + 描述 + 注入
-  - 实现 strip_residual_base64 链末钩子 (priority=-10000): 兜底清残留
-  - 业务核心: _describe_one / _process_request / _persist / _mark_providers_support_image
-  - 配置兼容: _flatten_group_config (处理 3 种 schema 格式)
-  - 跨插件兼容检测: _check_compatibility / _detect_smart_imagechat_hub / _auto_register_sih_provider
-
-MIT License
-"""
+"""main.py - 插件入口、业务核心与 AstrBot 钩子实现。"""
 
 from __future__ import annotations
 
-# : 如果报 'cannot import name X from image_utils' / 'name register is not defined' 等 import 错误:
-#   1. pkill -9 AstrBot
-#   2. rm -rf /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge/__pycache__
-#   3. 重启 AstrBot
-#   (__pycache__ 缓存了 stale .pyc — 手动清)
+# : import 报错清缓存
 
 import asyncio
 import base64
@@ -37,7 +22,7 @@ if str(_PLUGIN_DIR) not in sys.path:
 try:
     from astrbot.api import AstrBotConfig
     from astrbot.api import logger as _astr_logger
-except Exception:  # v4.26.4 偶发 logger 不存在 — 兜底
+except Exception:  # logger 可能不存在 — 兜底
     _astr_logger = None
 import logging
 logger = _astr_logger if _astr_logger is not None else logging.getLogger(__name__)
@@ -45,12 +30,12 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 try:
-    # : 把图说作为 Pydantic ContentPart 注入 req.extra_user_content_parts
+    # : ContentPart 注入
     from astrbot.core.agent.message import TextPart  # type: ignore
 except Exception:  # noqa: BLE001
     TextPart = None  # 测试沙箱/未来重命名兼容
 
-# : 同级模块直接 import (sys.path 已加, AstrBot + 测试沙箱都能解析)
+# : 同级模块直接 import
 
 from image_utils import (
     is_image_url_part as _is_image_url_part,
@@ -104,7 +89,7 @@ _sibling_cache = _load_sibling_module("caption_cache")
 CaptionCache = _sibling_cache.CaptionCache
 CaptionEntry = _sibling_cache.CaptionEntry
 
-# : 共享常量 (单一定义) — 跨模块 import 来源
+# : 共享常量跨模块来源
 from constants import (
     PLUGIN_NAME, DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX,
     OPENAI_COMPAT_PATH, IMAGE_CAPTION_PATH, PROVIDER_ID,
@@ -115,44 +100,29 @@ from constants import (
 # priority 在 import 时锁定，调配置后需重启 AstrBot。
 DEFAULT_PRIORITY = 100
 
-# Module-level: 预编译 bot 头像 URL 过滤 regex
-# 避免每个 hook 入口都 re.compile() (虽然 Python 内部有 cache, 但显式更快更清晰)
+# 预编译 bot 头像 URL 过滤 regex
 _BOT_AVATAR_PAT = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
 
-# : 预编译的 markdown 清理 regex 抽到 mmx_runner.py ()
+# : 正则见 mmx_runner
 
 
 class _MemoryCache:
-    """: 内存热缓存——带 TTL + LRU size 上限。
-
-    - 防御资源泄露：之前是裸 dict，永远不会过期也不会被淘汰
-    - 过期处理：get() 检查 ``expire_at``（同 _sibling_cache.CaptionCache 5 分钟去重窗口一致）
-    - LRU 淘汰：set 越上限删最久未访问项
-    - 本类是单线程使用（asyncio 事件循环），不需要锁
-    """
-
+    """: 内存热缓存 — TTL + LRU size 上限。"""
     __slots__ = ("_m", "_max_size", "_ttl")
 
     def __init__(self, ttl_seconds: int, max_size: int):
-        # dict 是有序的（Python 3.7+），插入/更新顺序即为 LRU 顺序
         self._m: dict[str, tuple[str, float]] = {}
         self._max_size = max(1, int(max_size))
         self._ttl = max(0, int(ttl_seconds))
 
     def get(self, key: str) -> str | None:
-        """取并刷新 LRU 顺序；过期或不存在返 None。"""
         v = self._m.get(key)
         if v is None:
             return None
         text, expire_at = v
         if self._ttl > 0 and time.time() >= expire_at:
-            # 过期，懒删除
-            self._m.pop(key, None)
+            self._m.pop(key, None)  # 过期懒删除
             return None
-        # 刷新 LRU：pop + set（Python dict 重赋值同 key **不**会动插入顺序）
-        if self._max_size > 0:
-            self._m.pop(key, None)
-            self._m[key] = v
         return text
 
     def put(self, key: str, value: str) -> None:
@@ -162,7 +132,6 @@ class _MemoryCache:
             self._m.pop(key, None)
         expire = time.time() + self._ttl if self._ttl > 0 else float("inf")
         self._m[key] = (value, expire)
-        # 越上限——从头开始删（最久未访问）
         while len(self._m) > self._max_size:
             oldest = next(iter(self._m))
             self._m.pop(oldest, None)
@@ -180,7 +149,7 @@ class _MemoryCache:
     def __contains__(self, key: str) -> bool:
         return self.get(key) is not None
 
-    # 字典语法糖——允许 ``cache[key] = v`` / ``cache[key]`` 老用法
+    # 字典语法糖
     def __setitem__(self, key: str, value: str) -> None:
         self.put(key, value)
 
@@ -192,7 +161,7 @@ class _MemoryCache:
 
 
 def _read_plugin_version() -> str:
-    """从 metadata.yaml 读版本号（避免 @register 装饰器硬编码跟 metadata.yaml 脱节）。"""
+    """从 metadata.yaml 读版本号。"""
     try:
         import yaml  # AstrBot 依赖 PyYAML
         meta_path = Path(__file__).resolve().parent / "metadata.yaml"
@@ -203,7 +172,7 @@ def _read_plugin_version() -> str:
         return "0.0.0"
 
 
-# : 配置读取 helper——原模式 ``int(self.config.get(k, d) or d)`` 重复 15+ 次
+# : 配置读取 helper
 def _cfg_int(config, key: str, default: int) -> int:
     v = config.get(key, default)
     if v is None or v == "":
@@ -225,22 +194,7 @@ PLUGIN_VERSION = _read_plugin_version()
 
 
 def _flatten_group_config(config: dict) -> dict:
-    """: 展平嵌套 group config — 旧读法兼容。
-
-    支持 3 种输入格式 (AstrBot 不同版本可能给不同格式):
-
-    格式 A: ``{"基础": {"description": "...", "items": {"enabled": True, "priority": 100}}}``
-      - 新 schema 完整定义 (有 items 键)
-      - 展平后: ``{"基础": {...}, "enabled": True, "priority": 100}``
-
-    格式 B: ``{"MiniMax CLI": {"minimax_api_key": "sk-xxx", "auto_login": True}}``
-      - AstrBot 已把 schema 解析完, 只剩用户填的字段 (无 items)
-      - 展平后: ``{"MiniMax CLI": {...}, "minimax_api_key": "sk-xxx", "auto_login": True}``
-
-    格式 C: ``{"minimax_api_key": "sk-xxx", "enabled": True}``
-      - 完全扁平 (老 schema 或无 group 包装)
-      - 不动
-    """
+    """: 展平嵌套 group config，兼容 3 种 schema 格式。"""
     if not isinstance(config, dict):
         return config
     flat = dict(config)  # 浅拷贝, 保留 group 引用
@@ -278,12 +232,7 @@ def _flatten_group_config(config: dict) -> dict:
     PLUGIN_VERSION,
 )
 class VisionTextBridgePlugin(Star):
-    """Vision -> Text 桥接。
-
-    链路：on_llm_request 钩子 → 扫描三类图片来源 → 并发调 mmx → 描述以
-    ``req.extra_user_content_parts`` (content block 形式) 注入 user message →
-    从原字段移除 image_url → 链末 (priority=-10000) 兜底清残留。
-    """
+    """Vision -> Text 桥接，拦截图片消息并调用 mmx 生成文字描述。"""
 
     # mmx 同一错误只诊断一次，避免刷屏
     _DIAGNOSED: set[str] = set()
@@ -292,12 +241,7 @@ class VisionTextBridgePlugin(Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        # : 展平嵌套 group config, 后续 self.config.get("X") 仍能命中
-        #   schema v1.0.0+ 改为 {"基础": {"items": {"enabled": True}}, "缓存": {"items": {...}}}
-        #   flatten 后: {"基础": {"items": {...}, "enabled": True, ...}, "缓存": {...}, "enabled": True, ...}
-        #   老读法兼容, webui 可读嵌套 group
         self.config = _flatten_group_config(config) if isinstance(config, dict) else config
-        # mmx 解析顺序: 1. 配置 mmx_path 2. plugin 本地装 .mmx/.bin/mmx 3. 系统 PATH
         self.mmx_path = (self.config.get("mmx_path") or "").strip()
         if not self.mmx_path:
             local = _find_local_mmx_fn(str(_PLUGIN_DIR))
@@ -308,18 +252,15 @@ class VisionTextBridgePlugin(Star):
             self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
         self.npm_path = shutil.which("npm") or shutil.which("npm.cmd")
         self._caption_cache: CaptionCache | None = None
-        # : 内存热缓存改为 _MemoryCache——带 TTL + LRU size 上限
-        # ttl_seconds=0 表示不过期，max_size=0 表示不限制；默认值在配置里调
+        # : 内存热缓存 — TTL + LRU size 上限
         self._description_cache: _MemoryCache = _MemoryCache(
             ttl_seconds=_cfg_int(self.config, "memory_cache_ttl_seconds", 300),
             max_size=_cfg_int(self.config, "memory_cache_max_size", 500),
         )
         self._vision_semaphore: asyncio.Semaphore | None = None
         self._configured_priority: int = self._resolve_priority()
-        # 跨 _describe_one -> _persist 复用刚读过的图片 bytes, 避免 mmx 后再读一次 (P0 优化)
         self._last_image_bytes: dict[str, bytes] = {}
         self._priority_locked_warning_emitted = False
-        # 钩子快照（主钩子入口设置，_process_request 消费；_process_request 也可独立调用）
         self._pending_urls: list[str] | None = None
         self._pending_parts: list[Any] | None = None
         self._pending_contexts: list[Any] | None = None
@@ -367,25 +308,18 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ 详细日志开关
 
     def _should_log(self, *flags: str) -> bool:
-        """任一 verbose_* 开关为 true 即开。verbose_logging 是总开关。
-
-        调试时不必 4 个开关都开，先开 ``verbose_logging`` 看全量；定位到具体
-        阶段后只开对应细粒度开关，避免日志爆炸。
-        """
+        """verbose_logging 总开关或任一细粒度开关为 true 即开。"""
         if self.config.get("verbose_logging", False):
             return True
         return any(bool(self.config.get(f"verbose_{f}", False)) for f in flags)
 
     def _vdebug(self, flag: str, msg: str, *args) -> None:
-        """: 细粒度调试日志 — 仅在 verbose_{flag} 或 verbose_logging 开启时打。
-
-        取代多处 ``if self._should_log("X"): logger.debug(...)`` 重复。
-        """
+        """: 细粒度调试日志。"""
         if self._should_log(flag):
             logger.debug(msg, *args)
 
     def _vinfo(self, flag: str, msg: str, *args) -> None:
-        """: 细粒度信息日志 — 同 _vdebug, 走 INFO 级别。"""
+        """: 细粒度信息日志。"""
         if self._should_log(flag):
             logger.info(msg, *args)
 
@@ -395,9 +329,7 @@ class VisionTextBridgePlugin(Star):
         max_concurrent = max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
 
-        # 1. plugin.config 'webui_password' → 同步到 framework dashboard.password
-        # (用户 16:38 要求: dashboard.password 字段不在 framework schema 暴露,
-        #  在本插件 schema 提供 webui_password 字段让用户手动输入)
+        # 同步 webui_password 到 framework dashboard
         try:
             cfg_pwd = (
                 self.config.get("webui_password")
@@ -454,7 +386,7 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.debug("[vision_text_bridge] webui_password 处理异常: %s", e)
 
-        # 1. SQLite 缓存
+        # SQLite 缓存初始化
         try:
             data_dir = self._get_plugin_data_dir()
             db_path = data_dir / "caption_cache.sqlite3"
@@ -467,15 +399,14 @@ class VisionTextBridgePlugin(Star):
             logger.exception("[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc)
             self._caption_cache = None
 
-        # 1.5 : 启动 SQLite 过期清理后台 task
+        # 启动 SQLite 过期清理后台 task
         if self._caption_cache is not None:
             try:
                 ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
                 interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
-                # 启动时先清一次（不管 interval）
                 if ttl_days > 0:
                     deleted = self._caption_cache.clean_expired(ttl_days)
-                    self._last_clean_at = time.time()  # : 供 webui 算下次清理
+                    self._last_clean_at = time.time()
                     if deleted > 0:
                         logger.info("[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
                 if interval_h > 0 and ttl_days > 0:
@@ -490,9 +421,7 @@ class VisionTextBridgePlugin(Star):
         except Exception as exc:
             logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
 
-        # 2.5 启动独立 OpenAI 兼容 server on 127.0.0.1:<openai_compat_port>
-        #     bypass framework legacy_router JWT 验证 (401 'Token 无效' 是因为 /api/plug/<plugin>/*
-        #     路由需要 JWT, openai SDK 发 Bearer placeholder 不匹配 → 报 401 'Token 无效')
+        # 启动独立 OpenAI 兼容 server (bypass framework JWT)
         if main_server is None:
             logger.warning("[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动")
         else:
@@ -548,14 +477,14 @@ class VisionTextBridgePlugin(Star):
             else:
                 await self._login_mmx(api_key)
 
-        # 4. 伪装 provider modality（防 AstrBot 切 fallback）
+        # 伪装 provider modality
         self._mark_providers_support_image()
 
-        # 5. 联动检测
+        # 联动检测
         self._check_compatibility()
-        # 6. external image caption 兼容检测 (smart_imagechat_hub 等)
+        # smart_imagechat_hub 兼容
         self._detect_smart_imagechat_hub()
-        # 7. smart_imagechat_hub OpenAI compatible provider 自动注册
+        # 自动注册 OpenAI compatible provider
         await self._auto_register_sih_provider()
 
     def _get_plugin_data_dir(self) -> Path:
@@ -568,10 +497,7 @@ class VisionTextBridgePlugin(Star):
         return p
 
     def _strip_image_fields_from_req(self, req) -> None:
-        """从 req 的 extra_user_content_parts + contexts 里剩除所有 image_url 字段。
-
-        调用场景: 主钩子入口 (_bridge_vision_to_text) 调。
-        """
+        """从 req 清除所有 image_url 字段。"""
         if req.extra_user_content_parts:
             req.extra_user_content_parts[:] = [p for p in req.extra_user_content_parts
                                                if not _is_image_url_part(p)]
@@ -587,7 +513,7 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ provider 伪装
 
     def _detect_smart_imagechat_hub(self) -> None:
-        """: 启动期检测 smart_imagechat_hub 是否安装 + 打印提示。"""
+        """: 启动期检测 smart_imagechat_hub 是否安装。"""
         try:
             installed = provider_registration.is_smart_imagechat_hub_installed()
         except Exception as e:
@@ -611,7 +537,7 @@ class VisionTextBridgePlugin(Star):
 
 
     async def _auto_register_sih_provider(self) -> None:
-        """: 启动期自动注册 OpenAI compatible provider (默认开, 让 smart_imagechat_hub 直接用)."""
+        """: 启动期自动注册 OpenAI compatible provider。"""
         if not (self.config.get("auto_register")
                 or self.config.get("auto_register_openai_compat_provider")
                 or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
@@ -630,23 +556,12 @@ class VisionTextBridgePlugin(Star):
         else:
             logger.warning("[vision_text_bridge] webui API 注册返回 False — 请检查 openapi_key 或 webui_password 配置")
 
-        # : 集中 log 由 _log_registered_instance (在 webui API 注册成功路径上自动调) 处理
+        # : 集中 log 由注册成功路径处理
         if ok:
             logger.debug("[vision_text_bridge] _auto_register_sih_provider 成功 — 5 字段集中 log 见 _log_registered_instance")
 
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
-        """: 检查 event 是否在权限范围内 (群白名单 / 用户白名单 / 仅私聊).
-
-        5 种模式 (按顺序判断, 任一不通过返 (False, reason)):
-          1. 群聊 + private_chat_only=True → "private_chat_only" (跳过群)
-          2. 群聊 + enable_group_whitelist=True + 群不在 whitelist → "group_not_in_whitelist"
-          3. 私聊 + enable_user_whitelist=True + 用户不在 whitelist → "user_not_in_whitelist"
-          4. enable_user_whitelist=True + 用户不在 whitelist → "user_not_in_whitelist" (群内)
-          5. 默认通过 (所有开关都关) → (True, "")
-
-        Returns:
-            (allowed, reason) - allowed=True 表示允许拦截; reason="" 或 skip 原因
-        """
+        """: 检查群白名单 / 用户白名单 / 仅私聊权限。"""
         try:
             # 拿 event 的群/用户信息
             msg = getattr(event, "message_obj", None) or getattr(event, "message", None)
@@ -682,13 +597,7 @@ class VisionTextBridgePlugin(Star):
             return True, ""
 
     def _mark_providers_support_image(self) -> None:
-        """给所有 provider 补 'image' modality 标签，骗 AstrBot 不切 fallback。
-
-        **为什么需要**：on_llm_request 钩子入口已清空 image_urls，但 AstrBot
-        在钩子**之前**就检查了 provider modality。本钩子只修改 provider 内存
-        里的 ``provider_config["modalities"]``，不会真发图给不支持图的 provider
-        （因为 image_urls 始终为空）。
-        """
+        """给所有 provider 补 'image' modality 标签，防 AstrBot 切 fallback。"""
         if self.config.get("keep_provider_modality_as_is", False):
             return
         try:
@@ -713,11 +622,7 @@ class VisionTextBridgePlugin(Star):
             logger.info("[vision_text_bridge] 已给 %d 个 provider 补 'image' modality", modified)
 
     def _collect_all_providers(self, ctx) -> list[Any]:
-        """收集所有 provider 对象 (兼容多版本 AstrBot API)。
-
-        优先从 ``ctx.provider_manager.providers`` 取；老版本没有 manager 时
-        从 ``_using_provider_id`` / ``default_provider_id`` + fallback_chat_models 反查。
-        """
+        """收集所有 provider 对象，兼容多版本 AstrBot API。"""
         providers: list[Any] = []
         manager = getattr(ctx, "provider_manager", None) or getattr(ctx, "providers", None)
         if manager is not None:
@@ -762,7 +667,7 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ 兼容性
 
     def _check_compatibility(self) -> None:
-        """检查已装插件并给优先级/兼容性提示。"""
+        """检查已装插件并给出兼容性提示。"""
         names = self._get_installed_plugin_names()
         if not names:
             return
@@ -838,8 +743,7 @@ class VisionTextBridgePlugin(Star):
     # 页面 API
     # =========================================================================
     def _register_web_apis(self) -> None:
-        """: web API 全部移到 :mod:`web_api` 模块,
-        handler 深度从 4 层 (闭包嵌闭包) 减到 1 层 (top-level handler(plugin))."""
+        """: web API 注册委托给 web_api 模块。"""
         import web_api
         web_api.register_all_routes(self.context, self)
 
@@ -896,10 +800,8 @@ class VisionTextBridgePlugin(Star):
                 max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
             )
 
-        # === 0) : 预先过滤待注入的工具集（chat_plus 之后才 merge）===
-        # chat_plus 会在 priority=-1 从 event.get_extra() 取待注入的 tool set 合并到 req.func_tool
-        # 我们 priority=100 先跑，把待合并的工具集里不该要的提前删掉
-        # 这样 chat_plus merge 进去的就是干净版
+        # === 0) 预先过滤待注入的工具集 ===
+        # chat_plus 在 priority=-1 才会 merge, 我们提前清理
         try:
             self._filter_tools_in_event(event, req)
         except Exception as e:
@@ -911,8 +813,7 @@ class VisionTextBridgePlugin(Star):
         saved_parts = list(req.extra_user_content_parts or []) if req.extra_user_content_parts else []
         saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
 
-        # 1a-pre) : 诊断日志——打印 saved_urls 原始来源，
-        # 查出是否有 bot 自己的头像 / at 段被误注入
+        # : 诊断日志 — 打印 saved_urls 原始来源
         if self._should_log("hook_trace"):
             logger.info(
                 "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
@@ -920,16 +821,8 @@ class VisionTextBridgePlugin(Star):
                 [u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u for u in saved_urls],
             )
 
-        # 1a) 从 event.message_obj 补提（ 防御 chat_plus 抽走图）
-        # : 递归扫描嵌套 (引用消息里包 image)
-        #
-        # 【重要】  同一个用户原图在 AstrBot 内部被存成 2 份：
-        #   - req.image_urls 里: compressed_xxx.jpg （压缩版、AstrBot 用于发送给 provider）
-        #   - event.message_obj 里: io_temp_img_xxx.jpg （原图、未压缩、供其他插件读）
-        # 两份内容不同 (压缩 vs 未压缩) → md5 不同 → 调 2 次 mmx 浪费 13s
-        #
-        # 正确做法: 只在 ``req.image_urls`` **空**时 (chat_plus 已抽走图) 才递归补
-        # event.message_obj——AstrBot 主动给到 image_urls 时, 不应重复补。
+        # 从 event.message_obj 补提（防御 chat_plus 抽走图）
+        # req.image_urls 空时才递归补，避免同一张图重复 mmx
         if event is not None and not saved_urls:
             try:
                 chain = getattr(getattr(event, "message_obj", None), "message", None)
@@ -944,10 +837,7 @@ class VisionTextBridgePlugin(Star):
                 if self._should_log("hook_trace"):
                     logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)
 
-        # : 过滤 AstrBot 框架 user @ bot 时注入的 bot avatar
-        # AstrBot 框架会主动把 bot 自己的头像 URL 塞到 req.image_urls
-        # (q.qlogo.cn/headimg_dl?dst_uin=... 的固定模式)
-        # 视觉理解 bot 头像没意义——跳过
+        # : 过滤 bot 头像 URL (q.qlogo.cn 固定模式)
         if saved_urls:
             filtered = [u for u in saved_urls if not (isinstance(u, str) and _BOT_AVATAR_PAT.search(u))]
             if len(filtered) != len(saved_urls):
@@ -958,11 +848,11 @@ class VisionTextBridgePlugin(Star):
                 )
                 saved_urls = filtered
 
-        # 1b) 清空
+        # 清空
         req.image_urls = []
         self._strip_image_fields_from_req(req)
 
-        # 1c) 存快照给 _process_request 读
+        # 存快照
         self._pending_urls = saved_urls
         self._pending_parts = saved_parts
         self._pending_contexts = saved_contexts
@@ -1009,8 +899,7 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.exception("[vision_text_bridge] 链末兜底异常: %s", e)
 
-        # === : 链末兜底删 func_tool（chat_plus priority=-1 跑过之后）===
-        # 即使主钩子 priority=100 没清干净，链末 priority=-10000 还能在最后扫一次
+        # === : 链末兜底删 func_tool ===
         try:
             mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
             if mode != "off":
@@ -1071,15 +960,7 @@ class VisionTextBridgePlugin(Star):
         self._pending_contexts = None
 
     async def _describe_urls(self, urls):
-        """: 并行调 mmx (并发度由 _describe_via_mmx 内部 _vision_semaphore 控制).
-
-        之前是串行 — 5 张图 5s/张 = 25s.
-        现在 asyncio.gather 让 mmx 并发跑, max_concurrent_vision 在 _describe_via_mmx
-        内部 _vision_semaphore 真正生效.
-
-        : 不要在 gather 任务内再次 acquire self._vision_semaphore —
-          _describe_via_mmx 已经做了, 外层再加会死锁 (value=1 时).
-        """
+        """: 并行调 mmx，并发度由 _vision_semaphore 控制。"""
         if not urls:
             return []
         # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
@@ -1087,18 +968,13 @@ class VisionTextBridgePlugin(Star):
         return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
 
     async def _describe_one(self, url: str) -> str:
-        """: 单张图的描述查找 — 内存缓存 → SQLite 缓存 → mmx.
-
-        P0 优化: 缓存命中时**完全跳过**下载图片 (md5 image_bytes 是昂贵 IO 操作).
-        群聊大量重复图场景下省一次 HTTP/磁盘读.
-        """
+        """: 内存缓存 → SQLite 缓存 → mmx 三级查找。"""
         url = (url or "").strip()
         if not url:
             return ""
         cacheable = self.config.get("cache_descriptions", True) and _is_cacheable_url(url, self.config)
 
-        # : 快路径 — URL 自身的 md5 当 id 查 (廉价, 不下载图)
-        #   即使后来 md5(image_bytes) 命中不同 id, 也能在内存缓存找到常见 case
+        # : 快路径 — URL md5 当 id 查
         if cacheable:
             quick_key = CaptionCache.make_id_from_url(url)
             # 1) 内存缓存
@@ -1117,7 +993,7 @@ class VisionTextBridgePlugin(Star):
                                     quick_key[:16], entry.hit_count)
                     return entry.description
 
-        # : 慢路径 — 真要 mmx 前必须算 md5(image_bytes) (防 content-based 重复)
+        # : 慢路径 — md5(image_bytes) 防内容重复
         cache_key, image_bytes = await self._compute_image_cache_key(url) if cacheable else (None, b"")
         if cacheable and cache_key:
             cache = getattr(self, "_last_image_bytes", None)
@@ -1125,7 +1001,7 @@ class VisionTextBridgePlugin(Star):
                 cache = self._last_image_bytes = {}
             cache[url] = image_bytes
 
-        # 再走一次真 key 命中检查 (与快路径不同, 内容 hash)
+        # 内容 hash 命中检查
         if cacheable and cache_key and cache_key != quick_key:
             if cache_key in self._description_cache:
                 self._last_image_bytes.pop(url, None)
@@ -1205,26 +1081,13 @@ class VisionTextBridgePlugin(Star):
     async def _persist(
         self, image_id: str, url: str, description: str, image_bytes: bytes = b"",
     ) -> None:
-        """写 SQLite 缓存（带 base64/mime/dim 元信息）。
-
-        优化: 调用方传 ``image_bytes`` (cache_key 算的时候已读) 时复用, 避免再读一次。
-        ``image_bytes=b""`` 时退到 _fetch_image_meta() 重读 (老路径, 兼容)。
-
-        .1: 改成 async 以便在 event loop 里正常 await ``_read_image_bytes``。
-        老版本用 ``asyncio.get_event_loop().run_until_complete`` 在 async 上下文
-        会抛 ``RuntimeError("This event loop is already running")``，再 fallback
-        到同步读 file:// — 但临时文件可能已被清理、/AstrBot 路径可能没读权限，
-        异常被 except 静默吞掉，导致 SQLite 写入了 description 但 base64 是空。
-        webui 看上去“缓存存在但没有缩略图”。
-        """
+        """写 SQLite 缓存，含 base64/mime/dim 元信息。"""
         if self._caption_cache is None:
             return
         b64, mime, w, h, size = await self._fetch_image_meta(url, image_bytes)
-        # 如果 chat_archive 装了, 本插件 SQLite 不存 image_b64 (省 DB 空间, 统一从 chat_archive 拿)
-        # 过期清理也交由 chat_archive 负责 (它每天扫 web_cache)
-        # chat_archive_integration 模块已在顶部 import
+        # chat_archive 安装时统一由它管理图片缓存
         if chat_archive_integration.is_chat_archive_installed():
-            b64 = ""  # : 单点缓存 - chat_archive 拥有图片
+            b64 = ""
         try:
             self._caption_cache.put(
                 image_id=image_id, url=url, description=description,
@@ -1243,12 +1106,7 @@ class VisionTextBridgePlugin(Star):
     async def _fetch_image_meta(
         self, url: str, preloaded: bytes = b"",
     ) -> tuple[str, str, int, int, int]:
-        """读图片字节 + 算 base64/mime/dim/size。
-
-        优化: ``preloaded`` 非空时跳过读字节, 直接从预读 bytes 算 meta。
-        失败返 5 个空值 (b64='', mime='', w=0, h=0, size=0)。
-        读字节失败 **仅** 影响缩略图 (base64/mime/dim), description 仍正常写入 SQLite。
-        """
+        """读图片字节并算 base64/mime/dim/size。失败只影响缩略图。"""
         if preloaded:
             return self._build_meta_from_bytes(preloaded)
         try:
@@ -1269,7 +1127,7 @@ class VisionTextBridgePlugin(Star):
         """从图片字节算 (b64, mime, w, h, size)。同步、不读 I/O。"""
         size = len(data)
         mime, w, h = _sniff_image_meta(data)
-        # : 大图跳过 b64 存储 (避免 6.5MB base64 吞磁盘)
+        # : 大图跳过 b64 存储
         max_b64_kb = _cfg_int(self.config, "max_b64_size_kb", 2048)
         if max_b64_kb > 0 and size <= max_b64_kb * 1024:
             b64 = base64.b64encode(data).decode("ascii")
@@ -1315,11 +1173,7 @@ class VisionTextBridgePlugin(Star):
             logger.info("[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d", field, ok_n, fail_n)
 
     def _inject_guidance(self, req):
-        """: 向 system_prompt 注入'严格引用图说'提示。
-
-        可选配置 ``inject_caption_text_to_system_prompt`` 把图说本身也复制
-        一份（默认 False 节省 token）。
-        """
+        """: 向 system_prompt 注入图说引导提示。"""
         if not self.config.get("inject_system_prompt_guidance", True):
             return
         captions = []
@@ -1412,14 +1266,9 @@ class VisionTextBridgePlugin(Star):
     def _preview(self, text: str, limit: int = 80) -> str:
         return _preview_text(text, limit, self.config)
 
-    # : 在主钩子入口过滤工具
+    # : 过滤工具
     def _filter_tools_in_event(self, event, req) -> None:
-        """提前清 ``event.get_extra(extra_key)`` 里的待合并 tool set。
-
-        场景：chat_plus priority=-1 会从这个 key 拿 tool set 合并到 ``req.func_tool``。
-        我们 priority=100 先跑，把 set 里不想保留的工具删掉，chat_plus merge 进去的
-        就是干净版。
-        """
+        """提前清除 event extra 和 req.func_tool 中禁用的工具。"""
         mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
         if mode == "off":
             return
@@ -1453,16 +1302,11 @@ class VisionTextBridgePlugin(Star):
 
     @staticmethod
     def _redact_text(text: str) -> str:
-        """脱敏 —  调 mmx_runner.redact_text (regex 同源), 保留这个
-        staticmethod 是因为 :class:`_old__test` 还会调它。
-        """
+        """脱敏，调用 mmx_runner.redact_text。"""
         return _redact_text(text)
 
     async def _compute_image_cache_key(self, url) -> tuple[str, bytes]:
-        """算图片的 cache_key + 同步返读到的 bytes (给 _persist 复用, 避免重读)。
-
-        返回: (image_id, image_bytes)。读失败 / 空 bytes 时 image_id 退到 md5(url), bytes=b""。
-        """
+        """算 image_id + 返读到的 bytes（供 _persist 复用）。"""
         try:
             data = await self._read_image_bytes(url)
         except Exception as e:
@@ -1478,13 +1322,12 @@ class VisionTextBridgePlugin(Star):
         return CaptionCache.make_id_from_bytes(data), data
 
     async def _read_image_bytes(self, url):
-        """.4: 支持裸本地路径——薄包装, 实际逻辑抽到 image_fetch.py。"""
+        """薄包装，实际逻辑在 image_fetch.py。"""
         return await _read_image_bytes(url)
 
 
 # ===========================================================================
-# : image url 工具已抽到 image_utils, 工具过滤到 tool_filter
-# 这里是 shim 留旧名, 方便  时期测试还能 import (向后兼容过渡)
+# : 工具已抽到 image_utils/tool_filter, 此处为向后兼容 shim
 # ===========================================================================
 import fnmatch as _fnmatch
 def _glob_match(name: str, pattern: str) -> bool:

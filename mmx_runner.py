@@ -1,16 +1,4 @@
-"""mmx_runner.py - mmx CLI 子进程封装 + 安装/诊断/描述。
-
-功能:
-  - run_mmx: 调 mmx 子进程 + 解析输出
-  - install_mmx_local: 把 mmx-cli 装到 plugin 本地目录 (--prefix)
-  - install_mmx_cli: 全局 npm install -g mmx-cli, 返 mmx 绝对路径
-  - find_local_mmx: 找 plugin 本地装的 mmx
-  - login_mmx: mmx auth login
-  - diagnose_mmx_error: 错误诊断
-  - redact_text / redact_args: 脱敏
-
-作者: uuutt
-"""
+"""mmx_runner.py - mmx CLI 子进程封装与工具函数。"""
 
 from __future__ import annotations
 
@@ -54,8 +42,7 @@ class MmxResult:
 # ---------------------------------------------------------------------------
 # 跨实例共享: 错误诊断 set
 # ---------------------------------------------------------------------------
-# 不在 mmx_runner 内部持 set — 调用方 (plugin) 传 ``_diagnosed: set`` 进来,
-# 这样测试 ``main.VisionTextBridgePlugin._DIAGNOSED`` 看到的就是 plugin 那个 set。
+# 由调用方传入 _diagnosed set，不在模块内部持有
 
 
 # ---------------------------------------------------------------------------
@@ -63,11 +50,7 @@ class MmxResult:
 # ---------------------------------------------------------------------------
 
 def build_vision_command(image: str, prompt: str) -> tuple[str, ...]:
-    """构造 ``mmx vision describe`` CLI 参数。
-
-    ``image`` 以 ``file-`` 开头 → ``--file-id``; 其它 → ``--image``。
-    拼上 ``--prompt <p>`` (可选)。
-    """
+    """构造 ``mmx vision describe`` CLI 参数。"""
     if image.startswith("file-"):
         cmd = ["vision", "describe", "--file-id", image]
     else:
@@ -87,11 +70,7 @@ async def run_mmx(
     timeout: float,
     log_subprocess: bool = False,
 ) -> MmxResult:
-    """调 mmx 子进程, 返 ``MmxResult``。
-
-    ``log_subprocess`` 为 True 时把 cmd + stdout/stderr (2000 字符) 全打 INFO log。
-    log 走 ``redact_text`` 脱敏, 不需要传 redacted_args (自己 redact)。
-    """
+    """调 mmx 子进程，返 ``MmxResult``。"""
     if not mmx_path:
         return MmxResult("", "mmx CLI 未配置或未安装", -1, False)
 
@@ -110,7 +89,7 @@ async def run_mmx(
             proc.kill()
         except ProcessLookupError:
             pass
-        # : 二次超时保护 — wait() 本身可能再 hang (僵尸进程), 2s 兜底
+        # : 二次超时保护
         try:
             await asyncio.wait_for(proc.wait(), timeout=2.0)
         except (asyncio.TimeoutError, Exception):
@@ -138,7 +117,7 @@ async def run_mmx(
 # ---------------------------------------------------------------------------
 
 async def login_mmx(mmx_path: str, api_key: str, config: dict) -> None:
-    """预登录 mmx, 拉取 / 刷新 session 缓存。失败只警告不影响启动。"""
+    """预登录 mmx，失败仅警告。"""
     if not mmx_path:
         return
     masked = (
@@ -167,12 +146,7 @@ async def login_mmx(mmx_path: str, api_key: str, config: dict) -> None:
 
 
 async def install_mmx_cli(npm_path: str | None) -> bool:
-    """通过 npm 全局安装 mmx-cli。失败返 False, 警告不抛。
-
-    Returns:
-        True: 安装成功 (或认为已装)
-        False: npm 不可用 / 安装失败 / 超时
-    """
+    """npm 全局安装 mmx-cli。"""
     if not npm_path:
         logger.warning("[vision_text_bridge] 未找到 npm，无法自动安装 mmx-cli")
         return False
@@ -205,12 +179,7 @@ async def install_mmx_cli(npm_path: str | None) -> bool:
 
 
 async def install_mmx_local(npm_path: str | None, target_dir: str) -> bool:
-    """把 mmx-cli 装到 plugin 本地目录 (--prefix target_dir), 不需 root, 不改 system PATH.
-
-    Returns:
-        True: 装成功
-        False: npm 不可用 / 装失败
-    """
+    """将 mmx-cli 本地安装到 plugin 目录 (--prefix)。"""
     if not npm_path:
         logger.warning("[vision_text_bridge] 未找到 npm，无法本地装 mmx-cli")
         return False
@@ -270,12 +239,7 @@ def diagnose_mmx_error(
     preview_url_fn,
     _diagnosed: set[str],
 ) -> None:
-    """mmx 错误首次出现时警告一次。
-
-    ``preview_url_fn`` 脱敏输出 url (走 redact)。
-    ``_diagnosed`` plugin 传 ``VisionTextBridgePlugin._DIAGNOSED`` 进来,
-    保证测试能 inspect。
-    """
+    """mmx 错误首次出现时警告一次。"""
     if not err_text:
         return
     lo = err_text.lower()
@@ -344,12 +308,7 @@ _RE_BLANK_LINES = re.compile(r"\n{3,}")
 
 
 def strip_mmx_content(stdout: str, config: dict) -> str:
-    """: 从 mmx vision describe 的 JSON 拏出 ``content`` 字段, 去 markdown 噪音。
-
-    实测：典型响应 520→380 字符, 省 ~25% token (密集加粗场景能到 40%+)。
-
-    关 ``strip_mmx_markdown`` 返原始 stdout.strip()。
-    """
+    """: 从 mmx JSON 取出 content 字段并清除 markdown 噪声。"""
     if not stdout:
         return ""
     if not config.get("strip_mmx_markdown", True):
