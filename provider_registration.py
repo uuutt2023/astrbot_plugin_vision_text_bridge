@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx as _httpx
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
 from constants import (
     PROVIDER_ID,
