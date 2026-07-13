@@ -548,6 +548,14 @@ class VisionTextBridgePlugin(Star):
             )
             return
         logger.info("[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册")
+        # : 提前把 openapi_key / webui_password 状态印出，方便诊断
+        _openapi_key_set = bool((self.config.get("openapi_key") or "").strip())
+        _webui_pw_set = bool((self.config.get("webui_password") or "").strip())
+        logger.info(
+            "[vision_text_bridge] 注册前置状态: openapi_key=%s, webui_password=%s",
+            "已设置" if _openapi_key_set else "(空)",
+            "已设置" if _webui_pw_set else "(空)",
+        )
         try:
             ok = await provider_registration.auto_register_provider(self)
         except Exception as e:

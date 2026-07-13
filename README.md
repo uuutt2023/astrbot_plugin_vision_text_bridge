@@ -40,8 +40,9 @@ Dashboard → 插件管理 → 图片转文字 → 配置。
 
 推荐方式：
 1. Dashboard → 设置 → OpenAPI → 创建 Key（格式 `abk_xxx`）
-2. 填入 `openapi_key`
-3. 重启
+2. **创建时必须勾选 `provider` scope**（否则注册返回 403）
+3. 填入 `openapi_key`
+4. 重启
 
 不填也能用插件自身功能，只是没法被其他插件作为 provider 调用。
 
@@ -94,7 +95,11 @@ on_llm_request(priority=-10000)  链末清理残留 base64
 A: 另一进程占用了 2023。检查 `lsof -i :2023`，kill 掉或改端口（需要改 `main_server.py` 和 `provider_registration.py`）。
 
 **Q: `provider 注册返回 False`**
-A: 检查 `openapi_key` 是否正确（`abk_xxx` 格式），或 `webui_username` / `webui_password` 是否能登录 Dashboard。
+A: 看启动日志里 `POST /api/v1/providers 返回 4xx — body=...` 这一行的响应内容：
+- **403** → OpenAPI Key 缺少 `provider` scope，去 Dashboard「设置 → OpenAPI」编辑 Key 勾选
+- **401** → Key 无效或过期，重新创建
+- **422** → payload 校验失败，升级到最新版本
+- **400 "already exists"** → 实际注册成功，重启后可用
 
 **Q: 改了配置不生效**
 A: 清 `__pycache__` 后重启：`find . -name __pycache__ -exec rm -rf {} +`（在插件目录下）。

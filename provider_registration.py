@@ -17,7 +17,7 @@ try:
     from astrbot.api import logger
 except ImportError:
     import logging
-    logger = logging.getLogger("astrbot_plugin_vision_text_bridge")
+    logger = logging.getLogger(__name__)
 
 from constants import (
     PROVIDER_ID,
@@ -85,9 +85,10 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         username, password, dash_port = _read_webui_credentials(plugin)
 
         use_bearer = bool(openapi_key)
-        logger.warning(
-            "[vision_text_bridge] provider 注册尝试: bearer=%s, username=%r, password_len=%d, "
-            "dash_port=%d, openapi_key_prefix=%s",
+        # 入口 INFO log — 一定能看见
+        logger.info(
+            "[vision_text_bridge] provider 注册尝试: bearer=%s, username=%r, "
+            "password_len=%d, dash_port=%d, openapi_key_prefix=%s",
             use_bearer, username, len(password), dash_port,
             openapi_key[:8] + "***" if openapi_key else "(empty)",
         )
@@ -112,16 +113,23 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             or DEFAULT_MODEL
         )
 
+        # AstrBot v4.x provider 配置:
+        #   - provider_source_id 指向 provider_sources 里的 source (openai_source 等)
+        #   - provider_config 嵌套实际的提供商配置
         config = {
-            "id": PROVIDER_ID,
-            "type": "openai_chat_completion",
-            "provider_type": "chat_completion",
+            "provider_id": PROVIDER_ID,
+            "provider_source_id": "openai_source",
             "enable": True,
-            "key": [api_key] if api_key else ["placeholder"],
-            "api_key": api_key if api_key else "placeholder",
-            "api_base": api_base,
-            "model": model_name,
-            "model_config": {"model": model_name},
+            "provider_config": {
+                "id": PROVIDER_ID,
+                "type": "openai_chat_completion",
+                "provider_type": "chat_completion",
+                "enable": True,
+                "key": [api_key] if api_key else ["placeholder"],
+                "api_key": api_key if api_key else "placeholder",
+                "api_base": api_base,
+                "model": model_name,
+            },
         }
 
         base_url = f"http://localhost:{dash_port}"
@@ -133,6 +141,10 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     "[vision_text_bridge] 使用 OpenAPI Key (X-API-Key) 认证注册 provider"
                 )
             else:
+                logger.info(
+                    "[vision_text_bridge] 使用 username/password 登录注册 provider (user=%s)",
+                    username,
+                )
                 # 传统 username/password 登录
                 login_resp = await client.post(
                     f"{base_url}/api/auth/login",
@@ -141,12 +153,18 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                 if login_resp.status_code not in (200, 204):
                     logger.warning(
                         "[vision_text_bridge] webui 登录失败 (status=%d, username=%s) — "
-                        "请检查 password 配置", login_resp.status_code, username,
+                        "请检查 password 配置. resp=%s",
+                        login_resp.status_code, username,
+                        (login_resp.text or "")[:300],
                     )
                     return False
 
             # 2. POST provider (id 重复 → 400/409 with "already exists")
             try:
+                logger.info(
+                    "[vision_text_bridge] POST %s/api/v1/providers id=%s api_base=%s model=%s",
+                    base_url, PROVIDER_ID, api_base, model_name,
+                )
                 create_resp = await client.post(
                     f"{base_url}/api/v1/providers",
                     json=config,
@@ -154,21 +172,36 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                 )
                 if create_resp.status_code in (200, 201):
                     logger.info(
-                        "[vision_text_bridge] 通过 webui API 注册 provider 成功: id=%s, "
-                        "api_base=%s, model=%s", PROVIDER_ID, api_base, model_name,
+                        "[vision_text_bridge] ✓ 通过 webui API 注册 provider 成功: id=%s",
+                        PROVIDER_ID,
                     )
                     if log_details:
                         _log_registered_instance(plugin)
                     return True
+                # 完整 resp body 给 INFO 级别, 方便诊断
                 logger.warning(
-                    "[vision_text_bridge] POST /api/v1/providers 返回 %d: %s",
-                    create_resp.status_code, (create_resp.text or "")[:300],
+                    "[vision_text_bridge] POST /api/v1/providers 返回 %d — body=%s",
+                    create_resp.status_code, (create_resp.text or "")[:500],
                 )
+                if create_resp.status_code == 403:
+                    logger.warning(
+                        "[vision_text_bridge] 提示: 403 通常表示 OpenAPI Key 缺少 'provider' scope. "
+                        "请到 Dashboard「设置 → OpenAPI」编辑 Key, 勾选 'provider' scope."
+                    )
+                elif create_resp.status_code == 401:
+                    logger.warning(
+                        "[vision_text_bridge] 提示: 401 表示 OpenAPI Key 无效. "
+                        "请检查 openapi_key 是否正确 (格式 abk_xxx)."
+                    )
             except Exception as e:
-                logger.debug("create exception: %s", e)
+                logger.warning("[vision_text_bridge] POST /api/v1/providers 异常: %s", e)
 
             # 3. Fallback: PUT update by-id
             try:
+                logger.info(
+                    "[vision_text_bridge] 尝试 fallback PUT %s/api/v1/providers/by-id?provider_id=%s",
+                    base_url, PROVIDER_ID,
+                )
                 update_resp = await client.put(
                     f"{base_url}/api/v1/providers/by-id",
                     params={"provider_id": PROVIDER_ID},
@@ -177,22 +210,22 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                 )
                 if update_resp.status_code in (200, 204):
                     logger.info(
-                        "[vision_text_bridge] 通过 webui API 更新 provider 成功: id=%s",
+                        "[vision_text_bridge] ✓ 通过 webui API 更新 provider 成功: id=%s",
                         PROVIDER_ID,
                     )
                     if log_details:
                         _log_registered_instance(plugin)
                     return True
                 logger.warning(
-                    "[vision_text_bridge] PUT /api/v1/providers/by-id 返回 %d: %s",
-                    update_resp.status_code, (update_resp.text or "")[:300],
+                    "[vision_text_bridge] PUT /api/v1/providers/by-id 返回 %d — body=%s",
+                    update_resp.status_code, (update_resp.text or "")[:500],
                 )
             except Exception as e:
-                logger.debug("update exception: %s", e)
+                logger.warning("[vision_text_bridge] PUT /api/v1/providers/by-id 异常: %s", e)
 
             logger.warning(
-                "[vision_text_bridge] webui API 注册失败 (create+update 都失败) — "
-                "请看上面日志"
+                "[vision_text_bridge] webui API 注册失败 (POST + PUT 都失败) — "
+                "请看上面 HTTP 响应 body 排查."
             )
             return False
     except Exception as e:
