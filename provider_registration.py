@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path as _Path
 from typing import Optional
@@ -47,6 +48,38 @@ from constants import (
 
 
 _emit("info", "provider_registration module loaded")
+
+
+async def _retry_http(
+    client: _httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    json: dict | None = None,
+    headers: dict | None = None,
+    params: dict | None = None,
+    label: str = "",
+    max_retries: int = 10,
+) -> _httpx.Response:
+    """带重试的 HTTP 请求 — 处理 Dashboard 启动竞态."""
+    for attempt in range(max_retries):
+        try:
+            if method == "POST":
+                return await client.post(url, json=json, headers=headers)
+            elif method == "PUT":
+                return await client.put(url, params=params, json=json, headers=headers)
+            else:
+                return await client.get(url, headers=headers)
+        except _httpx.ConnectError:
+            if attempt == max_retries - 1:
+                raise
+            delay = min(2 ** attempt, 30)  # 1, 2, 4, 8, 16, 30, 30, 30, 30, 30
+            _emit(
+                "info",
+                f"  → Dashboard 未就绪 ({label}), "
+                f"{delay}s 后重试 ({attempt+1}/{max_retries})...",
+            )
+            await asyncio.sleep(delay)
 
 
 def _get_plugin_root() -> Optional[_Path]:
@@ -167,7 +200,7 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             "model": model_name,
         }
 
-        base_url = f"http://localhost:{dash_port}"
+        base_url = f"http://127.0.0.1:{dash_port}"
         _emit(
             "info",
             f"[4/6] 准备调用 webui API: base_url={base_url}, "
@@ -212,10 +245,9 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     f"[6/6] POST {base_url}/api/v1/providers",
                 )
                 _emit("info", f"  → payload={config}")
-                create_resp = await client.post(
-                    f"{base_url}/api/v1/providers",
-                    json=config,
-                    headers=headers,
+                create_resp = await _retry_http(
+                    client, "POST", f"{base_url}/api/v1/providers",
+                    json=config, headers=headers, label="POST providers",
                 )
                 _emit(
                     "info",
@@ -267,11 +299,11 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     "info",
                     f"[6/6-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
                 )
-                update_resp = await client.put(
-                    f"{base_url}/api/v1/providers/by-id",
+                update_resp = await _retry_http(
+                    client, "PUT", f"{base_url}/api/v1/providers/by-id",
+                    json=config, headers=headers,
                     params={"provider_id": PROVIDER_ID},
-                    json=config,
-                    headers=headers,
+                    label="PUT providers/by-id",
                 )
                 _emit(
                     "info",
@@ -362,7 +394,7 @@ async def remove_provider(plugin) -> bool:
         username, password, dash_port = _read_webui_credentials(plugin)
         if not openapi_key and not password:
             return False
-        base_url = f"http://localhost:{dash_port}"
+        base_url = f"http://127.0.0.1:{dash_port}"
         headers = {}
         async with _httpx.AsyncClient(timeout=10.0) as client:
             if openapi_key:
