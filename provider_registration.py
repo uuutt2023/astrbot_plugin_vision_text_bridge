@@ -150,14 +150,14 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             or DEFAULT_MODEL
         )
 
-        # AstrBot v4.x provider 配置:
-        #   - provider_source_id 指向 provider_sources 里的 source (openai_source 等)
-        #   - provider_config 嵌套实际的提供商配置
+        # AstrBot v4.x ProviderConfigRequest schema:
+        #   config 字段 = 实际的 provider 配置 dict（会原样传给 provider_manager.create_provider）
+        #   provider_source_id = 指向 provider_sources 里的 source
         config = {
             "provider_id": PROVIDER_ID,
             "provider_source_id": "openai_source",
             "enable": True,
-            "provider_config": {
+            "config": {
                 "id": PROVIDER_ID,
                 "type": "openai_chat_completion",
                 "provider_type": "chat_completion",
