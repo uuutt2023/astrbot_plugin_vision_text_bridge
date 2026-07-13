@@ -40,6 +40,9 @@ def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
 
 async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, plugin) -> None:
     """处理一个 HTTP request — 解析 + 调 plugin._describe_one."""
+    peer = writer.get_extra_info("peername")
+    peer_str = f"{peer[0]}:{peer[1]}" if peer else "?"
+    t_start = time.perf_counter()
     try:
         # 读 request line
         request_line = await reader.readline()
@@ -72,6 +75,12 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
         if content_length > 0:
             body_bytes = await reader.readexactly(content_length)
 
+        logger.debug(
+            "[vision_text_bridge] ⇠ 请求: %s %s from %s | content-length=%d | ua=%s",
+            method, path, peer_str, content_length,
+            headers.get("user-agent", "-"),
+        )
+
         # 路由
         if method.upper() == "POST" and path == "/v1/chat/completions":
             try:
@@ -81,19 +90,28 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                 writer.write(response_bytes)
                 await writer.drain()
                 writer.close()
+                logger.warning("[vision_text_bridge] /v1/chat/completions 请求体解析失败: %s", e)
                 return
             response_body, status = await _handle_chat_completions(body, plugin)
             response_bytes = _build_response(response_body, status)
             writer.write(response_bytes)
             await writer.drain()
+            elapsed_ms = (time.perf_counter() - t_start) * 1000
+            content_len = response_body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            logger.debug(
+                "[vision_text_bridge] ⇠ 响应: POST /v1/chat/completions status=%d 耗时=%.1fms 内容预览=%s",
+                status, elapsed_ms, repr((content_len or "")[:120]),
+            )
         elif method.upper() == "GET" and path == "/health":
             response_bytes = _build_response({"status": "ok", "server": "vision_text_bridge_solo"}, 200)
             writer.write(response_bytes)
             await writer.drain()
+            logger.debug("[vision_text_bridge] ⇠ GET /health 200")
         else:
             response_bytes = _build_response({"status": "error", "message": f"未找到路由: {method} {path}"}, 400)
             writer.write(response_bytes)
             await writer.drain()
+            logger.debug("[vision_text_bridge] ⇠ 404: %s %s", method, path)
     except Exception as e:
         logger.warning("[vision_text_bridge] solo server handler 异常: %s", e)
     finally:
@@ -106,7 +124,12 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 
 async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     """OpenAI compatible /v1/chat/completions handler."""
+    model_in = body.get("model") or "vision_text_bridge"
     messages = body.get("messages") or []
+    logger.debug(
+        "[vision_text_bridge] OpenAI 请求解析: model=%s messages=%d",
+        model_in, len(messages),
+    )
     if not messages:
         return {"status": "error", "message": "messages 不能为空"}, 400
     image_urls: list[str] = []
@@ -128,29 +151,48 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
                         prompt_parts.append(t)
         elif isinstance(content, str):
             prompt_parts.append(content)
+    logger.debug(
+        "[vision_text_bridge] 提取结果: image_urls=%d, prompt_chars=%d",
+        len(image_urls), sum(len(p) for p in prompt_parts),
+    )
     if not image_urls:
         return {"status": "error", "message": "未提供 image_url"}, 400
     # Call plugin._describe_one (mmx-via)
     captions: list[str] = []
     try:
-        for u in image_urls:
+        for idx, u in enumerate(image_urls, 1):
+            url_preview = (u[:80] + "...") if len(u) > 80 else u
+            t0 = time.perf_counter()
             cap = plugin._describe_one(u)
             if asyncio.iscoroutine(cap):
                 cap = await cap
+            dt = (time.perf_counter() - t0) * 1000
             if cap:
                 captions.append(cap)
+                logger.debug(
+                    "[vision_text_bridge] mmx 调 #%d 耗时=%.1fms 结果长度=%d 预览=%s",
+                    idx, dt, len(cap), repr(cap[:80]),
+                )
+            else:
+                logger.warning(
+                    "[vision_text_bridge] mmx 调 #%d 耗时=%.1fms 返回空 url=%s",
+                    idx, dt, url_preview,
+                )
     except Exception as e:
         logger.exception("chat_completions 调 mmx 失败: %s", e)
         return {"status": "error", "message": f"mmx 描述失败: {e}"}, 500
     if not captions:
         return {"status": "error", "message": "mmx 描述返回空"}, 500
     caption_text = "\n".join(f"[图片{i+1}] {c}" for i, c in enumerate(captions))
-    model = body.get("model") or "vision_text_bridge"
+    logger.debug(
+        "[vision_text_bridge] 描述合并完成: 共 %d 张, 总长 %d 字符",
+        len(captions), len(caption_text),
+    )
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": model,
+        "model": model_in,
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": caption_text},
