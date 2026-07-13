@@ -151,22 +151,20 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         )
 
         # AstrBot v4.x ProviderConfigRequest schema:
-        #   config 字段 = 实际的 provider 配置 dict（会原样传给 provider_manager.create_provider）
-        #   provider_source_id = 指向 provider_sources 里的 source
+        #   to_dashboard_config() uses self.config (if present) or model_dump()
+        #   with explicit excludes. provider_config & config fields are both excluded
+        #   from model_dump(), so we put all fields flat at root level.
         config = {
             "provider_id": PROVIDER_ID,
             "provider_source_id": "openai_source",
+            "id": PROVIDER_ID,
             "enable": True,
-            "config": {
-                "id": PROVIDER_ID,
-                "type": "openai_chat_completion",
-                "provider_type": "chat_completion",
-                "enable": True,
-                "key": [api_key] if api_key else ["placeholder"],
-                "api_key": api_key if api_key else "placeholder",
-                "api_base": api_base,
-                "model": model_name,
-            },
+            "type": "openai_chat_completion",
+            "provider_type": "chat_completion",
+            "key": [api_key] if api_key else ["placeholder"],
+            "api_key": api_key if api_key else "placeholder",
+            "api_base": api_base,
+            "model": model_name,
         }
 
         base_url = f"http://localhost:{dash_port}"
