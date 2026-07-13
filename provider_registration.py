@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path as _Path
 from typing import Optional
 
@@ -19,12 +20,33 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+
+def _emit(level: str, msg: str) -> None:
+    """emit 一行 — 同时走 logger 和 print，绕开任何 logger 过滤/路由问题.
+
+    print 直接到 stdout，docker/终端/tmux 必能看到。
+    logger 走 AstrBot 的 loguru 桥接，WebUI 控制台也能看到。
+    """
+    try:
+        getattr(logger, level)(msg)
+    except Exception:
+        pass
+    try:
+        ts = __import__("datetime").datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"[{ts}] [vision_text_bridge] [{level.upper()}] {msg}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 from constants import (
     PROVIDER_ID,
     DEFAULT_OPENAI_COMPAT_PORT,
     DEFAULT_DASHBOARD_PORT,
     DEFAULT_MODEL,
 )
+
+
+_emit("info", "provider_registration module loaded")
 
 
 def _get_plugin_root() -> Optional[_Path]:
@@ -69,7 +91,7 @@ def _read_webui_credentials(plugin) -> tuple[str, str, int]:
             if cp:
                 password = cp.strip()
     except Exception as e:
-        logger.debug("_read_webui_credentials 异常: %s", e)
+        _emit("debug", f"_read_webui_credentials 异常: {e}")
     return username, password, port
 
 
@@ -80,24 +102,39 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
       1. OpenAPI Key (Bearer token) — 在 Dashboard「设置→OpenAPI」创建
       2. username + password — 在 plugin.config 配 webui_password
     """
+    _emit("info", "========== provider 注册开始 ==========")
     try:
-        openapi_key = (plugin.config.get("openapi_key") or "").strip()
-        username, password, dash_port = _read_webui_credentials(plugin)
+        # 入口探针 — 即使后面的代码异常，也至少能看到这条
+        _emit("info", f"[1/6] 进入 auto_register_provider, plugin={type(plugin).__name__}")
+        _emit("info", f"[2/6] plugin.config type={type(plugin.config).__name__}")
+
+        if plugin is None or not hasattr(plugin, "config"):
+            _emit("error", f"plugin 或 plugin.config 缺失: plugin={plugin}")
+            return False
+
+        try:
+            openapi_key = (plugin.config.get("openapi_key") or "").strip()
+            username, password, dash_port = _read_webui_credentials(plugin)
+        except Exception as e:
+            _emit("error", f"[3/6] 读 config 异常: {e!r}")
+            raise
 
         use_bearer = bool(openapi_key)
         # 入口 INFO log — 一定能看见
-        logger.info(
-            "[vision_text_bridge] provider 注册尝试: bearer=%s, username=%r, "
-            "password_len=%d, dash_port=%d, openapi_key_prefix=%s",
-            use_bearer, username, len(password), dash_port,
-            openapi_key[:8] + "***" if openapi_key else "(empty)",
+        _emit(
+            "info",
+            f"[3/6] provider 注册尝试: bearer={use_bearer}, "
+            f"username={username!r}, password_len={len(password)}, "
+            f"dash_port={dash_port}, "
+            f"openapi_key_prefix={openapi_key[:8] + '***' if openapi_key else '(empty)'}",
         )
         if not use_bearer and not password:
-            logger.warning(
-                "[vision_text_bridge] OpenAPI Key 和 webui password 均未配置 — "
+            _emit(
+                "warning",
+                "OpenAPI Key 和 webui password 均未配置 — "
                 "无法通过 webui API 注册 provider. "
                 "请在 webui「设置 → OpenAPI」创建 Key 填入 openapi_key, "
-                "或在「系统配置 → dashboard」配置 password."
+                "或在「系统配置 → dashboard」配置 password.",
             )
             return False
 
@@ -133,74 +170,104 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         }
 
         base_url = f"http://localhost:{dash_port}"
+        _emit(
+            "info",
+            f"[4/6] 准备调用 webui API: base_url={base_url}, "
+            f"provider_id={PROVIDER_ID}, api_base={api_base}, model={model_name}",
+        )
+
         async with _httpx.AsyncClient(timeout=15.0) as client:
             headers = {}
             if use_bearer:
                 headers["X-API-Key"] = openapi_key
-                logger.info(
-                    "[vision_text_bridge] 使用 OpenAPI Key (X-API-Key) 认证注册 provider"
+                _emit(
+                    "info",
+                    "[5/6] 认证方式: OpenAPI Key (X-API-Key header)",
                 )
             else:
-                logger.info(
-                    "[vision_text_bridge] 使用 username/password 登录注册 provider (user=%s)",
-                    username,
+                _emit(
+                    "info",
+                    f"[5/6] 认证方式: username/password (user={username})",
                 )
                 # 传统 username/password 登录
+                _emit("info", f"  → POST {base_url}/api/auth/login")
                 login_resp = await client.post(
                     f"{base_url}/api/auth/login",
                     json={"username": username, "password": password},
                 )
+                _emit(
+                    "info",
+                    f"  → 登录响应 status={login_resp.status_code}",
+                )
                 if login_resp.status_code not in (200, 204):
-                    logger.warning(
-                        "[vision_text_bridge] webui 登录失败 (status=%d, username=%s) — "
-                        "请检查 password 配置. resp=%s",
-                        login_resp.status_code, username,
-                        (login_resp.text or "")[:300],
+                    _emit(
+                        "warning",
+                        f"webui 登录失败 (status={login_resp.status_code}, username={username}) — "
+                        f"请检查 password 配置. resp={(login_resp.text or '')[:300]}",
                     )
                     return False
 
             # 2. POST provider (id 重复 → 400/409 with "already exists")
             try:
-                logger.info(
-                    "[vision_text_bridge] POST %s/api/v1/providers id=%s api_base=%s model=%s",
-                    base_url, PROVIDER_ID, api_base, model_name,
+                _emit(
+                    "info",
+                    f"[6/6] POST {base_url}/api/v1/providers",
                 )
+                _emit("info", f"  → payload={config}")
                 create_resp = await client.post(
                     f"{base_url}/api/v1/providers",
                     json=config,
                     headers=headers,
                 )
+                _emit(
+                    "info",
+                    f"  → POST 响应 status={create_resp.status_code}",
+                )
                 if create_resp.status_code in (200, 201):
-                    logger.info(
-                        "[vision_text_bridge] ✓ 通过 webui API 注册 provider 成功: id=%s",
-                        PROVIDER_ID,
+                    _emit(
+                        "info",
+                        f"✓ 通过 webui API 注册 provider 成功: id={PROVIDER_ID}",
                     )
                     if log_details:
                         _log_registered_instance(plugin)
                     return True
                 # 完整 resp body 给 INFO 级别, 方便诊断
-                logger.warning(
-                    "[vision_text_bridge] POST /api/v1/providers 返回 %d — body=%s",
-                    create_resp.status_code, (create_resp.text or "")[:500],
+                _emit(
+                    "warning",
+                    f"POST /api/v1/providers 返回 {create_resp.status_code} — body={(create_resp.text or '')[:500]}",
                 )
                 if create_resp.status_code == 403:
-                    logger.warning(
-                        "[vision_text_bridge] 提示: 403 通常表示 OpenAPI Key 缺少 'provider' scope. "
-                        "请到 Dashboard「设置 → OpenAPI」编辑 Key, 勾选 'provider' scope."
+                    _emit(
+                        "warning",
+                        "提示: 403 通常表示 OpenAPI Key 缺少 'provider' scope. "
+                        "请到 Dashboard「设置 → OpenAPI」编辑 Key, 勾选 'provider' scope.",
                     )
                 elif create_resp.status_code == 401:
-                    logger.warning(
-                        "[vision_text_bridge] 提示: 401 表示 OpenAPI Key 无效. "
-                        "请检查 openapi_key 是否正确 (格式 abk_xxx)."
+                    _emit(
+                        "warning",
+                        "提示: 401 表示 OpenAPI Key 无效. "
+                        "请检查 openapi_key 是否正确 (格式 abk_xxx).",
+                    )
+                elif create_resp.status_code == 422:
+                    _emit(
+                        "warning",
+                        "提示: 422 表示 payload 校验失败. "
+                        "请看上面 resp body 的 detail 字段.",
+                    )
+                elif create_resp.status_code == 400 and "already exists" in (create_resp.text or "").lower():
+                    _emit(
+                        "warning",
+                        "提示: 'already exists' — 该 provider_id 已注册, 但本次返回 400. "
+                        "请尝试重启 AstrBot 让 framework 加载现有 provider.",
                     )
             except Exception as e:
-                logger.warning("[vision_text_bridge] POST /api/v1/providers 异常: %s", e)
+                _emit("warning", f"POST /api/v1/providers 异常: {e!r}")
 
             # 3. Fallback: PUT update by-id
             try:
-                logger.info(
-                    "[vision_text_bridge] 尝试 fallback PUT %s/api/v1/providers/by-id?provider_id=%s",
-                    base_url, PROVIDER_ID,
+                _emit(
+                    "info",
+                    f"[6/6-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
                 )
                 update_resp = await client.put(
                     f"{base_url}/api/v1/providers/by-id",
@@ -208,29 +275,40 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     json=config,
                     headers=headers,
                 )
+                _emit(
+                    "info",
+                    f"  → PUT 响应 status={update_resp.status_code}",
+                )
                 if update_resp.status_code in (200, 204):
-                    logger.info(
-                        "[vision_text_bridge] ✓ 通过 webui API 更新 provider 成功: id=%s",
-                        PROVIDER_ID,
+                    _emit(
+                        "info",
+                        f"✓ 通过 webui API 更新 provider 成功: id={PROVIDER_ID}",
                     )
                     if log_details:
                         _log_registered_instance(plugin)
                     return True
-                logger.warning(
-                    "[vision_text_bridge] PUT /api/v1/providers/by-id 返回 %d — body=%s",
-                    update_resp.status_code, (update_resp.text or "")[:500],
+                _emit(
+                    "warning",
+                    f"PUT /api/v1/providers/by-id 返回 {update_resp.status_code} — body={(update_resp.text or '')[:500]}",
                 )
             except Exception as e:
-                logger.warning("[vision_text_bridge] PUT /api/v1/providers/by-id 异常: %s", e)
+                _emit("warning", f"PUT /api/v1/providers/by-id 异常: {e!r}")
 
-            logger.warning(
-                "[vision_text_bridge] webui API 注册失败 (POST + PUT 都失败) — "
-                "请看上面 HTTP 响应 body 排查."
+            _emit(
+                "warning",
+                "webui API 注册失败 (POST + PUT 都失败) — "
+                "请看上面 HTTP 响应 body 排查.",
             )
             return False
     except Exception as e:
-        logger.exception("auto_register_provider 异常: %s", e)
+        _emit("error", f"auto_register_provider 顶层异常: {e!r}")
+        try:
+            logger.exception("auto_register_provider 异常: %s", e)
+        except Exception:
+            pass
         return False
+    finally:
+        _emit("info", "========== provider 注册结束 ==========")
 
 
 def _log_registered_instance(plugin) -> None:
@@ -238,6 +316,7 @@ def _log_registered_instance(plugin) -> None:
     try:
         pm = getattr(plugin.context, "provider_manager", None)
         if pm is None:
+            _emit("warning", "plugin.context.provider_manager 为 None, 无法验证注册")
             return
         prov_dict = getattr(pm, "providers", {})
         inst = prov_dict.get(PROVIDER_ID) if isinstance(prov_dict, dict) else None
@@ -248,9 +327,10 @@ def _log_registered_instance(plugin) -> None:
                     inst = p
                     break
         if inst is None:
-            logger.info(
-                "[vision_text_bridge] provider 已就绪 — 但 pm.providers[id] 仍 None "
-                "(framework 还未完成 load, 下次 plugin 重启后可用)"
+            _emit(
+                "info",
+                "provider 已就绪 — 但 pm.providers[id] 仍 None "
+                "(framework 还未完成 load, 下次 plugin 重启后可用)",
             )
             return
         api_base = getattr(inst, "api_base", "") or ""
@@ -264,17 +344,17 @@ def _log_registered_instance(plugin) -> None:
             key_masked = api_key[:4] + "***" + api_key[-4:]
         else:
             key_masked = "***"
-        logger.info(
-            "[vision_text_bridge] provider 已就绪 — 完整配置:\n"
-            "  provider_id        (AstrBot dashboard 显示名) = %s\n"
-            "  provider_instance_id (内存唯一 ID)           = 0x%08x\n"
-            "  api_base           (POST endpoint URL)        = %s\n"
-            "  api_key            (脱敏)                    = %s\n"
-            "  model              (模型昵称 id)             = %s",
-            PROVIDER_ID, id(inst), api_base, key_masked, model,
+        _emit(
+            "info",
+            f"provider 已就绪 — 完整配置:\n"
+            f"  provider_id        (AstrBot dashboard 显示名) = {PROVIDER_ID}\n"
+            f"  provider_instance_id (内存唯一 ID)           = 0x{id(inst):08x}\n"
+            f"  api_base           (POST endpoint URL)        = {api_base}\n"
+            f"  api_key            (脱敏)                    = {key_masked}\n"
+            f"  model              (模型昵称 id)             = {model}",
         )
     except Exception as e:
-        logger.debug("_log_registered_instance 异常: %s", e)
+        _emit("debug", f"_log_registered_instance 异常: {e!r}")
 
 
 async def remove_provider(plugin) -> bool:
@@ -299,6 +379,8 @@ async def remove_provider(plugin) -> bool:
                 params={"provider_id": PROVIDER_ID},
                 headers=headers,
             )
+            _emit("info", f"DELETE /providers/by-id status={r.status_code}")
             return r.status_code in (200, 204)
-    except Exception:
+    except Exception as e:
+        _emit("warning", f"remove_provider 异常: {e!r}")
         return False
