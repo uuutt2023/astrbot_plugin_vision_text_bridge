@@ -189,7 +189,7 @@ class CaptionCache:
         file_size: int = 0,
         width: int = 0,
         height: int = 0,
-    ) -> None:
+    ) -> bool:
         """插入或更新一条记录(基于 image_id 主键)。
 
         - 主键 image_id 是 md5(由调用方从图片内容算出)
@@ -203,7 +203,7 @@ class CaptionCache:
                 "[caption_cache] put() 被调用但 image_id=%r description_len=%d，**未写入**。",
                 image_id, len(description) if description else 0,
             )
-            return
+            return False
         with self._lock, self._connect() as conn:
             now = time.time()
             conn.execute(

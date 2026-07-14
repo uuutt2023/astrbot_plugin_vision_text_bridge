@@ -201,7 +201,7 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     _emit(
                         "warning",
                         f"webui 登录失败 (status={login_resp.status_code}, username={username}) — "
-                        f"请检查 password 配置. resp={(login_resp.text or '')[:300]}",
+                        f"请检查 password 配置. status={login_resp.status_code}",
                     )
                     return False
 

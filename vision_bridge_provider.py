@@ -49,10 +49,9 @@ class _SimpleLLMResponse:
         self.usage = None
 
     def __getattr__(self, name: str) -> Any:
-        # 兜底: 任何 AstrBot 框架访问的字段都返 None 或 []
         if name.startswith("_"):
             raise AttributeError(name)
-        return None
+        raise AttributeError(f"_SimpleLLMResponse has no attribute '{name}'")
 
 
 class VisionBridgeProvider:
@@ -116,7 +115,7 @@ class VisionBridgeProvider:
             or getattr(self, "model", None)
             or getattr(self, "_current_model", None)
             or cfg.get("model")
-            or cfg.get("model_config", {}).get("model", PROVIDER_DEFAULT_MODEL)
+            or cfg.get("model_config", {}).get("model", DEFAULT_MODEL)
         )
         try:
             from astrbot.core.provider.entities import ProviderMeta

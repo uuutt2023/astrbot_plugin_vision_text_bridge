@@ -262,8 +262,7 @@ def sniff_image_meta(data: bytes) -> tuple[str, int, int]:
             return ("image/png", w, h)
         return ("image/png", 0, 0)
     if data[:2] == b"\xff\xd8":
-        # JPEG — 需要扫描 SOF marker, 这里返 mime 不知道精确 w/h
-        return ("image/jpeg", 0, 0)
+        return _sniff_jpeg(data)
     if data[:4] == b"GIF8":
         if len(data) >= 10:
             w = int.from_bytes(data[6:8], "little")

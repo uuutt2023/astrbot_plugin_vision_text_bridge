@@ -170,9 +170,9 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
             w, h = struct.unpack("<HH", data[26:30])
             return int(w), int(h)
         if chunk == b"VP8L":
-            b = data[21:25]
-            w = 1 + (b[0] | (b[1] << 8) | (b[2] << 16))
-            h = 1 + ((b[3] & 0x0F) << 10 | (b[1] & 0xC0) << 2 | (b[2] & 0xC0) << 4)
+            value = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+            w = 1 + (value & 0x3FFF)
+            h = 1 + ((value >> 14) & 0x3FFF)
             return int(w), int(h)
         return 0, 0
     return 0, 0

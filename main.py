@@ -1027,7 +1027,12 @@ class VisionTextBridgePlugin(Star):
                     return entry.description
 
         # 3) 调 mmx
-        return await self._describe_via_mmx(url, cache_key, cacheable)
+        try:
+            return await self._describe_via_mmx(url, cache_key, cacheable)
+        except Exception:
+            if cacheable:
+                self._last_image_bytes.pop(url, None)
+            raise
 
     async def _describe_via_mmx(self, url: str, cache_key: str | None, cacheable: bool) -> str:
         """实际调 mmx 子进程拿描述。失败返 "" + 记 log。"""

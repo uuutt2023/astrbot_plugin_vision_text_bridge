@@ -562,7 +562,7 @@ async def api_chat_completions(plugin, *args, **kwargs):
     return ok({
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
-        "created": int(int(time.time())),
+        "created": int(time.time()),
         "model": model,
         "choices": [{
             "index": 0,

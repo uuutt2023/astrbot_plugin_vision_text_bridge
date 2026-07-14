@@ -21,6 +21,7 @@ except ImportError:
 
 _server: "asyncio.AbstractServer | None" = None
 _port: int = 2023
+_MAX_BODY_BYTES = 50 * 1024 * 1024
 
 
 def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
@@ -71,6 +72,14 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 
         # 读 body (if Content-Length)
         content_length = int(headers.get("content-length", "0") or "0")
+        if content_length > _MAX_BODY_BYTES:
+            response_bytes = _build_response(
+                {"status": "error", "message": f"request body too large (max {_MAX_BODY_BYTES} bytes)"}, 413,
+            )
+            writer.write(response_bytes)
+            await writer.drain()
+            writer.close()
+            return
         body_bytes = b""
         if content_length > 0:
             body_bytes = await reader.readexactly(content_length)
