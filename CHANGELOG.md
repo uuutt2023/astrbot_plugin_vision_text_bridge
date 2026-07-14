@@ -7,7 +7,7 @@
 - 智能图片理解拦截（on_llm_request priority=100 + 链尾清理 priority=-10000）
 - 描述缓存：内存 LRU + SQLite WAL（md5(image_bytes) 为 key）
 - 描述 TTL + 后台清理任务（默认 7 天 TTL，1 小时扫一次）
-- OpenAI 兼容 endpoint：`POST /v1/chat/completions`（loopback 127.0.0.1:6188）
+- OpenAI 兼容 endpoint：`POST /v1/chat/completions`（loopback 127.0.0.1:2023）
 - 跨插件兼容检测（图片对话插件等）
 - 自动注册 OpenAI 兼容 provider 到 framework（通过 webui HTTP API）
 - 权限控制：群白名单 / 用户白名单 / 仅私聊
@@ -54,9 +54,9 @@
 | `40039ec` | `meta()` 返 dataclass-like object（避免 dict getattr skip） |
 | `0bcc02b` | 改调 framework create_provider API（让 dashboard 实时显示） |
 | `beee464` | 不再调 `_register_custom_provider_type`（杀掉 25 个其它 provider instance） |
-| `cc462f8` | 解决 `'Token 无效' 401`（独立 server on 127.0.0.1:6188 bypass JWT） |
+| `cc462f8` | 解决 `'Token 无效' 401`（独立 server on 127.0.0.1:2023 bypass JWT） |
 | `1ccd469` | 精简代码：仅保留 webui HTTP API + 独立 server（−724 行） |
-| `e14d779` | `main_server.py` 改用 Python stdlib `asyncio.start_server`（零依赖）+ INFO log + schema 默认 6188 |
+| `e14d779` | `main_server.py` 改用 Python stdlib `asyncio.start_server`（零依赖）+ INFO log + schema 默认 2023 |
 | `0622f44` | 通过环境变量 `DASHBOARD_PASSWORD` 配置 webui 密码（**已废弃**，用户改用 plugin schema） |
 | `9ef77cf` | 在 `_conf_schema.json` 加 `webui_username` / `webui_password` 字段（用户手动输入） |
 
@@ -69,7 +69,7 @@
 | `_find_cmd_config_file / _sanitize_cmd_config_file / _patch_user_config_type` | 改成 webui HTTP API 注册，不再 mutate cmd_config.json |
 | `_register_custom_provider_type` | 改 framework `openai_chat_completion` type，无需 custom type |
 | `_cleanup_broken_instances / _add_or_replace_inst / is_provider_already_registered` | 改用 framework create_provider path，由 framework 处理重复 |
-| `_build_api_base` 改 main_server | 128.0.0.1:6188 直接硬编码（用户能改 dashboard_port） |
+| `_build_api_base` 改 main_server | 128.0.0.1:2023 直接硬编码（用户能改 dashboard_port） |
 
 ## v1.0.0 (2026-06-XX)
 

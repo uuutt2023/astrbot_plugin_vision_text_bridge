@@ -22,12 +22,12 @@
              │                            │
    ┌─────────▼──────────────────────┐    │
    │ 独立 OpenAI 兼容 server          │    │
-   │  127.0.0.1:6188                  │◄───┘
+   │  127.0.0.1:2023                  │◄───┘
    │  (Python stdlib asyncio)         │      register_provider:
    │  POST /v1/chat/completions       │      POST /api/v1/providers
    │  GET  /health                    │      id=vision_text_bridge_compat
    │  (无需 JWT, 仅 loopback)         │      type=openai_chat_completion
-   │                                  │      api_base=http://127.0.0.1:6188/...
+   │                                  │      api_base=http://127.0.0.1:2023/...
    │  路由 /v1/chat/completions  →     │      api_key=placeholder
    │  plugin._describe_one() → mmx →   │      model=vision-bridge
    │  返 OpenAI ChatCompletion format │
@@ -105,14 +105,14 @@ plugin._strip_residual_base64(req)
 ```
 图片对话插件 config:
   type = openai_chat_completion
-  api_base = http://127.0.0.1:6188/v1/chat/completions
+  api_base = http://127.0.0.1:2023/v1/chat/completions
   api_key = "placeholder"
   model = "vision-bridge"
 
 ↓ 图片对话插件 caption 流程
   framework creates ProviderOpenAIOfficial (type=openai_chat_completion)
   ProviderOpenAIOfficial.text_chat() calls openai SDK
-  openai SDK POST http://127.0.0.1:6188/v1/chat/completions
+  openai SDK POST http://127.0.0.1:2023/v1/chat/completions
     Authorization: Bearer placeholder  ← JWT middleware skip (loopback)
 
 ↓ 我方 server (main_server.py)
