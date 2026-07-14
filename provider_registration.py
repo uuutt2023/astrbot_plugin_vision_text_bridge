@@ -139,7 +139,7 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             return False
 
         actual_port = getattr(plugin, "_openai_compat_port", None) or DEFAULT_OPENAI_COMPAT_PORT
-        api_base = f"http://127.0.0.1:{actual_port}/v1/chat/completions"
+        api_base = f"http://127.0.0.1:{actual_port}/v1"
 
         api_key = (
             plugin.config.get("api_key", "")
