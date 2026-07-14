@@ -539,7 +539,7 @@ class VisionTextBridgePlugin(Star):
 
 
     async def _auto_register_sih_provider(self) -> None:
-        """: 启动期自动注册 OpenAI compatible provider。"""
+        """: 启动期自动注册 OpenAI compatible provider（后台异步，不阻塞启动）。"""
         if not (self.config.get("auto_register")
                 or self.config.get("auto_register_openai_compat_provider")
                 or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
@@ -548,7 +548,6 @@ class VisionTextBridgePlugin(Star):
             )
             return
         logger.info("[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册")
-        # : 提前把 openapi_key / webui_password 状态印出，方便诊断
         _openapi_key_set = bool((self.config.get("openapi_key") or "").strip())
         _webui_pw_set = bool((self.config.get("webui_password") or "").strip())
         logger.info(
@@ -557,18 +556,23 @@ class VisionTextBridgePlugin(Star):
             "已设置" if _webui_pw_set else "(空)",
         )
         try:
+            asyncio.create_task(self._bg_register_provider())
+        except Exception as e:
+            logger.exception("[vision_text_bridge] 创建后台注册任务失败: %s", e)
+            return
+
+    async def _bg_register_provider(self) -> None:
+        """: 后台等待 Dashboard 就绪后注册 provider。"""
+        await asyncio.sleep(5)
+        try:
             ok = await provider_registration.auto_register_provider(self)
         except Exception as e:
-            logger.exception("[vision_text_bridge] _auto_register_sih_provider 异常: %s", e)
+            logger.exception("[vision_text_bridge] _bg_register_provider 异常: %s", e)
             return
         if ok:
             logger.info("[vision_text_bridge] webui API 注册成功")
         else:
             logger.warning("[vision_text_bridge] webui API 注册返回 False — 请检查 openapi_key 或 webui_password 配置")
-
-        # : 集中 log 由注册成功路径处理
-        if ok:
-            logger.debug("[vision_text_bridge] _auto_register_sih_provider 成功 — 5 字段集中 log 见 _log_registered_instance")
 
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """: 检查群白名单 / 用户白名单 / 仅私聊权限。"""
