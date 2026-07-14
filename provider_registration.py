@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path as _Path
 from typing import Optional
@@ -48,38 +47,6 @@ from constants import (
 
 
 _emit("info", "provider_registration module loaded")
-
-
-async def _retry_http(
-    client: _httpx.AsyncClient,
-    method: str,
-    url: str,
-    *,
-    json: dict | None = None,
-    headers: dict | None = None,
-    params: dict | None = None,
-    label: str = "",
-    max_retries: int = 10,
-) -> _httpx.Response:
-    """带重试的 HTTP 请求 — 处理 Dashboard 启动竞态."""
-    for attempt in range(max_retries):
-        try:
-            if method == "POST":
-                return await client.post(url, json=json, headers=headers)
-            elif method == "PUT":
-                return await client.put(url, params=params, json=json, headers=headers)
-            else:
-                return await client.get(url, headers=headers)
-        except _httpx.ConnectError:
-            if attempt == max_retries - 1:
-                raise
-            delay = min(2 ** attempt, 30)  # 1, 2, 4, 8, 16, 30, 30, 30, 30, 30
-            _emit(
-                "info",
-                f"  → Dashboard 未就绪 ({label}), "
-                f"{delay}s 后重试 ({attempt+1}/{max_retries})...",
-            )
-            await asyncio.sleep(delay)
 
 
 def _get_plugin_root() -> Optional[_Path]:
@@ -245,9 +212,10 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     f"[6/6] POST {base_url}/api/v1/providers",
                 )
                 _emit("info", f"  → payload={config}")
-                create_resp = await _retry_http(
-                    client, "POST", f"{base_url}/api/v1/providers",
-                    json=config, headers=headers, label="POST providers",
+                create_resp = await client.post(
+                    f"{base_url}/api/v1/providers",
+                    json=config,
+                    headers=headers,
                 )
                 _emit(
                     "info",
@@ -299,11 +267,11 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
                     "info",
                     f"[6/6-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
                 )
-                update_resp = await _retry_http(
-                    client, "PUT", f"{base_url}/api/v1/providers/by-id",
-                    json=config, headers=headers,
+                update_resp = await client.put(
+                    f"{base_url}/api/v1/providers/by-id",
                     params={"provider_id": PROVIDER_ID},
-                    label="PUT providers/by-id",
+                    json=config,
+                    headers=headers,
                 )
                 _emit(
                     "info",
