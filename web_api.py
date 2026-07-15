@@ -606,7 +606,7 @@ async def api_image_caption(plugin, *args, **kwargs):
     if not url:
         return err("缺少 url 参数", 400)
     try:
-        caption = await plugin._describe_one(url)
+        caption = await plugin._describe_one(url, "web_ui")
     except Exception as e:
         logger.exception("[vision_text_bridge] image_caption 调 mmx 失败: %s", e)
         return err(f"mmx 描述失败: {e}", 500)
