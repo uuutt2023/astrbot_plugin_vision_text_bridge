@@ -276,6 +276,7 @@ class VisionTextBridgePlugin(Star):
         self._pending_urls: list[str] | None = None
         self._pending_parts: list[Any] | None = None
         self._pending_contexts: list[Any] | None = None
+        self._call_log: list[dict] = []  # 最近 200 条 API 调用记录
 
         if not self.config.get("enabled", True):
             logger.info("[vision_text_bridge] 插件已配置为关闭，不会拦截任何请求")
@@ -994,15 +995,48 @@ class VisionTextBridgePlugin(Star):
         if not urls:
             return []
         # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
-        descs = await asyncio.gather(*[self._describe_one(u) for u in urls])
+        descs = await asyncio.gather(*[self._describe_one(u, "llm_request") for u in urls])
         return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
 
-    async def _describe_one(self, url: str) -> str:
+    _MAX_CALL_LOG = 200
+
+    async def _describe_one(self, url: str, source: str = "unknown") -> str:
         """: 内存缓存 → SQLite 缓存 → mmx 三级查找。"""
         url = (url or "").strip()
         if not url:
             return ""
-        cacheable = self.config.get("cache_descriptions", True) and _is_cacheable_url(url, self.config)
+        t0 = time.time()
+
+        url_preview = (url[:80] + "...") if len(url) > 80 else url
+        entry = {
+            "time": time.strftime("%H:%M:%S"),
+            "url": url_preview,
+            "source": source,
+            "status": "pending",
+            "duration_ms": 0,
+            "cached": False,
+            "error": None,
+        }
+        try:
+            result = await self._describe_one_impl(url, cacheable_hint=None)
+            entry["status"] = "ok" if result else "empty"
+            entry["duration_ms"] = int((time.time() - t0) * 1000)
+            self._call_log.insert(0, entry)
+            if len(self._call_log) > self._MAX_CALL_LOG:
+                self._call_log.pop()
+            return result
+        except Exception as e:
+            entry["status"] = "error"
+            entry["error"] = str(e)[:120]
+            entry["duration_ms"] = int((time.time() - t0) * 1000)
+            self._call_log.insert(0, entry)
+            if len(self._call_log) > self._MAX_CALL_LOG:
+                self._call_log.pop()
+            raise
+
+    async def _describe_one_impl(self, url: str, cacheable_hint: bool | None = None) -> str:
+        """: 原 _describe_one 逻辑, 被包装器调用。"""
+        cacheable = self.config.get("cache_descriptions", True) and _is_cacheable_url(url, self.config) if cacheable_hint is None else cacheable_hint
 
         # : 快路径 — URL md5 当 id 查
         if cacheable:

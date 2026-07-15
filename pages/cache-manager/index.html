@@ -21,13 +21,13 @@
  <link rel="preconnect"href="https://fonts.googleapis.com" />
  <link rel="preconnect"href="https://fonts.gstatic.com"crossorigin />
  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"rel="stylesheet" />
- <link rel="stylesheet"href="./style.css?v=1.1.0" />
+ <link rel="stylesheet"href="./style.css?v=1.1.2" />
  <!-- 重新启用 AstrBot bridge SDK。
  放弃是因为 sandbox iframe 撞 CORS 错。
  真因：之前用过 crossorigin="use-credentials"撞 server wildward *。
  正确：crossorigin="anonymous" + fetch 走 bridge（bridge 用 postMessage 跟同源 parent 通信，绕开 sandbox origin=null）.
  -->
- <script src="./logger.js?v=1.1.0"></script>
+ <script src="./logger.js?v=1.1.2"></script>
 </head>
 <body>
  <div class="bg-orb orb-1"></div>
@@ -173,9 +173,31 @@
  </div>
  </div>
 
- <div id="toast"class="toast"></div>
+<div id="toast"class="toast"></div>
 
- <!-- Debug Panel (.2): 浮动控制台日志面板 -->
+<section class="call-log-panel glass"id="call-log-panel">
+  <div class="call-log-header">
+    <span class="call-log-title">插件调用日志</span>
+    <span class="call-log-count"id="call-log-count">0</span>
+    <div class="call-log-controls">
+      <label class="call-log-auto">
+        <input type="checkbox"id="call-log-auto"checked /> 自动刷新
+      </label>
+      <button class="btn ghost"id="call-log-refresh">刷新</button>
+      <button class="btn ghost"id="call-log-toggle"title="折叠">折叠</button>
+    </div>
+  </div>
+  <div class="call-log-body"id="call-log-body">
+    <table class="call-log-table">
+      <thead><tr>
+        <th>时间</th><th>来源</th><th>URL</th><th>状态</th><th>耗时</th>
+      </tr></thead>
+      <tbody id="call-log-tbody"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Debug Panel (.2): 浮动控制台日志面板 -->
  <div id="debug-panel"class="debug-panel"hidden>
  <div class="debug-header">
  <div class="debug-title">
@@ -200,6 +222,6 @@
  <div class="debug-body"id="debug-body"></div>
  </div>
  <button id="debug-show"class="debug-fab"title="显示控制台日志"hidden>日志</button>
- <script src="./app.js?v=1.1.0"></script>
+ <script src="./app.js?v=1.1.2"></script>
 </body>
 </html>

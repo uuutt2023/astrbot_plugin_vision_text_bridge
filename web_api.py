@@ -448,7 +448,7 @@ async def api_regenerate(plugin):
         plugin._caption_cache.delete(key)
     except Exception as e:
         logger.debug("[vision_text_bridge] regenerate 清理旧缓存失败: %s", e)
-    new_desc = await plugin._describe_one(url)
+    new_desc = await plugin._describe_one(url, "web_ui")
     return ok({"key": key, "description": new_desc, "ok": bool(new_desc)})
 
 
@@ -545,7 +545,7 @@ async def api_chat_completions(plugin, *args, **kwargs):
         return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
     captions: list[str] = []
     try:
-        coros = [plugin._describe_one(u) for u in image_urls]
+        coros = [plugin._describe_one(u, "smart_imagechat_hub") for u in image_urls]
         results = await asyncio.gather(*coros, return_exceptions=True)
         for cap in results:
             if isinstance(cap, Exception):
@@ -615,6 +615,11 @@ async def api_image_caption(plugin, *args, **kwargs):
     return ok({"url": url, "caption": caption})
 
 
+async def api_call_log(plugin):
+    """: 返回最近 API 调用记录 (最近 200 条) — webui 调用日志面板。"""
+    log = getattr(plugin, "_call_log", []) or []
+    return ok({"log": log, "total": len(log)})
+
 
 async def api_diag(plugin):
     """.1: 诊断 endpoint — DB 路径/schema/最近 3 条。
@@ -679,6 +684,7 @@ _ROUTES = [
     ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"],
      "缩略图：image_id 走路径参数 (GET)"),
     ("/cache/diag", api_diag, ["GET"], "诊断：DB 路径/schema/最近 3 条"),
+    ("/cache/call_log", api_call_log, ["GET"], "API 调用日志 (最近 200 条)"),
     ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "POST 主路径"),
     # : v1/chat/completions **不**注册到 framework /api/plug/<plugin>/*
     #   framework legacy_router 对该 path 强制 require_dashboard_user (JWT) 校验

@@ -581,9 +581,10 @@ async function loadStats() {
 async function loadIntegrationBadge() {
  const badge = $("integration-badge");
  if (!badge) return;
- try {
- const resp = await apiGet("/cache/integration_status");
- const d = resp?.data || resp;
+  let d;
+  try {
+  const resp = await apiGet("/cache/integration_status");
+  d = resp?.data || resp;
  if (!d) return;
  const installed = d.chat_archive_installed === true;
  const mode = d.storage_mode || "local";
@@ -1309,7 +1310,69 @@ document.addEventListener("keydown", (e) => {
 // 初始加载
 logger.info("init", "开始初始加载 stats + list + timeline");
 await Promise.all([loadStats(), loadList(), loadTimeline()]);
+await loadCallLog();
 logger.info("init", "初始加载完成", { ...state.apiStats, logs_count: logger.logs.length });
+
+// 调用日志自动刷新 — 每 5 秒
+let _callLogTimer = setInterval(async () => {
+  if ($("call-log-auto") && $("call-log-auto").checked) {
+    await loadCallLog();
+  }
+}, 5000);
+
+bind("call-log-refresh", "click", () => loadCallLog());
+bind("call-log-auto", "change", (e) => {
+  if (!e.target.checked) clearInterval(_callLogTimer);
+  else _callLogTimer = setInterval(async () => { await loadCallLog(); }, 5000);
+});
+bind("call-log-toggle", "click", () => {
+  $("call-log-body").classList.toggle("collapsed");
+  const btn = $("call-log-toggle");
+  btn.textContent = $("call-log-body").classList.contains("collapsed") ? "展开" : "折叠";
+});
+
+async function loadCallLog() {
+  try {
+    const resp = await apiGet("/cache/call_log");
+    const data = resp?.data || resp || {};
+    const log = data.log || [];
+    $("call-log-count").textContent = log.length;
+    renderCallLog(log);
+  } catch (e) {
+    logger.debug("data", "调用日志加载失败", e);
+  }
+}
+
+function renderCallLog(log) {
+  const tbody = $("call-log-tbody");
+  if (!tbody) return;
+  let html = "";
+  const sourceLabels = {
+    smart_imagechat_hub: '<span class="log-source-tag sih">hub</span>',
+    main_server: '<span class="log-source-tag server">server</span>',
+    llm_request: '<span class="log-source-tag llm">LLM</span>',
+    web_ui: '<span class="log-source-tag">web</span>',
+    unknown: '<span class="log-source-tag">?</span>',
+  };
+  for (const item of log.slice(0, 50)) {
+    const src = sourceLabels[item.source] || sourceLabels.unknown;
+    const statusCls = `log-status-${item.status}`;
+    const statusText = item.status === "ok" ? "OK" : item.status === "error" ? "ERR" : item.status === "empty" ? "--" : "...";
+    const dur = item.duration_ms ? `${item.duration_ms}ms` : "-";
+    const errTitle = item.error ? ` title="${item.error.replace(/"/g, '&quot;')}"` : "";
+    html += `<tr>
+      <td>${item.time}</td>
+      <td>${src}</td>
+      <td class="log-url"${errTitle}>${item.url || "-"}</td>
+      <td class="${statusCls}"${errTitle}>${statusText}</td>
+      <td>${dur}</td>
+    </tr>`;
+  }
+  if (!log.length) {
+    html = '<tr><td colspan="5" style="text-align:center;color:var(--text-sub);padding:20px">暂无调用记录</td></tr>';
+  }
+  tbody.innerHTML = html;
+}
 
 if (typeof bridge.onContext === "function") {
  bridge.onContext(() => {

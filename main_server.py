@@ -178,7 +178,7 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
             return {"status": "error", "message": "no image urls provided"}, 400
         coros = []
         for u in image_urls:
-            cap = plugin._describe_one(u)
+            cap = plugin._describe_one(u, "main_server")
             coros.append(cap if asyncio.iscoroutine(cap) else _wrap_sync_result(cap))
         results = await asyncio.gather(*coros, return_exceptions=True)
         for idx, cap in enumerate(results, 1):
