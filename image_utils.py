@@ -23,6 +23,17 @@ except Exception:  # noqa: BLE001
 
 _log = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
+try:
+    from PIL import Image as _PILImage
+except ImportError:
+    _PILImage = None
+
+_EXT_TO_MIME: dict[str, str] = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 __all__ = [
     # 检测/提取
     "is_image_url_part",
@@ -196,6 +207,7 @@ async def collect_image_urls_from_components(
     if not components:
         return 0
     added = 0
+    seen = set(dedupe) if dedupe else None
     for comp in components:
         ctype = getattr(comp, "type", None)
         if ctype in _NESTED_TYPES:
@@ -206,14 +218,18 @@ async def collect_image_urls_from_components(
                     break
             if ctype in ("image", "Image"):
                 fp = await _extract_image_url_from_component(comp)
-                if fp and (dedupe is None or fp not in dedupe):
+                if fp and (seen is None or fp not in seen):
+                    if seen is not None:
+                        seen.add(fp)
                     if dedupe is not None:
                         dedupe.append(fp)
                     added += 1
             continue
         if ctype in ("image", "Image"):
             fp = await _extract_image_url_from_component(comp)
-            if fp and (dedupe is None or fp not in dedupe):
+            if fp and (seen is None or fp not in seen):
+                if seen is not None:
+                    seen.add(fp)
                 if dedupe is not None:
                     dedupe.append(fp)
                 added += 1
@@ -245,14 +261,13 @@ def sniff_image_meta(data: bytes) -> tuple[str, int, int]:
     """
     if not data or len(data) < 8:
         return ("", 0, 0)
-    # 优先 PIL
-    try:
-        from PIL import Image as _PILImage  # type: ignore
-        with _PILImage.open(io.BytesIO(data)) as im:
-            mime = _PILImage.MIME.get(im.format, "") if im.format else ""
-            return (mime, int(im.width or 0), int(im.height or 0))
-    except Exception:  # noqa: BLE001
-        pass
+    if _PILImage is not None:
+        try:
+            with _PILImage.open(io.BytesIO(data)) as im:
+                mime = _PILImage.MIME.get(im.format, "") if im.format else ""
+                return (mime, int(im.width or 0), int(im.height or 0))
+        except Exception:
+            pass
     # 降级 magic bytes
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         # PNG: width @ byte 16-19, height @ 20-23 (big-endian)
@@ -411,9 +426,12 @@ async def read_image_bytes(url: str) -> bytes:
     # http(s)
     if url.startswith("http://") or url.startswith("https://"):
         try:
-            import httpx  # type: ignore
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(url)
+            if http_client is not None:
+                r = await http_client.get(url)
+            else:
+                import httpx
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    r = await client.get(url)
                 r.raise_for_status()
                 return r.content
         except Exception:  # noqa: BLE001

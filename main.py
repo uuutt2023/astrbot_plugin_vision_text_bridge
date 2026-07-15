@@ -261,6 +261,18 @@ class VisionTextBridgePlugin(Star):
         self._configured_priority: int = self._resolve_priority()
         self._last_image_bytes: dict[str, bytes] = {}
         self._priority_locked_warning_emitted = False
+        self._http_client: "httpx.AsyncClient | None" = None
+        # : 预计算白名单集合 — 避免每请求重建 set
+        self._group_whitelist_set: frozenset[str] = frozenset(
+            str(g) for g in (self.config.get("group_whitelist", []) or [])
+        )
+        self._user_whitelist_set: frozenset[str] = frozenset(
+            str(u) for u in (self.config.get("user_whitelist", []) or [])
+        )
+        # : 预分割工具过滤器名 — 避免每请求 re-split
+        self._tool_filter_names: list[str] = [
+            n.strip() for n in _cfg_str(self.config, "tool_filter_names", "").split(",") if n.strip()
+        ]
         self._pending_urls: list[str] | None = None
         self._pending_parts: list[Any] | None = None
         self._pending_contexts: list[Any] | None = None
@@ -328,6 +340,12 @@ class VisionTextBridgePlugin(Star):
     async def initialize(self) -> None:
         max_concurrent = max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
+
+        import httpx
+        self._http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0),
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
 
         # 同步 webui_password 到 framework dashboard
         try:
@@ -591,16 +609,12 @@ class VisionTextBridgePlugin(Star):
 
             # 2. 群白名单
             if not is_private and self.config.get("enable_group_whitelist", False):
-                whitelist = self.config.get("group_whitelist", []) or []
-                whitelist_str = {str(g) for g in whitelist}
-                if group_id not in whitelist_str:
+                if group_id not in self._group_whitelist_set:
                     return False, "group_not_in_whitelist"
 
             # 3. 用户白名单 (私聊/群聊都生效)
             if self.config.get("enable_user_whitelist", False):
-                whitelist = self.config.get("user_whitelist", []) or []
-                whitelist_str = {str(u) for u in whitelist}
-                if user_id not in whitelist_str:
+                if user_id not in self._user_whitelist_set:
                     return False, "user_not_in_whitelist"
 
             return True, ""
@@ -771,6 +785,9 @@ class VisionTextBridgePlugin(Star):
             self._clean_task = None
         self._description_cache.clear()
         self._caption_cache = None
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
         logger.info("[vision_text_bridge] 插件已卸载，缓存已清理")
 
     async def _clean_loop(self, ttl_days: int, interval_h: int) -> None:
@@ -917,8 +934,7 @@ class VisionTextBridgePlugin(Star):
         try:
             mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
             if mode != "off":
-                names_raw = _cfg_str(self.config, "tool_filter_names", "")
-                names = [n.strip() for n in names_raw.split(",") if n.strip()]
+                names = self._tool_filter_names
                 if names:
                     ft = getattr(req, "func_tool", None)
                     if ft is not None:
@@ -1287,12 +1303,11 @@ class VisionTextBridgePlugin(Star):
 
     # : 过滤工具
     def _filter_tools_in_event(self, event, req) -> None:
-        """提前清除 event extra 和 req.func_tool 中禁用的工具。"""
+        """: 提前清除 event extra 和 req.func_tool 中禁用的工具。"""
         mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
         if mode == "off":
             return
-        names_raw = _cfg_str(self.config, "tool_filter_names", "")
-        names = [n.strip() for n in names_raw.split(",") if n.strip()]
+        names = self._tool_filter_names
         if not names:
             return
         extra_key = _cfg_str(self.config, "tool_filter_extra_key", "_group_chat_plus_func_tool").strip()
@@ -1341,8 +1356,8 @@ class VisionTextBridgePlugin(Star):
         return CaptionCache.make_id_from_bytes(data), data
 
     async def _read_image_bytes(self, url):
-        """薄包装，实际逻辑在 image_fetch.py。"""
-        return await _read_image_bytes(url)
+        """薄包装 — 传递共享 HTTP 客户端避免每次下载重建连接。"""
+        return await _read_image_bytes(url, self._http_client)
 
 
 # ===========================================================================

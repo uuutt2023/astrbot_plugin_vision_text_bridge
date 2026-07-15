@@ -543,11 +543,13 @@ async def api_chat_completions(plugin, *args, **kwargs):
             prompt_parts.append(content)
     if not image_urls:
         return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
-    # : P0 修复 — 处理所有 image_url, 不再只取 [0]
     captions: list[str] = []
     try:
-        for u in image_urls:
-            cap = await plugin._describe_one(u)
+        coros = [plugin._describe_one(u) for u in image_urls]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for cap in results:
+            if isinstance(cap, Exception):
+                continue
             if cap:
                 captions.append(cap)
     except Exception as e:

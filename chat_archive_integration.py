@@ -12,6 +12,16 @@ from typing import Optional, Tuple
 # 图像扩展名 (与 chat_archive._CONTENT_TYPE_EXTENSIONS 反向对应)
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
+_MIME_MAP = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+_CAMO_URL_HASH_CACHE: dict[str, str] = {}
+
 
 # ---------------------------------------------------------------------------
 # 检测
@@ -94,7 +104,13 @@ def _url_hash(url: str) -> str:
     """与 chat_archive.ArchiveMediaCache._guess_extension 同一规则:
     sha256(url.encode("utf-8")) 取前 32 个 hex 字符。
     """
-    return hashlib.sha256((url or "").encode("utf-8")).hexdigest()[:32]
+    key = url or ""
+    cached = _CAMO_URL_HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    _CAMO_URL_HASH_CACHE[key] = h
+    return h
 
 
 def find_chat_archive_image(url: str) -> Optional[Tuple[bytes, str, int, int]]:
@@ -111,11 +127,7 @@ def find_chat_archive_image(url: str) -> Optional[Tuple[bytes, str, int, int]]:
         p = cache_dir / f"{h}{ext}"
         if p.is_file():
             data = p.read_bytes()
-            mime = {
-                ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                ".png": "image/png", ".gif": "image/gif",
-                ".webp": "image/webp",
-            }.get(ext, "image/jpeg")
+            mime = _MIME_MAP.get(ext, "image/jpeg")
             # 宽高从字节解析
             try:
                 w, h_px = _read_image_dimensions(data)

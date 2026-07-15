@@ -46,9 +46,6 @@ from constants import (
 )
 
 
-_emit("info", "provider_registration module loaded")
-
-
 def _get_plugin_root() -> Optional[_Path]:
     """探测 AstrBot 根目录 (向上 5 层)。"""
     try:

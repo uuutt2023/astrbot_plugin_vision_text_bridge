@@ -24,6 +24,11 @@ _port: int = 2023
 _MAX_BODY_BYTES = 50 * 1024 * 1024
 
 
+async def _wrap_sync_result(value):
+    """Wrap a sync return in a coroutine for asyncio.gather compatibility."""
+    return value
+
+
 def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
     """构造 HTTP/1.1 响应."""
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -169,23 +174,32 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     # Call plugin._describe_one (mmx-via)
     captions: list[str] = []
     try:
-        for idx, u in enumerate(image_urls, 1):
-            url_preview = (u[:80] + "...") if len(u) > 80 else u
-            t0 = time.perf_counter()
+        if not image_urls:
+            return {"status": "error", "message": "no image urls provided"}, 400
+        coros = []
+        for u in image_urls:
             cap = plugin._describe_one(u)
-            if asyncio.iscoroutine(cap):
-                cap = await cap
-            dt = (time.perf_counter() - t0) * 1000
+            coros.append(cap if asyncio.iscoroutine(cap) else _wrap_sync_result(cap))
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for idx, cap in enumerate(results, 1):
+            if isinstance(cap, Exception):
+                logger.warning(
+                    "[vision_text_bridge] mmx 调 #%d 异常: %s",
+                    idx, cap,
+                )
+                continue
+            u = image_urls[idx - 1]
+            url_preview = (u[:80] + "...") if len(u) > 80 else u
             if cap:
                 captions.append(cap)
                 logger.debug(
-                    "[vision_text_bridge] mmx 调 #%d 耗时=%.1fms 结果长度=%d 预览=%s",
-                    idx, dt, len(cap), repr(cap[:80]),
+                    "[vision_text_bridge] mmx 调 #%d 结果长度=%d 预览=%s",
+                    idx, len(cap), repr(cap[:80]),
                 )
             else:
                 logger.warning(
-                    "[vision_text_bridge] mmx 调 #%d 耗时=%.1fms 返回空 url=%s",
-                    idx, dt, url_preview,
+                    "[vision_text_bridge] mmx 调 #%d 返回空 url=%s",
+                    idx, url_preview,
                 )
     except Exception as e:
         logger.exception("chat_completions 调 mmx 失败: %s", e)
