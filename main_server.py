@@ -173,12 +173,14 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
         return {"status": "error", "message": "未提供 image_url"}, 400
     # Call plugin._describe_one (mmx-via)
     captions: list[str] = []
+    # : 将调用方传入的文本部分拼接为自定义 vision_prompt
+    caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
     try:
         if not image_urls:
             return {"status": "error", "message": "no image urls provided"}, 400
         coros = []
         for u in image_urls:
-            cap = plugin._describe_one(u, "main_server")
+            cap = plugin._describe_one(u, "main_server", vision_prompt=caller_prompt)
             coros.append(cap if asyncio.iscoroutine(cap) else _wrap_sync_result(cap))
         results = await asyncio.gather(*coros, return_exceptions=True)
         for idx, cap in enumerate(results, 1):

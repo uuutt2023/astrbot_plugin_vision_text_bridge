@@ -399,7 +399,7 @@ def _is_windows_absolute(path: str) -> bool:
     return path[1] == ":" and path[0].isalpha() and path[2] in ("\\", "/")
 
 
-async def read_image_bytes(url: str) -> bytes:
+async def read_image_bytes(url: str, http_client: Any = None) -> bytes:
     """读图片 bytes — 支持 http(s) / file:// / 本地路径 / base64 data URL。
 
     失败返空 bytes。
@@ -428,12 +428,14 @@ async def read_image_bytes(url: str) -> bytes:
         try:
             if http_client is not None:
                 r = await http_client.get(url)
-            else:
-                import httpx
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    r = await client.get(url)
                 r.raise_for_status()
                 return r.content
+            else:
+                import httpx
+                async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+                    r = await client.get(url)
+                    r.raise_for_status()
+                    return r.content
         except Exception:  # noqa: BLE001
             return b""
     # 本地路径

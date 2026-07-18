@@ -544,8 +544,10 @@ async def api_chat_completions(plugin, *args, **kwargs):
     if not image_urls:
         return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
     captions: list[str] = []
+    # : 将调用方传入的文本部分拼接为自定义 vision_prompt
+    caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
     try:
-        coros = [plugin._describe_one(u, "smart_imagechat_hub") for u in image_urls]
+        coros = [plugin._describe_one(u, "smart_imagechat_hub", vision_prompt=caller_prompt) for u in image_urls]
         results = await asyncio.gather(*coros, return_exceptions=True)
         for cap in results:
             if isinstance(cap, Exception):

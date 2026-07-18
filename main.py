@@ -544,15 +544,12 @@ class VisionTextBridgePlugin(Star):
             compat_enabled = bool(self.config.get("enable_openai_compat_endpoint")
                           or self.config.get("enable_smart_imagechat_hub_compat", True))
             if compat_enabled:
-                logger.info(
-                    "[vision_text_bridge] 检测到外部图片理解插件已安装, "
-                    "兼容 endpoint 已启用 (POST /v1/chat/completions) — "
-                    "可在其配置中指 provider id 接管 image caption"
+                logger.debug(
+                    "[vision_text_bridge] smart_imagechat_hub 兼容 endpoint 已启用"
                 )
             else:
-                logger.info(
-                    "[vision_text_bridge] 检测到外部图片理解插件已安装, "
-                    "但 enable_openai_compat_endpoint=False (合并老配置 key), 兼容 endpoint 未启用"
+                logger.debug(
+                    "[vision_text_bridge] smart_imagechat_hub 兼容 endpoint 未启用"
                 )
 
 
@@ -1000,8 +997,8 @@ class VisionTextBridgePlugin(Star):
 
     _MAX_CALL_LOG = 200
 
-    async def _describe_one(self, url: str, source: str = "unknown") -> str:
-        """: 内存缓存 → SQLite 缓存 → mmx 三级查找。"""
+    async def _describe_one(self, url: str, source: str = "unknown", vision_prompt: str = "") -> str:
+        """: 内存缓存 → SQLite 缓存 → mmx 三级查找。vision_prompt 为空时使用 config 默认值。"""
         url = (url or "").strip()
         if not url:
             return ""
@@ -1018,7 +1015,7 @@ class VisionTextBridgePlugin(Star):
             "error": None,
         }
         try:
-            result = await self._describe_one_impl(url, cacheable_hint=None)
+            result = await self._describe_one_impl(url, cacheable_hint=None, vision_prompt=vision_prompt)
             entry["status"] = "ok" if result else "empty"
             entry["duration_ms"] = int((time.time() - t0) * 1000)
             self._call_log.insert(0, entry)
@@ -1034,11 +1031,11 @@ class VisionTextBridgePlugin(Star):
                 self._call_log.pop()
             raise
 
-    async def _describe_one_impl(self, url: str, cacheable_hint: bool | None = None) -> str:
-        """: 原 _describe_one 逻辑, 被包装器调用。"""
+    async def _describe_one_impl(self, url: str, cacheable_hint: bool | None = None, vision_prompt: str = "") -> str:
+        """: 原 _describe_one 逻辑, 被包装器调用。vision_prompt 为空时使用 config 默认值。"""
         cacheable = self.config.get("cache_descriptions", True) and _is_cacheable_url(url, self.config) if cacheable_hint is None else cacheable_hint
 
-        # : 快路径 — URL md5 当 id 查
+        # : 快路径 — URL md5 当 id 查 (缓存命中时不需 prompt)
         if cacheable:
             quick_key = CaptionCache.make_id_from_url(url)
             # 1) 内存缓存
@@ -1065,7 +1062,7 @@ class VisionTextBridgePlugin(Star):
                 cache = self._last_image_bytes = {}
             cache[url] = image_bytes
 
-        # 内容 hash 命中检查
+        # 内容 hash 命中检查 (缓存命中时不需 prompt)
         if cacheable and cache_key and cache_key != quick_key:
             if cache_key in self._description_cache:
                 self._last_image_bytes.pop(url, None)
@@ -1078,17 +1075,21 @@ class VisionTextBridgePlugin(Star):
 
         # 3) 调 mmx
         try:
-            return await self._describe_via_mmx(url, cache_key, cacheable)
+            return await self._describe_via_mmx(url, cache_key, cacheable, vision_prompt=vision_prompt)
         except Exception:
             if cacheable:
                 self._last_image_bytes.pop(url, None)
             raise
 
-    async def _describe_via_mmx(self, url: str, cache_key: str | None, cacheable: bool) -> str:
-        """实际调 mmx 子进程拿描述。失败返 "" + 记 log。"""
+    async def _describe_via_mmx(self, url: str, cache_key: str | None, cacheable: bool, vision_prompt: str = "") -> str:
+        """实际调 mmx 子进程拿描述。失败返 "" + 记 log。
+
+        vision_prompt 优先级: 调用方传入 > config.vision_prompt > 内置默认值。
+        """
         timeout = max(5, _cfg_int(self.config, "command_timeout", 60))
         vision_prompt = (
-            self.config.get("vision_prompt", "")
+            vision_prompt
+            or self.config.get("vision_prompt", "")
             or "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
                "严禁猜测游戏/番剧/品牌/角色名，看不出就说'无法确定'。"
         )
