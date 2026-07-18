@@ -585,10 +585,12 @@ async def api_chat_completions(plugin, *args, **kwargs):
 
 
 async def api_image_caption(plugin, *args, **kwargs):
-    """: 简单 mmx 描述 endpoint (GET ?url=...  或 POST body {url, format}).
+    """: 简单 mmx 描述 endpoint (GET ?url=...  或 POST body {url, format, prompt}).
 
-    GET /image/caption?url=https://... → 返纯文本 caption
-    POST /image/caption {url, format=tags|text} → 返 JSON {caption, tags}
+    GET /image/caption?url=https://...&prompt=... → 返纯文本 caption
+    POST /image/caption {url, format=tags|text, prompt=...} → 返 JSON {caption, tags}
+
+    prompt 参数: 调用方自定义提示词，优先级高于插件默认配置。
     """
     try:
         method = (quart_request.method or "GET").upper()
@@ -597,18 +599,21 @@ async def api_image_caption(plugin, *args, **kwargs):
     if method == "GET":
         try:
             url = (quart_request.args.get("url") or "").strip()
+            caller_prompt = (quart_request.args.get("prompt") or "").strip()
         except Exception:
             url = ""
+            caller_prompt = ""
     else:
         try:
             body = await quart_request.get_json(force=True, silent=True) or {}
         except Exception:
             body = {}
         url = (body.get("url") or "").strip()
+        caller_prompt = (body.get("prompt") or "").strip()
     if not url:
         return err("缺少 url 参数", 400)
     try:
-        caption = await plugin._describe_one(url, "web_ui")
+        caption = await plugin._describe_one(url, "web_ui", vision_prompt=caller_prompt)
     except Exception as e:
         logger.exception("[vision_text_bridge] image_caption 调 mmx 失败: %s", e)
         return err(f"mmx 描述失败: {e}", 500)

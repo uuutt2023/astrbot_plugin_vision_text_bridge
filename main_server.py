@@ -96,7 +96,7 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
         )
 
         # 路由
-        if method.upper() == "POST" and path in ("/v1/chat/completions", "/v1/chat/completions/chat/completions"):
+        if method.upper() == "POST" and path in ("/v1/chat/completions", "/v1/chat/completions/chat/completions", "/v1"):
             try:
                 body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             except Exception as e:
