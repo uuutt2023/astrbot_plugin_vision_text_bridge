@@ -1093,6 +1093,11 @@ class VisionTextBridgePlugin(Star):
             or "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
                "严禁猜测游戏/番剧/品牌/角色名，看不出就说'无法确定'。"
         )
+        if self._should_log("hook_trace"):
+            logger.info(
+                "[vision_text_bridge] _describe_via_mmx 使用提示词(前80字): %s",
+                self._preview(vision_prompt, 80),
+            )
         command = self._build_vision_command(url, vision_prompt)
         assert self._vision_semaphore is not None
         async with self._vision_semaphore:

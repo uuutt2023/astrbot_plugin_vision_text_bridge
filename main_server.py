@@ -175,6 +175,12 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     captions: list[str] = []
     # : 将调用方传入的文本部分拼接为自定义 vision_prompt
     caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
+    logger.info(
+        "[vision_text_bridge] 收到 /v1/chat/completions 请求: images=%d "
+        "prompt_len=%d caller_prompt=%s",
+        len(image_urls), len(caller_prompt),
+        repr(caller_prompt[:120]),
+    )
     try:
         if not image_urls:
             return {"status": "error", "message": "no image urls provided"}, 400
