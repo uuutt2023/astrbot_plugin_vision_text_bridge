@@ -197,7 +197,11 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
                 )
                 continue
             u = image_urls[idx - 1]
-            url_preview = (u[:80] + "...") if len(u) > 80 else u
+            if u.startswith("data:") and "," in u:
+                comma = u.find(",")
+                url_preview = f"{u[:comma]},{u[comma+1:comma+9]}...{{{len(u)-comma-1}}}B"
+            else:
+                url_preview = (u[:80] + "...") if len(u) > 80 else u
             if cap:
                 captions.append(cap)
                 logger.debug(

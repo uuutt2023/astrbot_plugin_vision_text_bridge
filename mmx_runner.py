@@ -75,7 +75,8 @@ async def run_mmx(
         return MmxResult("", "mmx CLI 未配置或未安装", -1, False)
 
     if log_subprocess:
-        logger.info("[vision_text_bridge] mmx cmd: %s", redact_text(" ".join(args)))
+        logger.info("[vision_text_bridge] mmx cmd: %s",
+                    redact_text(_truncate_data_urls(" ".join(args))))
 
     proc = await asyncio.create_subprocess_exec(
         mmx_path, *args,
@@ -346,6 +347,25 @@ def redact_text(text: str) -> str:
     for p in _SENSITIVE:
         text = p.sub(lambda m: m.group(0)[:4] + "***REDACTED***", text)
     return text
+
+
+_DATA_URL_RE = re.compile(r"data:[^,\s]+;base64,[A-Za-z0-9+/]+={0,2}")
+
+
+def _truncate_data_urls(text: str) -> str:
+    """将命令行中的 data URL 截断为短预览，避免日志膨胀。"""
+    if not text:
+        return text
+    return _DATA_URL_RE.sub(_truncate_data_url_match, text)
+
+
+def _truncate_data_url_match(m: re.Match) -> str:
+    url = m.group(0)
+    comma = url.find(",")
+    if comma > 0:
+        b64 = url[comma + 1:]
+        return f"{url[:comma]},{b64[:8]}...{{{len(b64)}}}B"
+    return url
 
 
 def redact_args(args: tuple[str, ...], config: dict) -> tuple[str, ...]:

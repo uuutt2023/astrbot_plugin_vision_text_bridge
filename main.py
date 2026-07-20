@@ -1004,7 +1004,7 @@ class VisionTextBridgePlugin(Star):
             return ""
         t0 = time.time()
 
-        url_preview = (url[:80] + "...") if len(url) > 80 else url
+        url_preview = self._smart_url_preview(url, 80)
         entry = {
             "time": time.strftime("%H:%M:%S"),
             "url": url_preview,
@@ -1042,7 +1042,7 @@ class VisionTextBridgePlugin(Star):
             if quick_key in self._description_cache:
                 if self._should_log("cache_trace"):
                     logger.info("[vision_text_bridge] 命中内存缓存 (快路径, 跳过下载): key=%s, url=%s",
-                                quick_key[:16], self._preview(url))
+                                quick_key[:16], self._smart_url_preview(url))
                 return self._description_cache[quick_key]
             # 2) SQLite 缓存
             if self._caption_cache is not None:
@@ -1126,11 +1126,11 @@ class VisionTextBridgePlugin(Star):
             result = await self._run_mmx(*command, timeout=timeout)
             return result, None
         except asyncio.TimeoutError:
-            logger.warning("[vision_text_bridge] mmx 超时(%ss): %s", timeout, self._preview(url))
+            logger.warning("[vision_text_bridge] mmx 超时(%ss): %s", timeout, self._smart_url_preview(url))
             return None, "timeout"
         except Exception as e:
             self._diagnose_mmx_error(str(e), url)
-            logger.warning("[vision_text_bridge] mmx 异常: %s, err=%s", self._preview(url), e)
+            logger.warning("[vision_text_bridge] mmx 异常: %s, err=%s", self._smart_url_preview(url), e)
             return None, str(e)
 
     def _log_mmx_failure(self, result, url: str) -> None:
@@ -1138,7 +1138,7 @@ class VisionTextBridgePlugin(Star):
         self._diagnose_mmx_error(err_text, url)
         logger.warning(
             "[vision_text_bridge] mmx 失败: %s, exit=%d, err=%s",
-            self._preview(url), result.returncode, self._redact_text(err_text[:300]),
+            self._smart_url_preview(url), result.returncode, self._redact_text(err_text[:300]),
         )
         if self._should_log("mmx_subprocess"):
             # 优化: redact + slice 只在 verbose 开启时执行 (避开 2000B 字符串构造)
@@ -1149,7 +1149,7 @@ class VisionTextBridgePlugin(Star):
     def _log_mmx_success(self, url: str, description: str, elapsed: float) -> None:
         logger.info(
             "[vision_text_bridge] mmx 完成: %s, 耗时=%.2fs, 长度=%d",
-            self._preview(url), elapsed, len(description),
+            self._smart_url_preview(url), elapsed, len(description),
         )
         logger.info("[vision_text_bridge] 描述预览: %s", self._preview(description, 120))
 
@@ -1173,7 +1173,7 @@ class VisionTextBridgePlugin(Star):
             logger.info(
                 "[vision_text_bridge] 写 SQLite 缓存成功: id=%s, url=%s, "
                 "desc_len=%d, b64=%dB, mime=%s, size=%d",
-                image_id[:16], self._preview(url, 60), len(description), len(b64), mime, size,
+                image_id[:16], self._smart_url_preview(url, 60), len(description), len(b64), mime, size,
             )
         except Exception as e:
             logger.warning("[vision_text_bridge] 写 SQLite 缓存失败: %s", e)
@@ -1189,7 +1189,7 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.warning(
                 "[vision_text_bridge] 读图字节失败（仅缩略图受影响，description 仍会写）: %s",
-                self._preview(url), exc_info=False,
+                self._smart_url_preview(url), exc_info=False,
             )
             if self._should_log("id_computation"):
                 logger.debug("[vision_text_bridge] 读字节异常详情: %s", e)
@@ -1341,6 +1341,22 @@ class VisionTextBridgePlugin(Star):
     def _preview(self, text: str, limit: int = 80) -> str:
         return _preview_text(text, limit, self.config)
 
+    def _smart_url_preview(self, url: str, limit: int = 80) -> str:
+        """URL 预览 — data URL 智能截断，普通 URL 退到 _preview。
+
+        data:image/jpeg;base64,/9j/4AAQSkZJRg... → data:image/jpeg;base64,/9j/4AAQ...{N}B
+        """
+        if not url or not isinstance(url, str):
+            return ""
+        if url.startswith("data:") and "," in url:
+            comma = url.find(",")
+            prefix = url[:comma]  # data:image/jpeg;base64
+            b64 = url[comma + 1:]
+            if len(b64) > 10:
+                return f"{prefix},{b64[:8]}...{{{len(b64)}}}B"
+            return f"{prefix},{b64[:8]}"
+        return self._preview(url, limit)
+
     # : 过滤工具
     def _filter_tools_in_event(self, event, req) -> None:
         """: 提前清除 event extra 和 req.func_tool 中禁用的工具。"""
@@ -1386,7 +1402,7 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             if self._should_log("id_computation"):
                 logger.debug("[vision_text_bridge] 读图字节失败，image_id 退到 md5(url): %s, err=%s",
-                             self._preview(url), e)
+                             self._smart_url_preview(url), e)
             return CaptionCache.make_id_from_url(url), b""
         if not data:
             return CaptionCache.make_id_from_url(url), b""
