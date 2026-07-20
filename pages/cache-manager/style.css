@@ -472,6 +472,50 @@ main {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     border-bottom: 1px solid var(--glass-border);
+    position: relative;
+}
+
+#cache-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+#cache-table th.sortable:hover {
+    color: var(--text-main);
+    background: rgba(99, 102, 241, 0.08);
+}
+
+#cache-table th.sortable.active {
+    color: var(--primary);
+}
+
+#cache-table th.sortable .sort-arrow {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    margin-left: 5px;
+    vertical-align: middle;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    opacity: 0.4;
+    transition: opacity 0.2s, border-color 0.2s;
+}
+
+#cache-table th.sortable.sort-asc .sort-arrow {
+    opacity: 1;
+    border-bottom: 5px solid var(--primary);
+    border-top: none;
+}
+
+#cache-table th.sortable.sort-desc .sort-arrow {
+    opacity: 1;
+    border-top: 5px solid var(--primary);
+    border-bottom: none;
+}
+
+#cache-table th.sortable:hover .sort-arrow {
+    opacity: 0.7;
 }
 
 #cache-table td {

@@ -809,9 +809,10 @@ async function loadList() {
  search: state.search,
  order_by: state.order_by,
  });
- const data = resp?.data || resp;
- state.total = data.total ?? 0;
- const items = data.items || [];
+  const data = resp?.data || resp;
+  state.total = data.total ?? 0;
+  const items = data.items || [];
+  state._items = items;  // 保存一份给客户端排序用
  renderList(items);
  const from = state.total === 0 ? 0 : state.offset + 1;
  const to = Math.min(state.offset + state.limit, state.total);
@@ -1276,11 +1277,86 @@ bind("search-input", "input", (e) => {
  }, 300);
 });
 
+// ----- 表头点击排序 -----
+function _updateSortHeaders(activeCol, isDesc) {
+  document.querySelectorAll("#cache-table th.sortable").forEach((th) => {
+    const col = th.dataset.sort;
+    th.classList.remove("active", "sort-asc", "sort-desc");
+    if (col === activeCol) {
+      th.classList.add("active", isDesc ? "sort-desc" : "sort-asc");
+    }
+  });
+  // 同步下拉框
+  const sel = $("order-by");
+  if (sel && activeCol === "created_at") {
+    sel.value = isDesc ? "created_at_desc" : "created_at_asc";
+  }
+}
+
+function _sortItems(items, col, desc) {
+  const sorted = items.slice().sort((a, b) => {
+    let va, vb;
+    switch (col) {
+      case "url":
+        va = (a.image_url || "").toLowerCase();
+        vb = (b.image_url || "").toLowerCase();
+        break;
+      case "desc_len":
+        va = (a.description || "").length;
+        vb = (b.description || "").length;
+        break;
+      case "dim":
+        va = (a.width || 0) * (a.height || 0);
+        vb = (b.width || 0) * (b.height || 0);
+        break;
+      case "created_at":
+        va = a.created_at || "";
+        vb = b.created_at || "";
+        break;
+      default:
+        return 0;
+    }
+    if (va < vb) return desc ? 1 : -1;
+    if (va > vb) return desc ? -1 : 1;
+    return 0;
+  });
+  return sorted;
+}
+
+let _sortCol = "created_at";
+let _sortDesc = true;
+
+document.querySelectorAll("#cache-table th.sortable").forEach((th) => {
+  th.addEventListener("click", () => {
+    const col = th.dataset.sort;
+    const isSame = col === _sortCol;
+    _sortDesc = isSame ? !_sortDesc : (col === "created_at");
+    _sortCol = col;
+    _updateSortHeaders(col, _sortDesc);
+
+    if (col === "created_at") {
+      state.order_by = _sortDesc ? "created_at_desc" : "created_at_asc";
+      state.offset = 0;
+      loadList();
+    } else {
+      const items = state._items || [];
+      const sorted = _sortItems(items, col, _sortDesc);
+      renderList(sorted);
+    }
+    logger.info("ui", `表头排序: ${col} ${_sortDesc ? "desc" : "asc"}`);
+  });
+});
+
+// : 下拉排序保持双向同步
 bind("order-by", "change", (e) => {
- logger.info("ui", `排序切换: ${e.target.value}`);
- state.order_by = e.target.value;
- state.offset = 0;
- loadList();
+  const v = e.target.value;
+  logger.info("ui", `下拉排序切换: ${v}`);
+  state.order_by = v;
+  _sortCol = "created_at";
+  _sortDesc = v === "created_at_desc";
+  _updateSortHeaders("created_at", _sortDesc);
+  state.offset = 0;
+  loadList();
 });
 
 bind("prev-btn", "click", () => {

@@ -114,16 +114,16 @@
 
  <section class="table-wrap glass">
  <table id="cache-table">
- <thead>
- <tr>
- <th style="width: 96px">缩略图</th>
- <th>URL / 路径</th>
- <th>描述（mmx vision describe）</th>
- <th style="width: 90px">尺寸</th>
- <th style="width: 160px">创建时间</th>
- <th style="width: 120px">操作</th>
- </tr>
- </thead>
+  <thead>
+  <tr>
+  <th style="width: 96px">缩略图</th>
+  <th class="sortable" data-sort="url">URL / 路径 <span class="sort-arrow"></span></th>
+  <th class="sortable" data-sort="desc_len">描述 <span class="sort-arrow"></span></th>
+  <th class="sortable" data-sort="dim">尺寸 <span class="sort-arrow"></span></th>
+  <th class="sortable active sort-desc" data-sort="created_at">创建时间 <span class="sort-arrow"></span></th>
+  <th style="width: 120px">操作</th>
+  </tr>
+  </thead>
  <tbody id="cache-tbody">
  <tr class="empty">
  <td colspan="7">
