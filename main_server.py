@@ -218,7 +218,7 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
         return {"status": "error", "message": f"mmx 描述失败: {e}"}, 500
     if not captions:
         return {"status": "error", "message": "mmx 描述返回空"}, 500
-    caption_text = "\n".join(f"[图片{i+1}] {c}" for i, c in enumerate(captions))
+    caption_text = "\n".join(captions)
     logger.debug(
         "[vision_text_bridge] 描述合并完成: 共 %d 张, 总长 %d 字符",
         len(captions), len(caption_text),

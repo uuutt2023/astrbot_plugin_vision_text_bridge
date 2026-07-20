@@ -560,7 +560,7 @@ async def api_chat_completions(plugin, *args, **kwargs):
     if not captions:
         return err("mmx 描述返回空", 500)
     # 多张图拼成一段 (用换行分隔, LLM 看到是结构化列表)
-    caption = "\n".join(f"[图片{i+1}] {c}" for i, c in enumerate(captions))
+    caption = "\n".join(captions)
     # 包装成 OpenAI ChatCompletion response
     model = body.get("model") or "vision_text_bridge"
     return ok({
