@@ -1,6 +1,6 @@
 # astrbot_plugin_vision_text_bridge
 
-AstrBot 图片转文字桥接插件：把对话中收到的图片自动转成文字描述（MiniMax `mmx vision describe`），再交给对话 LLM 处理；同时暴露 OpenAI 兼容接口，供 smart_imagechat_hub 等插件作为 vision provider 调用。
+AstrBot 图片转文字桥接插件：把对话中收到的图片自动转成文字描述（MiniMax `mmx vision describe`），再交给对话 LLM 处理；同时暴露 OpenAI 兼容接口，供其他插件作为 vision provider 调用。
 
 ## 功能
 
@@ -22,7 +22,7 @@ AstrBot 图片转文字桥接插件：把对话中收到的图片自动转成文
 
 - LLM 不支持图片（纯文本模型）
 - 降低 token 消耗（文字描述通常 50–300 字，远小于 base64）
-- smart_imagechat_hub 等插件需要统一 vision provider 接口
+- 其他插件需要统一 vision provider 接口
 - 需要缓存管理、调用追踪
 
 ## 安装
@@ -54,7 +54,7 @@ Dashboard → 插件管理 → 图片转文字 → 配置。
 
 ### 自动注册 Provider
 
-启动时插件会把自身注册为 AstrBot provider，供 smart_imagechat_hub 等插件通过 OpenAI 接口调用。
+启动时插件会把自身注册为 AstrBot provider，供其他插件通过 OpenAI 接口调用。
 
 推荐方式：
 1. Dashboard → 设置 → OpenAPI → 创建 Key（格式 `abk_xxx`）
