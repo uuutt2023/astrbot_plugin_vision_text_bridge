@@ -831,21 +831,10 @@ class VisionTextBridgePlugin(Star):
     async def bridge_vision_to_text(
         self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs
     ) -> None:
-        if not self.config.get("enabled", True):
+        if not self._should_handle_hook(event):
             return
-        if not self.mmx_path:
-            logger.warning("[vision_text_bridge] 跳过本次拦截：未配置 mmx CLI")
-            return
-        # : 权限检查 (群白名单 / 用户白名单 / 仅私聊) — 不通过直接 return
-        allowed, skip_reason = self._check_permission(event)
-        if not allowed:
-            if self._should_log("hook_trace"):
-                logger.info("[vision_text_bridge] 跳过拦截（%s）", skip_reason)
-            return
-        if self._vision_semaphore is None:
-            self._vision_semaphore = asyncio.Semaphore(
-                max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
-            )
+
+        self._ensure_vision_semaphore()
 
         # === 0) 预先过滤待注入的工具集 ===
         # chat_plus 在 priority=-1 才会 merge, 我们提前清理
@@ -856,44 +845,8 @@ class VisionTextBridgePlugin(Star):
                 logger.debug("[vision_text_bridge] 工具过滤跳过：%s", e)
 
         # === 1) 快照三类图片来源，**先清空** 防 AstrBot 切 fallback provider ===
-        saved_urls = list(req.image_urls or [])
-        saved_parts = list(req.extra_user_content_parts or []) if req.extra_user_content_parts else []
-        saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
-
-        # : 诊断日志 — 打印 saved_urls 原始来源
-        if self._should_log("hook_trace"):
-            logger.info(
-                "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
-                len(saved_urls),
-                [u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u for u in saved_urls],
-            )
-
-        # 从 event.message_obj 补提（防御 chat_plus 抽走图）
-        # req.image_urls 空时才递归补，避免同一张图重复 mmx
-        if event is not None and not saved_urls:
-            try:
-                chain = getattr(getattr(event, "message_obj", None), "message", None)
-                if chain:
-                    added_count = await _collect_image_urls_from_components(chain, saved_urls)
-                    type_summary = [str(getattr(c, "type", "?")) for c in chain]
-                    logger.info(
-                        "[vision_text_bridge] chain 顶层 types=%s, 递归补提了 %d 张图",
-                        type_summary, added_count,
-                    )
-            except Exception as e:
-                if self._should_log("hook_trace"):
-                    logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)
-
-        # : 过滤 bot 头像 URL (q.qlogo.cn 固定模式)
-        if saved_urls:
-            filtered = [u for u in saved_urls if not (isinstance(u, str) and _BOT_AVATAR_PAT.search(u))]
-            if len(filtered) != len(saved_urls):
-                removed = set(saved_urls) - set(filtered)
-                logger.info(
-                    "[vision_text_bridge] 过滤 bot 头像 %d 张: %s",
-                    len(removed), list(removed),
-                )
-                saved_urls = filtered
+        saved_urls, saved_parts, saved_contexts = await self._capture_request_sources(event, req)
+        saved_urls = self._filter_image_sources(saved_urls)
 
         # 清空
         req.image_urls = []
@@ -916,6 +869,87 @@ class VisionTextBridgePlugin(Star):
             self._inject_guidance(req)
         except Exception as e:
             logger.exception("[vision_text_bridge] 处理请求时未捕获异常: %s", e)
+
+    def _should_handle_hook(self, event: AstrMessageEvent) -> bool:
+        """guard 子句集中: 启用 / mmx CLI / 权限三道前置检查。"""
+        if not self.config.get("enabled", True):
+            return False
+        if not self.mmx_path:
+            logger.warning("[vision_text_bridge] 跳过本次拦截：未配置 mmx CLI")
+            return False
+        allowed, skip_reason = self._check_permission(event)
+        if not allowed:
+            if self._should_log("hook_trace"):
+                logger.info("[vision_text_bridge] 跳过拦截（%s）", skip_reason)
+            return False
+        return True
+
+    def _ensure_vision_semaphore(self) -> None:
+        """懒初始化并发信号量。"""
+        if self._vision_semaphore is None:
+            self._vision_semaphore = asyncio.Semaphore(
+                max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
+            )
+
+    async def _capture_request_sources(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> tuple[list, list, list]:
+        """快照 req 上的三类图片来源 (image_urls / parts / contexts)。
+
+        当 req.image_urls 为空时, 额外从 event.message_obj 递归补提 (防御
+        chat_plus 提前抽走图)。
+        """
+        saved_urls = list(req.image_urls or [])
+        saved_parts = (
+            list(req.extra_user_content_parts or [])
+            if req.extra_user_content_parts else []
+        )
+        saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
+
+        if self._should_log("hook_trace"):
+            logger.info(
+                "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
+                len(saved_urls),
+                [u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u for u in saved_urls],
+            )
+
+        # req.image_urls 空时才递归补，避免同一张图重复 mmx
+        if event is not None and not saved_urls:
+            await self._maybe_collect_from_event_chain(event, saved_urls)
+
+        return saved_urls, saved_parts, saved_contexts
+
+    async def _maybe_collect_from_event_chain(
+        self, event: AstrMessageEvent, saved_urls: list
+    ) -> None:
+        """从 event.message_obj 递归补提图片 URL (防御 chat_plus 抽走图)。"""
+        try:
+            chain = getattr(getattr(event, "message_obj", None), "message", None)
+            if not chain:
+                return
+            added_count = await _collect_image_urls_from_components(chain, saved_urls)
+            type_summary = [str(getattr(c, "type", "?")) for c in chain]
+            logger.info(
+                "[vision_text_bridge] chain 顶层 types=%s, 递归补提了 %d 张图",
+                type_summary, added_count,
+            )
+        except Exception as e:
+            if self._should_log("hook_trace"):
+                logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)
+
+    def _filter_image_sources(self, saved_urls: list) -> list:
+        """过滤 bot 头像 URL (q.qlogo.cn 固定模式)。"""
+        if not saved_urls:
+            return saved_urls
+        filtered = [u for u in saved_urls if not (isinstance(u, str) and _BOT_AVATAR_PAT.search(u))]
+        if len(filtered) != len(saved_urls):
+            removed = set(saved_urls) - set(filtered)
+            logger.info(
+                "[vision_text_bridge] 过滤 bot 头像 %d 张: %s",
+                len(removed), list(removed),
+            )
+            return filtered
+        return saved_urls
 
     @filter.on_llm_request(priority=-10000)
     async def strip_residual_base64(
