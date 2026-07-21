@@ -17,6 +17,7 @@ import json
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -137,79 +138,103 @@ async def read_key_from_request(context, debug: bool = False) -> str:
 
     注:  加 debug=True 打到 warning level, 调试 backend 接收问题时用。
     """
-    key = ""
-    debug_lines: list[str] = []
+    debug_log = _DebugLog()
 
-    # 1. query
-    try:
-        query = quart_request.args or {}
-        if hasattr(query, "get"):
-            key = (query.get("key") or "").strip()
-        debug_lines.append(
-            f"query={dict(query) if hasattr(query, 'items') else query!r}"
-        )
-    except Exception as e:
-        debug_lines.append(f"query-err={e}")
-    if key:
-        if debug:
-            logger.warning(f"[vtb-debug] key from query: {key[:12]}  ({'; '.join(debug_lines)})")
-        return key
-
-    # 2. json body
-    try:
-        body = await quart_request.get_json(silent=True)
-        if body is None:
-            body = {}
-        # 兼容两种 key 名: 'key' (我的代码) / 'id' (angel_memory 风格)
-        key = (body.get("key") or body.get("id") or "").strip()
-        debug_lines.append(f"json-body={body!r}")
-    except Exception as e:
-        debug_lines.append(f"json-err={type(e).__name__}: {e}")
-    if key:
-        if debug:
-            logger.warning(f"[vtb-debug] key from json: {key[:12]}  ({'; '.join(debug_lines)})")
-        return key
-
-    # 3. form body
-    try:
-        form = await quart_request.form
-        if form and hasattr(form, "get"):
-            key = (form.get("key") or form.get("id") or "").strip()
-            debug_lines.append(
-                f"form-body={dict(form) if hasattr(form, 'items') else form!r}"
-            )
-    except Exception as e:
-        debug_lines.append(f"form-err={type(e).__name__}")
-    if key:
-        if debug:
-            logger.warning(f"[vtb-debug] key from form: {key[:12]}  ({'; '.join(debug_lines)})")
-        return key
-
-    # 4. raw text 兜底
-    try:
-        raw = await quart_request.get_data(as_text=True)
-        if raw:
-            debug_lines.append(f"raw-text={raw[:200]!r}")
-            if "=" in raw:
-                from urllib.parse import parse_qs
-                parsed = parse_qs(raw)
-                vals = parsed.get("key", []) or parsed.get("id", [])
-                if vals:
-                    key = vals[0].strip()
-                    if debug:
-                        logger.warning(
-                            f"[vtb-debug] key from raw-text: {key[:12]}  "
-                            f"({'; '.join(debug_lines)})"
-                        )
-                    return key
-        else:
-            debug_lines.append("raw-text=empty")
-    except Exception as e:
-        debug_lines.append(f"raw-err={type(e).__name__}")
+    for source_name, extractor in _KEY_SOURCES:
+        key, ok = await _try_extract(source_name, extractor, debug_log)
+        if ok:
+            if debug:
+                logger.warning(
+                    f"[vtb-debug] key from {source_name}: {key[:12]}  "
+                    f"({debug_log.join()})"
+                )
+            return key
 
     if debug:
-        logger.warning(f"[vtb-debug] NO KEY FOUND ({'; '.join(debug_lines)})")
-    return key
+        logger.warning(f"[vtb-debug] NO KEY FOUND ({debug_log.join()})")
+    return ""
+
+
+class _DebugLog:
+    """累积诊断信息，debug 模式最终合并输出。"""
+
+    __slots__ = ("_lines",)
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+
+    def add(self, line: str) -> None:
+        self._lines.append(line)
+
+    def join(self) -> str:
+        return "; ".join(self._lines)
+
+
+async def _try_extract(
+    source_name: str,
+    extractor,
+    debug_log: _DebugLog,
+) -> tuple[str, bool]:
+    """运行单个 key 提取器，统一异常处理 + debug 日志。"""
+    try:
+        key = await extractor(debug_log)
+        return (key or "").strip(), bool(key)
+    except Exception as e:
+        debug_log.add(f"{source_name}-err={type(e).__name__}: {e}")
+        return "", False
+
+
+async def _extract_from_query(debug_log: _DebugLog) -> str:
+    query = quart_request.args or {}
+    debug_log.add(
+        f"query={dict(query) if hasattr(query, 'items') else query!r}"
+    )
+    if not hasattr(query, "get"):
+        return ""
+    return (query.get("key") or "").strip()
+
+
+async def _extract_from_json(debug_log: _DebugLog) -> str:
+    body = await quart_request.get_json(silent=True)
+    if body is None:
+        body = {}
+    debug_log.add(f"json-body={body!r}")
+    # 兼容两种 key 名: 'key' (我的代码) / 'id' (angel_memory 风格)
+    return (body.get("key") or body.get("id") or "").strip()
+
+
+async def _extract_from_form(debug_log: _DebugLog) -> str:
+    form = await quart_request.form
+    if not form or not hasattr(form, "get"):
+        return ""
+    debug_log.add(
+        f"form-body={dict(form) if hasattr(form, 'items') else form!r}"
+    )
+    return (form.get("key") or form.get("id") or "").strip()
+
+
+async def _extract_from_raw_text(debug_log: _DebugLog) -> str:
+    from urllib.parse import parse_qs
+
+    raw = await quart_request.get_data(as_text=True)
+    if not raw:
+        debug_log.add("raw-text=empty")
+        return ""
+    debug_log.add(f"raw-text={raw[:200]!r}")
+    if "=" not in raw:
+        return ""
+    parsed = parse_qs(raw)
+    vals = parsed.get("key", []) or parsed.get("id", [])
+    return vals[0].strip() if vals else ""
+
+
+# 4 路 key 提取按顺序尝试。列表顺序 = 优先级。
+_KEY_SOURCES: tuple[tuple[str, Callable], ...] = (
+    ("query", _extract_from_query),
+    ("json", _extract_from_json),
+    ("form", _extract_from_form),
+    ("raw-text", _extract_from_raw_text),
+)
 
 
 # ---------------------------------------------------------------------------
