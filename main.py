@@ -1011,6 +1011,11 @@ class VisionTextBridgePlugin(Star):
             return []
         # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
         descs = await asyncio.gather(*[self._describe_one(u, "llm_request AstrBot hook") for u in urls])
+        if self._caption_cache is not None:
+            try:
+                self._caption_cache.clean_call_logs(self._MAX_CALL_LOG)
+            except Exception:
+                pass
         return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
 
     _MAX_CALL_LOG = 200
@@ -1021,7 +1026,6 @@ class VisionTextBridgePlugin(Star):
         try:
             entry["created_at"] = time.time()
             self._caption_cache.insert_call_log(entry)
-            self._caption_cache.clean_call_logs(self._MAX_CALL_LOG)
         except Exception:
             pass
 

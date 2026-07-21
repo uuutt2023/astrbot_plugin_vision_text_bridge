@@ -179,6 +179,33 @@ const state = {
  apiStats: { calls: 0, errors: 0, lastLatencyMs: null },
 };
 
+// ----- 按钮防抖 -----
+// 调用期间禁用按钮并保留文案，防止快速双击触发重复请求。
+// 顶层按钮直接传 DOM，行内按钮用 findByDataId('delete'/'regen', id)。
+function withButtonGuard(button, fn) {
+ if (!button) return fn();
+ if (button.disabled) {
+ logger.debug("ui", "按钮忙，跳过重复点击");
+ return Promise.resolve();
+ }
+ const original = button.textContent;
+ button.disabled = true;
+ const busyText = original && original.length > 0 ? `${original}…` : "处理中…";
+ button.textContent = busyText;
+ return Promise.resolve()
+ .then(() => fn())
+ .finally(() => {
+ button.disabled = false;
+ button.textContent = original;
+ });
+}
+
+function guardRowButton(action, id, fn) {
+ const sel = `button[data-action="${action}"][data-id="${CSS.escape(id)}"]`;
+ const btn = document.querySelector(sel);
+ return withButtonGuard(btn, fn);
+}
+
 // ----- Debug Panel (.2) -----
 
 // 增量 append——不再每次都全量 innerHTML 重写
@@ -645,16 +672,25 @@ function renderStatusBar(data) {
 
 // 拉取 + 画柱状图
 let _timelineCache = null; // 上次拉的 buckets，供自动刷新复用
+let _timelineSvgHash = ""; // 上次 SVG 数据指纹，跳过无变化重建
+
 async function loadTimeline() {
- try {
- const resp = await apiGet("/cache/stats/timeline", { days: 30 });
- const data = resp?.data || resp;
- _timelineCache = data.buckets || [];
- drawTimeline(_timelineCache);
- logger.debug("timeline", `已画 ${_timelineCache.length} 天柱状图`);
- } catch (e) {
- logger.error("timeline", "loadTimeline 失败", e);
- }
+  try {
+  const resp = await apiGet("/cache/stats/timeline", { days: 30 });
+  const data = resp?.data || resp;
+  const buckets = data.buckets || [];
+  const hash = JSON.stringify(buckets);
+  if (hash === _timelineSvgHash) {
+    logger.debug("timeline", "数据未变，跳过 SVG 重建");
+    return;
+  }
+  _timelineSvgHash = hash;
+  _timelineCache = buckets;
+  drawTimeline(_timelineCache);
+  logger.debug("timeline", `已画 ${_timelineCache.length} 天柱状图`);
+  } catch (e) {
+  logger.error("timeline", "loadTimeline 失败", e);
+  }
 }
 
 function drawTimeline(buckets) {
@@ -852,32 +888,31 @@ function renderList(items) {
  // 懒加载缩略图（: 走并发池 6 路，不再一次性 20 个打 bridge）
  const slots = Array.from(tbody.querySelectorAll(".thumb-slot"));
  slots.forEach((slot) => ensureThumb(slot.dataset.id, slot));
- logger.debug("render", `已提交 ${slots.length} 张缩略图到并发池（上限 6）`);
-
- // 操作按钮
- tbody.querySelectorAll("button[data-action]").forEach((btn) => {
- btn.addEventListener("click", () => {
- const action = btn.dataset.action;
- const id = btn.dataset.id;
- logger.debug("ui", `点击 ${action} 按钮`, { id });
- if (action === "delete") onDelete(id);
- else if (action === "regen") onRegenerate(id);
- else if (action === "view") onView(id);
- });
- });
-
- // 描述展开
- tbody.querySelectorAll(".desc-toggle").forEach((btn) => {
- btn.addEventListener("click", () => {
- const cell = $(btn.dataset.target);
- if (cell) {
- cell.classList.toggle("expanded");
- btn.textContent = cell.classList.contains("expanded") ? "收起 ↑":"展开 ↓";
- logger.debug("ui", `描述展开状态切换: ${cell.classList.contains("expanded")}`);
- }
- });
- });
+  logger.debug("render", `已提交 ${slots.length} 张缩略图到并发池（上限 6）`);
 }
+
+// 事件委托 — 在 <tbody> 上处理所有按钮点击，避免逐行绑定
+$("cache-tbody").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (btn) {
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    logger.debug("ui", `点击 ${action} 按钮`, { id });
+    if (action === "delete") guardRowButton("delete", id, () => onDelete(id));
+    else if (action === "regen") guardRowButton("regen", id, () => onRegenerate(id));
+    else if (action === "view") onView(id);
+    return;
+  }
+  const toggle = e.target.closest(".desc-toggle");
+  if (toggle) {
+    const cell = $(toggle.dataset.target);
+    if (cell) {
+      cell.classList.toggle("expanded");
+      toggle.textContent = cell.classList.contains("expanded") ? "收起 ↑" : "展开 ↓";
+    }
+    return;
+  }
+});
 
 // ----- thumbnail lazy loading -----
 
@@ -1201,14 +1236,15 @@ async function onDiag() {
 
 // ----- event binding -----
 
-bind("refresh-btn", "click", async () => {
+bind("refresh-btn", "click", () => withButtonGuard($("refresh-btn"), async () => {
  logger.info("ui", "点击刷新按钮");
  state.thumbCache.clear();
+ _timelineSvgHash = "";
  await Promise.all([loadStats(), loadList(), loadTimeline()]);
-});
-bind("clear-btn", "click", onClear);
-$("clean-expired-btn")?.addEventListener("click", onCleanExpired);
-bind("export-btn", "click", onExport);
+}));
+bind("clear-btn", "click", () => withButtonGuard($("clear-btn"), () => onClear()));
+$("clean-expired-btn")?.addEventListener("click", (e) => withButtonGuard(e.currentTarget, () => onCleanExpired()));
+bind("export-btn", "click", () => withButtonGuard($("export-btn"), () => onExport()));
 
 // 自动刷新 toggle
 let _autoRefreshTimer = null;
@@ -1218,24 +1254,27 @@ function setAutoRefresh(enabled) {
  clearInterval(_autoRefreshTimer);
  _autoRefreshTimer = null;
  }
- if (enabled) {
- logger.info("auto-refresh", `开启自动刷新, 间隔 ${AUTO_REFRESH_MS}ms`);
- _autoRefreshTimer = setInterval(async () => {
- logger.debug("auto-refresh", "tick");
- try {
- await Promise.all([loadStats(), loadList(), loadTimeline()]);
- } catch (e) {
- logger.warn("auto-refresh", "tick 失败: " + (e?.message || e));
- }
- }, AUTO_REFRESH_MS);
- } else {
+  if (enabled) {
+  logger.info("auto-refresh", `开启自动刷新, 间隔 ${AUTO_REFRESH_MS}ms`);
+  _autoRefreshTimer = setInterval(async () => {
+  logger.debug("auto-refresh", "tick");
+  try {
+  await Promise.all([loadStats(), loadList(), loadTimeline()]);
+  if ($("call-log-auto") && $("call-log-auto").checked) {
+    loadCallLog().catch(() => {});
+  }
+  } catch (e) {
+  logger.warn("auto-refresh", "tick 失败: " + (e?.message || e));
+  }
+  }, AUTO_REFRESH_MS);
+  } else {
  logger.info("auto-refresh", "关闭自动刷新");
  }
 }
 $("auto-refresh-toggle")?.addEventListener("change", (e) => {
  setAutoRefresh(e.target.checked);
 });
-bind("diag-btn", "click", onDiag);
+bind("diag-btn", "click", () => withButtonGuard($("diag-btn"), () => onDiag()));
 
 let searchTimer = null;
 bind("search-input", "input", (e) => {
@@ -1361,17 +1400,9 @@ await Promise.all([loadStats(), loadList(), loadTimeline()]);
 await loadCallLog();
 logger.info("init", "初始加载完成", { ...state.apiStats, logs_count: logger.logs.length });
 
-// 调用日志自动刷新 — 每 5 秒
-let _callLogTimer = setInterval(async () => {
-  if ($("call-log-auto") && $("call-log-auto").checked) {
-    await loadCallLog();
-  }
-}, 5000);
-
 bind("call-log-refresh", "click", () => loadCallLog());
 bind("call-log-auto", "change", (e) => {
-  if (!e.target.checked) clearInterval(_callLogTimer);
-  else _callLogTimer = setInterval(async () => { await loadCallLog(); }, 5000);
+  if (e.target.checked) loadCallLog();
 });
 bind("call-log-toggle", "click", () => {
   $("call-log-body").classList.toggle("collapsed");
