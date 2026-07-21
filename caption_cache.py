@@ -85,6 +85,20 @@ class CaptionCache:
     );
     CREATE INDEX IF NOT EXISTS idx_captions_created_at
         ON image_captions(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS call_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        time TEXT NOT NULL,
+        url TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        cached INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_call_log_created_at
+        ON call_log(created_at DESC);
     """
 
     # 后续添加的列(用于老 DB 升级)
@@ -391,3 +405,60 @@ class CaptionCache:
             day = (start_of_today - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
             out.append({"date": day, "count": counts.get(day, 0)})
         return out
+
+    # ------------------------------------------------------------------ call_log persistence
+
+    def insert_call_log(self, entry: dict) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO call_log (time, url, source, status, duration_ms, cached, error, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry.get("time", ""),
+                    entry.get("url", ""),
+                    entry.get("source", ""),
+                    entry.get("status", "unknown"),
+                    entry.get("duration_ms", 0),
+                    1 if entry.get("cached") else 0,
+                    entry.get("error"),
+                    entry.get("created_at", time.time()),
+                ),
+            )
+            conn.commit()
+
+    def load_call_logs(self, limit: int = 200) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT time, url, source, status, duration_ms, cached, error "
+                "FROM call_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "time": r["time"],
+                "url": r["url"],
+                "source": r["source"],
+                "status": r["status"],
+                "duration_ms": r["duration_ms"],
+                "cached": bool(r["cached"]),
+                "error": r["error"],
+            }
+            for r in rows
+        ]
+
+    def clean_call_logs(self, keep: int = 200) -> int:
+        deleted = 0
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM call_log").fetchone()
+            total = int(row["c"])
+            if total > keep:
+                excess = total - keep
+                cur = conn.execute(
+                    "DELETE FROM call_log WHERE id IN ("
+                    "  SELECT id FROM call_log ORDER BY id ASC LIMIT ?"
+                    ")",
+                    (excess,),
+                )
+                deleted = cur.rowcount
+                conn.commit()
+        return deleted

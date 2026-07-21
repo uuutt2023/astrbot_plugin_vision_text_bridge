@@ -283,7 +283,7 @@ class VisionTextBridgePlugin(Star):
         self._pending_urls: list[str] | None = None
         self._pending_parts: list[Any] | None = None
         self._pending_contexts: list[Any] | None = None
-        self._call_log: list[dict] = []  # 最近 200 条 API 调用记录
+        self._call_log: list[dict] = []  # 最近 200 条 API 调用记录 (内存 + SQLite 双写)
 
         if not self.config.get("enabled", True):
             logger.info("[vision_text_bridge] 插件已配置为关闭，不会拦截任何请求")
@@ -421,6 +421,17 @@ class VisionTextBridgePlugin(Star):
                 "[vision_text_bridge] 描述缓存已初始化: %s (条目=%d)",
                 db_path, self._caption_cache.count(),
             )
+            # 从 SQLite 恢复调用日志
+            try:
+                loaded = self._caption_cache.load_call_logs(self._MAX_CALL_LOG)
+                if loaded:
+                    self._call_log = loaded
+                    logger.info(
+                        "[vision_text_bridge] 已从 SQLite 恢复 %d 条调用日志",
+                        len(loaded),
+                    )
+            except Exception as exc:
+                logger.warning("[vision_text_bridge] 恢复调用日志失败: %s", exc)
         except Exception as exc:
             logger.exception("[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc)
             self._caption_cache = None
@@ -1004,6 +1015,16 @@ class VisionTextBridgePlugin(Star):
 
     _MAX_CALL_LOG = 200
 
+    def _persist_call_log(self, entry: dict) -> None:
+        if self._caption_cache is None:
+            return
+        try:
+            entry["created_at"] = time.time()
+            self._caption_cache.insert_call_log(entry)
+            self._caption_cache.clean_call_logs(self._MAX_CALL_LOG)
+        except Exception:
+            pass
+
     async def _describe_one(self, url: str, source: str = "unknown", vision_prompt: str = "") -> str:
         """: 内存缓存 → SQLite 缓存 → mmx 三级查找。vision_prompt 为空时使用 config 默认值。"""
         url = (url or "").strip()
@@ -1028,6 +1049,7 @@ class VisionTextBridgePlugin(Star):
             self._call_log.insert(0, entry)
             if len(self._call_log) > self._MAX_CALL_LOG:
                 self._call_log.pop()
+            self._persist_call_log(entry)
             return result
         except Exception as e:
             entry["status"] = "error"
@@ -1036,6 +1058,7 @@ class VisionTextBridgePlugin(Star):
             self._call_log.insert(0, entry)
             if len(self._call_log) > self._MAX_CALL_LOG:
                 self._call_log.pop()
+            self._persist_call_log(entry)
             raise
 
     async def _describe_one_impl(self, url: str, cacheable_hint: bool | None = None, vision_prompt: str = "") -> str:
