@@ -386,7 +386,7 @@ async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> 
     if not mmx_path:
         return None
     proc = await asyncio.create_subprocess_exec(
-        mmx_path, "file", "upload", filepath,
+        mmx_path, "file", "upload", "--file", filepath,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -407,12 +407,20 @@ async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> 
         return None
     try:
         data = json.loads(stdout.decode("utf-8", errors="replace"))
-        fid = data.get("file_id") or data.get("id") or data.get("data", {}).get("file_id")
+        fid = (
+            data.get("file_id")
+            or data.get("id")
+            or (data.get("data") or {}).get("file_id")
+            or (data.get("data") or {}).get("id")
+        )
         if fid:
             return str(fid)
     except (ValueError, json.JSONDecodeError):
         pass
-    logger.warning("[vision_text_bridge] mmx 文件上传返回无法解析: %s", stdout[:200])
+    logger.warning(
+        "[vision_text_bridge] mmx 文件上传返回无法解析: stdout=%s stderr=%s",
+        stdout[:200], (stderr.decode("utf-8", errors="replace") or "").strip()[:200],
+    )
     return None
 
 
