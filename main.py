@@ -7,9 +7,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib.util
+import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,7 @@ from mmx_runner import (
     diagnose_mmx_error as _diagnose_mmx_error_fn,
     truncate as _truncate_text, strip_mmx_content as _strip_mmx_content_fn,
     preview as _preview_text, redact_text as _redact_text, redact_args as _redact_args_fn,
+    upload_mmx_file as _upload_mmx_file_fn,
 )
 import web_api
 try:
@@ -99,6 +102,10 @@ from constants import (
 # AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
 # priority 在 import 时锁定，调配置后需重启 AstrBot。
 DEFAULT_PRIORITY = 100
+
+# : data URL 超过此阈值（字节）改用 mmx file upload 而非 --image 命令行参数，
+#   规避 OS ARG_MAX / "Argument list too long" 错误。
+_DATA_URL_CMD_THRESHOLD = 40 * 1024
 
 # 预编译 bot 头像 URL 过滤 regex
 _BOT_AVATAR_PAT = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
@@ -1085,6 +1092,7 @@ class VisionTextBridgePlugin(Star):
         """实际调 mmx 子进程拿描述。失败返 "" + 记 log。
 
         vision_prompt 优先级: 调用方传入 > config.vision_prompt > 内置默认值。
+        data: URL 过大时自动改用 mmx file upload → --file-id，规避 OS ARG_MAX 限制。
         """
         timeout = max(5, _cfg_int(self.config, "command_timeout", 60))
         vision_prompt = (
@@ -1098,7 +1106,14 @@ class VisionTextBridgePlugin(Star):
                 "[vision_text_bridge] _describe_via_mmx 使用提示词(前80字): %s",
                 self._preview(vision_prompt, 80),
             )
-        command = self._build_vision_command(url, vision_prompt)
+
+        effective_url = url
+        if url.startswith("data:") and len(url) > _DATA_URL_CMD_THRESHOLD:
+            fid = await self._upload_data_url_to_mmx(url)
+            if fid:
+                effective_url = f"file-{fid}"
+
+        command = self._build_vision_command(effective_url, vision_prompt)
         assert self._vision_semaphore is not None
         async with self._vision_semaphore:
             t0 = time.monotonic()
@@ -1119,6 +1134,50 @@ class VisionTextBridgePlugin(Star):
                 preloaded = self._last_image_bytes.pop(url, b"")
                 await self._persist(cache_key, url, description, image_bytes=preloaded)
             return description
+
+    async def _upload_data_url_to_mmx(self, url: str) -> str | None:
+        """将 data: URL 解码 → 临时文件 → mmx file upload → 返回 file_id。"""
+        comma = url.find(",")
+        if comma <= 0:
+            return None
+        b64 = url[comma + 1:]
+        ext = "png"
+        prefix = url[:comma].lower()
+        if "jpeg" in prefix or "jpg" in prefix:
+            ext = "jpg"
+        elif "gif" in prefix:
+            ext = "gif"
+        elif "webp" in prefix:
+            ext = "webp"
+        try:
+            raw = base64.b64decode(b64)
+        except Exception as e:
+            logger.warning("[vision_text_bridge] base64 解码失败: %s", e)
+            return None
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+                f.write(raw)
+                tmp_path = f.name
+            logger.info(
+                "[vision_text_bridge] data URL 过大(%dB)→写临时文件 %s, 正在上传 mmx",
+                len(url), tmp_path,
+            )
+            fid = await _upload_mmx_file_fn(str(self.mmx_path), tmp_path, timeout=30)
+            if fid:
+                logger.info("[vision_text_bridge] mmx 文件上传成功, file_id=%s", fid)
+                return fid
+            logger.warning("[vision_text_bridge] mmx 文件上传失败，回退到直接传参")
+            return None
+        except Exception as e:
+            logger.warning("[vision_text_bridge] mmx 文件上传流程异常: %s", e)
+            return None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     async def _exec_mmx_safely(self, command, timeout, url):
         """调 mmx 子进程, 把各种异常收拢为 (result, err) 二元返 (要么有 result, 要么 err 是 str)。"""

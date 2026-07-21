@@ -381,6 +381,41 @@ def _truncate_cmd_log(text: str) -> str:
     return s
 
 
+async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> str | None:
+    """上传文件到 mmx，返回 file_id，失败返 None。"""
+    if not mmx_path:
+        return None
+    proc = await asyncio.create_subprocess_exec(
+        mmx_path, "file", "upload", filepath,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        logger.warning("[vision_text_bridge] mmx 文件上传超时(%ss): %s", timeout, filepath)
+        return None
+    if proc.returncode != 0:
+        logger.warning(
+            "[vision_text_bridge] mmx 文件上传失败: rc=%d stderr=%s",
+            proc.returncode, (stderr.decode("utf-8", errors="replace") or "").strip()[:200],
+        )
+        return None
+    try:
+        data = json.loads(stdout.decode("utf-8", errors="replace"))
+        fid = data.get("file_id") or data.get("id") or data.get("data", {}).get("file_id")
+        if fid:
+            return str(fid)
+    except (ValueError, json.JSONDecodeError):
+        pass
+    logger.warning("[vision_text_bridge] mmx 文件上传返回无法解析: %s", stdout[:200])
+    return None
+
+
 def redact_args(args: tuple[str, ...], config: dict) -> tuple[str, ...]:
     """关 ``redact_sensitive`` 时返脱敏版 args (用于 log)。"""
     if not config.get("redact_sensitive", True):
