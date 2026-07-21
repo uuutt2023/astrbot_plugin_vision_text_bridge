@@ -999,7 +999,7 @@ class VisionTextBridgePlugin(Star):
         if not urls:
             return []
         # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
-        descs = await asyncio.gather(*[self._describe_one(u, "llm_request") for u in urls])
+        descs = await asyncio.gather(*[self._describe_one(u, "llm_request AstrBot hook") for u in urls])
         return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
 
     _MAX_CALL_LOG = 200

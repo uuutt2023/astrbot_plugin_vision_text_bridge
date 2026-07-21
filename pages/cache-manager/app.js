@@ -1423,22 +1423,27 @@ function renderCallLog(log) {
   const tbody = $("call-log-tbody");
   if (!tbody) return;
   let html = "";
-  const sourceLabels = {
-    smart_imagechat_hub: '<span class="log-source-tag sih">hub</span>',
-    main_server: '<span class="log-source-tag server">server</span>',
-    llm_request: '<span class="log-source-tag llm">LLM</span>',
-    web_ui: '<span class="log-source-tag">web</span>',
-    unknown: '<span class="log-source-tag">?</span>',
+  const sourceCls = {
+    smart_imagechat_hub: "hub",
+    main_server: "server",
+    llm_request: "llm",
+    web_ui: "webui",
   };
   for (const item of log.slice(0, 50)) {
-    const src = sourceLabels[item.source] || sourceLabels.unknown;
+    const src = item.source || "unknown";
+    const parts = src.split(/\s+/);
+    const srcKey = parts[0];
+    const method = parts.slice(1).join(" ");
+    const cls = sourceCls[srcKey] || "";
+    const tagCls = cls ? `log-source-tag ${cls}` : "log-source-tag";
+    const srcHtml = `<span class="${tagCls}">${srcKey}</span>` + (method ? `<span class="log-source-method">${method}</span>` : "");
     const statusCls = `log-status-${item.status}`;
     const statusText = item.status === "ok" ? "OK" : item.status === "error" ? "ERR" : item.status === "empty" ? "--" : "...";
     const dur = item.duration_ms ? `${item.duration_ms}ms` : "-";
     const errTitle = item.error ? ` title="${item.error.replace(/"/g, '&quot;')}"` : "";
     html += `<tr>
       <td>${item.time}</td>
-      <td>${src}</td>
+      <td>${srcHtml}</td>
       <td class="log-url"${errTitle}>${item.url || "-"}</td>
       <td class="${statusCls}"${errTitle}>${statusText}</td>
       <td>${dur}</td>

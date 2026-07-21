@@ -448,7 +448,7 @@ async def api_regenerate(plugin):
         plugin._caption_cache.delete(key)
     except Exception as e:
         logger.debug("[vision_text_bridge] regenerate 清理旧缓存失败: %s", e)
-    new_desc = await plugin._describe_one(url, "web_ui")
+    new_desc = await plugin._describe_one(url, "web_ui /cache/refresh")
     return ok({"key": key, "description": new_desc, "ok": bool(new_desc)})
 
 
@@ -547,7 +547,7 @@ async def api_chat_completions(plugin, *args, **kwargs):
     # : 将调用方传入的文本部分拼接为自定义 vision_prompt
     caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
     try:
-        coros = [plugin._describe_one(u, "smart_imagechat_hub", vision_prompt=caller_prompt) for u in image_urls]
+        coros = [plugin._describe_one(u, "smart_imagechat_hub /image/caption", vision_prompt=caller_prompt) for u in image_urls]
         results = await asyncio.gather(*coros, return_exceptions=True)
         for cap in results:
             if isinstance(cap, Exception):
@@ -613,7 +613,7 @@ async def api_image_caption(plugin, *args, **kwargs):
     if not url:
         return err("缺少 url 参数", 400)
     try:
-        caption = await plugin._describe_one(url, "web_ui", vision_prompt=caller_prompt)
+        caption = await plugin._describe_one(url, "web_ui /image/caption", vision_prompt=caller_prompt)
     except Exception as e:
         logger.exception("[vision_text_bridge] image_caption 调 mmx 失败: %s", e)
         return err(f"mmx 描述失败: {e}", 500)
