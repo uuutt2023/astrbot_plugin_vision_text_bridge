@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -240,45 +241,103 @@ def diagnose_mmx_error(
     preview_url_fn,
     _diagnosed: set[str],
 ) -> None:
-    """mmx 错误首次出现时警告一次。"""
+    """mmx 错误首次出现时警告一次。
+
+    用 match-case + 数据驱动的诊断器列表替代多层 if-elif。
+    每个 ``_DIAGNOSER`` 元素: ``(key, predicate, message_template)``。
+    新增错误类型时只需追加一条, 不再改动主流程。
+    """
     if not err_text:
         return
-    lo = err_text.lower()
 
-    if "insufficient balance" in lo or "余额" in err_text or (
-        "quota" in lo and ("exceed" in lo or "limit" in lo or "不足" in err_text)
-    ):
-        _warn_once(_diagnosed, "balance", "[vision_text_bridge] mmx 报 'insufficient balance'。可能：\n"
-            "  (1) mmx 路由到不识别该 key 的 endpoint\n"
-            "  (2) 该 key 实际属另一环境（staging/test），未在生产 Token Plan 中\n"
-            "  (3) mmx CLI 版本过旧、调用已废弃 endpoint\n"
-            "  (4) 这个 key 仅开通 text、未开通 vision\n"
-            "排查：`mmx --version` / `mmx auth status` / `mmx quota` / "
-            "手动 `mmx vision describe --image <本地图>`\n"
-            "若 1~3 正常但 4 报错, 几乎确认是 mmx 版本/endpoint 的问题, "
-            "请加 `verbose_mmx_subprocess: true` 后重试。")
-        return
-    if "http 200" in lo or ("http" in lo and "error" in lo and "code" in lo):
-        _warn_once(_diagnosed, "http200", "[vision_text_bridge] mmx 返回 HTTP 200 但 body 是 error JSON。\n"
-            "通常：mmx CLI 过旧 / key 在该 endpoint 无权限 / key 属另一环境。\n"
-            "调试：`mmx --version` / `mmx auth status` / `mmx quota` / "
-            "手动 `mmx vision describe --image <本地图>`。")
-        return
-    if ("unauthenticated" in lo or "unauthorized" in lo
-            or ("auth" in lo and ("expired" in lo or "invalid" in lo))
-            or "认证失败" in err_text or "未登录" in err_text):
-        _warn_once(_diagnosed, "auth", "[vision_text_bridge] mmx 认证失败。检查 minimax_api_key / "
-            "`mmx auth status` / 手动 `mmx auth login --api-key <key>`。")
-        return
-    if ("invalid argument" in lo or "no such file" in lo or "file not found" in lo
-            or "model not found" in lo or "unknown model" in lo):
-        _warn_once(_diagnosed, "argument", f"[vision_text_bridge] mmx 参数/模型错误。可能：\n"
-            f"  (1) 图片路径不可访问：{preview_url_fn(url)}\n"
-            f"  (2) mmx 不识别该模型名。手动 `mmx vision describe --image <本地图>` 验证。")
-        return
-    if "timeout" in lo or "connection" in lo or "network" in lo or "eof" in lo:
-        _warn_once(_diagnosed, "network", "[vision_text_bridge] mmx 网络异常。手动 `mmx quota` 验证。")
-        return
+    lo = err_text.lower()
+    preview = preview_url_fn(url)
+    for key, predicate, message in _DIAGNOSERS:
+        if predicate(lo, err_text):
+            _warn_once(_diagnosed, key, message.format(preview=preview))
+            return
+
+
+# ---------------------------------------------------------------------------
+# 错误诊断表（数据驱动）
+# ---------------------------------------------------------------------------
+
+def _is_balance_error(lo: str, raw: str) -> bool:
+    return (
+        "insufficient balance" in lo
+        or "余额" in raw
+        or ("quota" in lo and ("exceed" in lo or "limit" in lo or "不足" in raw))
+    )
+
+
+def _is_http200_error(lo: str, raw: str) -> bool:
+    return "http 200" in lo or ("http" in lo and "error" in lo and "code" in lo)
+
+
+def _is_auth_error(lo: str, raw: str) -> bool:
+    return (
+        "unauthenticated" in lo
+        or "unauthorized" in lo
+        or ("auth" in lo and ("expired" in lo or "invalid" in lo))
+        or "认证失败" in raw
+        or "未登录" in raw
+    )
+
+
+def _is_argument_error(lo: str, raw: str) -> bool:
+    return (
+        "invalid argument" in lo
+        or "no such file" in lo
+        or "file not found" in lo
+        or "model not found" in lo
+        or "unknown model" in lo
+    )
+
+
+def _is_network_error(lo: str, raw: str) -> bool:
+    return "timeout" in lo or "connection" in lo or "network" in lo or "eof" in lo
+
+
+_BALANCE_HINT = (
+    "[vision_text_bridge] mmx 报 'insufficient balance'。可能：\n"
+    "  (1) mmx 路由到不识别该 key 的 endpoint\n"
+    "  (2) 该 key 实际属另一环境（staging/test），未在生产 Token Plan 中\n"
+    "  (3) mmx CLI 版本过旧、调用已废弃 endpoint\n"
+    "  (4) 这个 key 仅开通 text、未开通 vision\n"
+    "排查：`mmx --version` / `mmx auth status` / `mmx quota` / "
+    "手动 `mmx vision describe --image <本地图>`\n"
+    "若 1~3 正常但 4 报错, 几乎确认是 mmx 版本/endpoint 的问题, "
+    "请加 `verbose_mmx_subprocess: true` 后重试。"
+)
+
+_HTTP200_HINT = (
+    "[vision_text_bridge] mmx 返回 HTTP 200 但 body 是 error JSON。\n"
+    "通常：mmx CLI 过旧 / key 在该 endpoint 无权限 / key 属另一环境。\n"
+    "调试：`mmx --version` / `mmx auth status` / `mmx quota` / "
+    "手动 `mmx vision describe --image <本地图>`。"
+)
+
+_AUTH_HINT = (
+    "[vision_text_bridge] mmx 认证失败。检查 minimax_api_key / "
+    "`mmx auth status` / 手动 `mmx auth login --api-key <key>`。"
+)
+
+_ARGUMENT_HINT = (
+    "[vision_text_bridge] mmx 参数/模型错误。可能：\n"
+    "  (1) 图片路径不可访问：{preview}\n"
+    "  (2) mmx 不识别该模型名。手动 `mmx vision describe --image <本地图>` 验证。"
+)
+
+_NETWORK_HINT = "[vision_text_bridge] mmx 网络异常。手动 `mmx quota` 验证。"
+
+
+_DIAGNOSERS: tuple[tuple[str, Callable[[str, str], bool], str], ...] = (
+    ("balance", _is_balance_error, _BALANCE_HINT),
+    ("http200", _is_http200_error, _HTTP200_HINT),
+    ("auth", _is_auth_error, _AUTH_HINT),
+    ("argument", _is_argument_error, _ARGUMENT_HINT),
+    ("network", _is_network_error, _NETWORK_HINT),
+)
 
 
 def _warn_once(_diagnosed: set[str], key: str, message: str) -> None:
