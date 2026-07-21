@@ -146,34 +146,11 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     )
     if not messages:
         return {"status": "error", "message": "messages 不能为空"}, 400
-    image_urls: list[str] = []
-    prompt_parts: list[str] = []
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                ptype = part.get("type")
-                if ptype == "image_url":
-                    url = (part.get("image_url") or {}).get("url")
-                    if isinstance(url, str) and url:
-                        image_urls.append(url)
-                elif ptype == "text":
-                    t = part.get("text")
-                    if t:
-                        prompt_parts.append(t)
-        elif isinstance(content, str):
-            prompt_parts.append(content)
-    logger.debug(
-        "[vision_text_bridge] 提取结果: image_urls=%d, prompt_chars=%d",
-        len(image_urls), sum(len(p) for p in prompt_parts),
-    )
+
+    image_urls, prompt_parts = _parse_messages(messages)
     if not image_urls:
         return {"status": "error", "message": "未提供 image_url"}, 400
-    # Call plugin._describe_one (mmx-via)
-    captions: list[str] = []
-    # : 将调用方传入的文本部分拼接为自定义 vision_prompt
+
     caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
     logger.info(
         "[vision_text_bridge] 收到 /v1/chat/completions 请求: images=%d "
@@ -181,43 +158,102 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
         len(image_urls), len(caller_prompt),
         repr(caller_prompt[:120]),
     )
-    try:
-        if not image_urls:
-            return {"status": "error", "message": "no image urls provided"}, 400
-        coros = []
-        for u in image_urls:
-            cap = plugin._describe_one(u, "main_server /v1/chat/completions", vision_prompt=caller_prompt)
-            coros.append(cap if asyncio.iscoroutine(cap) else _wrap_sync_result(cap))
-        results = await asyncio.gather(*coros, return_exceptions=True)
-        for idx, cap in enumerate(results, 1):
-            if isinstance(cap, Exception):
-                logger.warning(
-                    "[vision_text_bridge] mmx 调 #%d 异常: %s",
-                    idx, cap,
-                )
-                continue
-            u = image_urls[idx - 1]
-            if u.startswith("data:") and "," in u:
-                comma = u.find(",")
-                url_preview = f"{u[:comma]},{u[comma+1:comma+9]}...{{{len(u)-comma-1}}}B"
-            else:
-                url_preview = (u[:80] + "...") if len(u) > 80 else u
-            if cap:
-                captions.append(cap)
-                logger.debug(
-                    "[vision_text_bridge] mmx 调 #%d 结果长度=%d 预览=%s",
-                    idx, len(cap), repr(cap[:80]),
-                )
-            else:
-                logger.warning(
-                    "[vision_text_bridge] mmx 调 #%d 返回空 url=%s",
-                    idx, url_preview,
-                )
-    except Exception as e:
-        logger.exception("chat_completions 调 mmx 失败: %s", e)
-        return {"status": "error", "message": f"mmx 描述失败: {e}"}, 500
+
+    captions = await _describe_all_images(plugin, image_urls, caller_prompt)
     if not captions:
         return {"status": "error", "message": "mmx 描述返回空"}, 500
+
+    return _build_chat_response(model_in, captions), 200
+
+
+def _parse_messages(messages: list) -> tuple[list[str], list[str]]:
+    """从 OpenAI messages 数组提取 image_urls 和文本 parts。"""
+    image_urls: list[str] = []
+    prompt_parts: list[str] = []
+    for msg in messages:
+        for url, text in _extract_parts(msg.get("content")):
+            if url:
+                image_urls.append(url)
+            if text:
+                prompt_parts.append(text)
+    logger.debug(
+        "[vision_text_bridge] 提取结果: image_urls=%d, prompt_chars=%d",
+        len(image_urls), sum(len(p) for p in prompt_parts),
+    )
+    return image_urls, prompt_parts
+
+
+def _extract_parts(content) -> list[tuple[str, str]]:
+    """从单个 message.content 抽 (image_url, text) 对。
+
+    content 可能是 str (整段文本) 或 list[dict] (多模态分段)。
+    """
+    if isinstance(content, str):
+        return [("", content)]
+    if not isinstance(content, list):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+        if ptype == "image_url":
+            url = (part.get("image_url") or {}).get("url")
+            if isinstance(url, str) and url:
+                pairs.append((url, ""))
+        elif ptype == "text":
+            t = part.get("text")
+            if t:
+                pairs.append(("", t))
+    return pairs
+
+
+async def _describe_all_images(
+    plugin, image_urls: list[str], caller_prompt: str
+) -> list[str]:
+    """并发调 plugin._describe_one 处理所有图片。返回非空描述列表。"""
+    try:
+        coros = [
+            plugin._describe_one(u, "main_server /v1/chat/completions", vision_prompt=caller_prompt)
+            for u in image_urls
+        ]
+        wrapped = [c if asyncio.iscoroutine(c) else _wrap_sync_result(c) for c in coros]
+        results = await asyncio.gather(*wrapped, return_exceptions=True)
+    except Exception as e:
+        logger.exception("chat_completions 调 mmx 失败: %s", e)
+        return []
+
+    captions: list[str] = []
+    for idx, cap in enumerate(results, 1):
+        if isinstance(cap, Exception):
+            logger.warning("[vision_text_bridge] mmx 调 #%d 异常: %s", idx, cap)
+            continue
+        u = image_urls[idx - 1]
+        url_preview = _preview_url(u)
+        if cap:
+            captions.append(cap)
+            logger.debug(
+                "[vision_text_bridge] mmx 调 #%d 结果长度=%d 预览=%s",
+                idx, len(cap), repr(cap[:80]),
+            )
+        else:
+            logger.warning(
+                "[vision_text_bridge] mmx 调 #%d 返回空 url=%s",
+                idx, url_preview,
+            )
+    return captions
+
+
+def _preview_url(url: str) -> str:
+    """data URL 紧凑预览；普通 URL 截 80 字符。"""
+    if url.startswith("data:") and "," in url:
+        comma = url.find(",")
+        return f"{url[:comma]},{url[comma+1:comma+9]}...{{{len(url)-comma-1}}}B"
+    return (url[:80] + "...") if len(url) > 80 else url
+
+
+def _build_chat_response(model: str, captions: list[str]) -> dict:
+    """组装 OpenAI 兼容的 chat.completion 响应体。"""
     caption_text = "\n".join(captions)
     logger.debug(
         "[vision_text_bridge] 描述合并完成: 共 %d 张, 总长 %d 字符",
@@ -227,14 +263,14 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": model_in,
+        "model": model,
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": caption_text},
             "finish_reason": "stop",
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-    }, 200
+    }
 
 
 async def start_solo_server(plugin, port: int = 2023) -> int | None:
