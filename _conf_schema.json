@@ -56,19 +56,6 @@
       }
     }
   },
-  "并发": {
-    "description": "并发",
-    "type": "object",
-    "hint": "单条消息内并行图片数。",
-    "items": {
-      "max_concurrent_vision": {
-        "description": "最大并发数",
-        "type": "int",
-        "hint": "建议 1-4，避免 API 限流。",
-        "default": 3
-      }
-    }
-  },
   "图像理解": {
     "description": "图像理解",
     "type": "object",
@@ -103,6 +90,19 @@
         "type": "bool",
         "hint": "去掉加粗/列表前缀/多余空行，省 ~25% token。",
         "default": true
+      }
+    }
+  },
+  "并发": {
+    "description": "并发",
+    "type": "object",
+    "hint": "单条消息内并行图片数。",
+    "items": {
+      "max_concurrent_vision": {
+        "description": "最大并发数",
+        "type": "int",
+        "hint": "建议 1-4，避免 API 限流。",
+        "default": 3
       }
     }
   },
@@ -199,6 +199,43 @@
       }
     }
   },
+  "权限控制": {
+    "description": "权限控制",
+    "type": "object",
+    "hint": "群/用户白名单与私聊限制。",
+    "items": {
+      "enable_group_whitelist": {
+        "description": "启用群白名单",
+        "type": "bool",
+        "hint": "仅白名单内的群生效。",
+        "default": false
+      },
+      "group_whitelist": {
+        "description": "群白名单",
+        "type": "list",
+        "hint": "QQ 群号列表。",
+        "default": []
+      },
+      "enable_user_whitelist": {
+        "description": "启用用户白名单",
+        "type": "bool",
+        "hint": "仅白名单内的用户生效。",
+        "default": false
+      },
+      "user_whitelist": {
+        "description": "用户白名单",
+        "type": "list",
+        "hint": "QQ 号列表。",
+        "default": []
+      },
+      "private_chat_only": {
+        "description": "仅私聊",
+        "type": "bool",
+        "hint": "群聊消息跳过。",
+        "default": false
+      }
+    }
+  },
   "跨插件兼容": {
     "description": "跨插件兼容",
     "type": "object",
@@ -227,6 +264,62 @@
         "type": "bool",
         "hint": "默认补 image 标签防 fallback。开启后不做修改。",
         "default": false
+      }
+    }
+  },
+  "OpenAI 兼容 provider": {
+    "description": "OpenAI 兼容 provider",
+    "type": "object",
+    "hint": "把本插件注册为 OpenAI 兼容提供商，供其他插件调用。",
+    "items": {
+      "enabled": {
+        "description": "启用端点",
+        "type": "bool",
+        "hint": "暴露 /v1/chat/completions。",
+        "default": true
+      },
+      "webui_username": {
+        "description": "Dashboard 用户名",
+        "type": "string",
+        "default": "admin",
+        "hint": "默认 admin。"
+      },
+      "webui_password": {
+        "description": "Dashboard 密码",
+        "type": "string",
+        "default": "",
+        "hint": "用于 webui API 登录注册 provider。"
+      },
+      "openapi_key": {
+        "description": "OpenAPI 访问密钥",
+        "type": "string",
+        "default": "",
+        "obvious_hint": true,
+        "hint": "在 Dashboard「设置→OpenAPI」创建。X-API-Key 方式认证，优先级高于 webui_password。"
+      },
+      "auto_register": {
+        "description": "自动注册",
+        "type": "bool",
+        "hint": "启动时注册到 provider_manager。",
+        "default": true
+      },
+      "api_key": {
+        "description": "端点 API Key（非 OpenAPI 密钥）",
+        "type": "string",
+        "hint": "本端点不校验，填 placeholder 即可。注册用 openapi_key 字段。",
+        "default": "placeholder"
+      },
+      "model_name": {
+        "description": "模型名称",
+        "type": "string",
+        "hint": "显示名，任意字符串。",
+        "default": "vision-bridge"
+      },
+      "caption_format": {
+        "description": "返回格式",
+        "type": "string",
+        "hint": "mmx（推荐）/ json。",
+        "default": "mmx"
       }
     }
   },
@@ -277,99 +370,6 @@
         "type": "bool",
         "hint": "关闭后日志输出完整 URL。",
         "default": true
-      }
-    }
-  },
-  "权限控制": {
-    "type": "object",
-    "description": "权限控制",
-    "hint": "群/用户白名单与私聊限制。",
-    "items": {
-      "enable_group_whitelist": {
-        "description": "启用群白名单",
-        "type": "bool",
-        "hint": "仅白名单内的群生效。",
-        "default": false
-      },
-      "group_whitelist": {
-        "description": "群白名单",
-        "type": "list",
-        "hint": "QQ 群号列表。",
-        "default": []
-      },
-      "enable_user_whitelist": {
-        "description": "启用用户白名单",
-        "type": "bool",
-        "hint": "仅白名单内的用户生效。",
-        "default": false
-      },
-      "user_whitelist": {
-        "description": "用户白名单",
-        "type": "list",
-        "hint": "QQ 号列表。",
-        "default": []
-      },
-      "private_chat_only": {
-        "description": "仅私聊",
-        "type": "bool",
-        "hint": "群聊消息跳过。",
-        "default": false
-      }
-    }
-  },
-  "OpenAI 兼容 provider": {
-    "description": "OpenAI 兼容 provider",
-    "type": "object",
-    "hint": "把本插件注册为 OpenAI 兼容提供商，供其他插件调用。",
-    "items": {
-      "webui_username": {
-        "description": "Dashboard 用户名",
-        "type": "string",
-        "default": "admin",
-        "hint": "默认 admin。"
-      },
-      "webui_password": {
-        "description": "Dashboard 密码",
-        "type": "string",
-        "default": "",
-        "hint": "用于 webui API 登录注册 provider。"
-      },
-      "openapi_key": {
-        "description": "OpenAPI 访问密钥",
-        "type": "string",
-        "default": "",
-        "obvious_hint": true,
-        "hint": "在 Dashboard「设置→OpenAPI」创建。X-API-Key 方式认证，优先级高于 webui_password。"
-      },
-      "enabled": {
-        "description": "启用端点",
-        "type": "bool",
-        "hint": "暴露 /v1/chat/completions。",
-        "default": true
-      },
-      "auto_register": {
-        "description": "自动注册",
-        "type": "bool",
-        "hint": "启动时注册到 provider_manager。",
-        "default": true
-      },
-      "api_key": {
-        "description": "端点 API Key（非 OpenAPI 密钥）",
-        "type": "string",
-        "hint": "本端点不校验，填 placeholder 即可。注册用 openapi_key 字段。",
-        "default": "placeholder"
-      },
-      "model_name": {
-        "description": "模型名称",
-        "type": "string",
-        "hint": "显示名，任意字符串。",
-        "default": "vision-bridge"
-      },
-      "caption_format": {
-        "description": "返回格式",
-        "type": "string",
-        "hint": "mmx（推荐）/ json。",
-        "default": "mmx"
       }
     }
   }
