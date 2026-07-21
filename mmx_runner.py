@@ -76,7 +76,7 @@ async def run_mmx(
 
     if log_subprocess:
         logger.info("[vision_text_bridge] mmx cmd: %s",
-                    redact_text(_truncate_data_urls(" ".join(args))))
+                    redact_text(_truncate_cmd_log(" ".join(args))))
 
     proc = await asyncio.create_subprocess_exec(
         mmx_path, *args,
@@ -97,7 +97,7 @@ async def run_mmx(
             pass
         logger.warning(
             "[vision_text_bridge] mmx 子进程超时(%ss): %s",
-            timeout, redact_text(" ".join(args)),
+            timeout, redact_text(_truncate_cmd_log(" ".join(args))),
         )
         return MmxResult("", f"mmx timeout after {timeout}s", -1, False)
 
@@ -366,6 +366,19 @@ def _truncate_data_url_match(m: re.Match) -> str:
         b64 = url[comma + 1:]
         return f"{url[:comma]},{b64[:8]}...{{{len(b64)}}}B"
     return url
+
+
+_CMD_LOG_MAX_LEN = 400
+
+
+def _truncate_cmd_log(text: str) -> str:
+    """截断 data URL + 限制整行长度，防止日志膨胀。"""
+    if not text:
+        return text
+    s = _truncate_data_urls(text)
+    if len(s) > _CMD_LOG_MAX_LEN:
+        s = s[:_CMD_LOG_MAX_LEN - 3] + "..."
+    return s
 
 
 def redact_args(args: tuple[str, ...], config: dict) -> tuple[str, ...]:
