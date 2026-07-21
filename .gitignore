@@ -42,3 +42,6 @@ test_workspace/
 # 删了不要恢复 - 单元测试文件
 test_*.py
 tests/
+
+# 项目记忆 / AI 辅助目录
+.monkeycode/
