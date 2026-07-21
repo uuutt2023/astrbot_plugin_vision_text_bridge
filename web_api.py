@@ -535,6 +535,27 @@ async def api_chat_completions(plugin, *args, **kwargs):
     smart_imagechat_hub 配 default_image_caption_provider_id = 本插件 endpoint 时,
     它会调这个 API 走 mmx 路径, 不再走原 LLM 多模态.
     """
+    parsed = await _parse_request_body()
+    if isinstance(parsed, tuple):  # error response
+        return parsed
+    body, messages = parsed
+
+    image_urls, prompt_parts = _parse_messages(messages)
+    if not image_urls:
+        return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
+
+    captions = await _describe_images(plugin, image_urls, prompt_parts)
+    if not captions:
+        return err("mmx 描述返回空", 500)
+
+    return ok(_build_chat_response(body, captions))
+
+
+async def _parse_request_body() -> tuple[dict, list] | tuple:
+    """解析 quart 请求体, 兼容 JSON 失败时回退 raw text。
+
+    成功返 (body_dict, messages_list); 失败返 (err_response, 0)。
+    """
     try:
         body = await quart_request.get_json(force=True, silent=True) or {}
     except Exception:
@@ -546,59 +567,80 @@ async def api_chat_completions(plugin, *args, **kwargs):
     messages = body.get("messages") or []
     if not messages:
         return err("messages 不能为空", 400)
-    # : 收集所有 image_url + 收集 prompt text (后续可传给 mmx vision_prompt)
+    return body, messages
+
+
+def _parse_messages(messages: list) -> tuple[list[str], list[str]]:
+    """从 OpenAI messages 数组提取 image_urls 和 prompt_parts。"""
     image_urls: list[str] = []
     prompt_parts: list[str] = []
     for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                ptype = part.get("type")
-                if ptype == "image_url":
-                    u = (part.get("image_url") or {}).get("url") or ""
-                    if u:
-                        image_urls.append(u)
-                elif ptype == "text":
-                    t = part.get("text")
-                    if t:
-                        prompt_parts.append(t)
-        elif isinstance(content, str):
-            prompt_parts.append(content)
-    if not image_urls:
-        return err("未提供 image_url (本 endpoint 专给 image caption 用)", 400)
-    captions: list[str] = []
+        for url, text in _extract_parts(msg.get("content")):
+            if url:
+                image_urls.append(url)
+            if text:
+                prompt_parts.append(text)
+    return image_urls, prompt_parts
+
+
+def _extract_parts(content) -> list[tuple[str, str]]:
+    """单个 message.content → list[(image_url, text)] 对。"""
+    if isinstance(content, str):
+        return [("", content)]
+    if not isinstance(content, list):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+        if ptype == "image_url":
+            u = (part.get("image_url") or {}).get("url") or ""
+            if u:
+                pairs.append((u, ""))
+        elif ptype == "text":
+            t = part.get("text")
+            if t:
+                pairs.append(("", t))
+    return pairs
+
+
+async def _describe_images(
+    plugin, image_urls: list[str], prompt_parts: list[str]
+) -> list[str]:
+    """并发调 plugin._describe_one, 收集非空 captions。"""
     # : 将调用方传入的文本部分拼接为自定义 vision_prompt
     caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
     try:
-        coros = [plugin._describe_one(u, "smart_imagechat_hub /image/caption", vision_prompt=caller_prompt) for u in image_urls]
+        coros = [
+            plugin._describe_one(u, "smart_imagechat_hub /image/caption", vision_prompt=caller_prompt)
+            for u in image_urls
+        ]
         results = await asyncio.gather(*coros, return_exceptions=True)
-        for cap in results:
-            if isinstance(cap, Exception):
-                continue
-            if cap:
-                captions.append(cap)
     except Exception as e:
         logger.exception("[vision_text_bridge] chat_completions 调 mmx 失败: %s", e)
-        return err(f"mmx 描述失败: {e}", 500)
-    if not captions:
-        return err("mmx 描述返回空", 500)
-    # 多张图拼成一段 (用换行分隔, LLM 看到是结构化列表)
+        return []
+    captions: list[str] = []
+    for cap in results:
+        if isinstance(cap, Exception):
+            continue
+        if cap:
+            captions.append(cap)
+    return captions
+
+
+def _build_chat_response(body: dict, captions: list[str]) -> dict:
+    """组装 smart_imagechat_hub 专用的 OpenAI ChatCompletion 响应。"""
     caption = "\n".join(captions)
-    # 包装成 OpenAI ChatCompletion response
     model = body.get("model") or "vision_text_bridge"
-    return ok({
+    return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": caption,
-            },
+            "message": {"role": "assistant", "content": caption},
             "finish_reason": "stop",
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -606,7 +648,7 @@ async def api_chat_completions(plugin, *args, **kwargs):
             "source": "astrbot_plugin_vision_text_bridge.mmx",
             "smart_imagechat_hub_integration": True,
         },
-    })
+    }
 
 
 async def api_image_caption(plugin, *args, **kwargs):
