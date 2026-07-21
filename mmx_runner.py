@@ -382,11 +382,16 @@ def _truncate_cmd_log(text: str) -> str:
 
 
 async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> str | None:
-    """上传文件到 mmx，返回 file_id，失败返 None。"""
+    """上传文件到 mmx，返回 file_id，失败返 None。
+
+    注意：mmx file upload 默认 purpose=retrieval，会拒绝图片扩展名 (.jpg/.png)
+    并返回 'invalid file ext for retrieval'。图像理解场景必须显式传
+    ``--purpose vision``，让服务端走 vision 扩展名白名单。
+    """
     if not mmx_path:
         return None
     proc = await asyncio.create_subprocess_exec(
-        mmx_path, "file", "upload", "--file", filepath,
+        mmx_path, "file", "upload", "--file", filepath, "--purpose", "vision",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

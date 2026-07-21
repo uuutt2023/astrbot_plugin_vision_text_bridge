@@ -151,7 +151,38 @@ class CaptionCache:
             else:
                 # 全新创建
                 conn.executescript(self.SCHEMA)
+
+            # **call_log 表升级**：旧 DB 可能只有 image_captions，没有 call_log
+            # （call_log 是在 image_captions 之后追加的功能）。无论上面走哪条路径，
+            # 都额外单独确保 call_log 表存在，幂等。
+            self._ensure_call_log_table(conn)
             conn.commit()
+
+    def _ensure_call_log_table(self, conn: sqlite3.Connection) -> None:
+        """确保 call_log 表 + 索引存在（幂等），用于旧 DB 升级场景。"""
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='call_log'"
+        ).fetchone()
+        if row is not None:
+            return
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS call_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                time TEXT NOT NULL,
+                url TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                cached INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_call_log_created_at
+                ON call_log(created_at DESC);
+            """
+        )
+        _log.info("[vision_text_bridge] 已为旧 DB 补建 call_log 表")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=10.0)
