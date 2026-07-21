@@ -346,6 +346,26 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ lifecycle
 
     async def initialize(self) -> None:
+        self._init_runtime_objects()
+        self._sync_webui_password_to_framework()
+        self._init_caption_cache()
+        self._start_cache_clean_loop()
+        self._register_web_apis()
+        await self._start_openai_compat_server()
+        if not await self._ensure_mmx_cli():
+            return
+        await self._login_mmx_if_configured()
+        await self._setup_providers()
+
+    async def _setup_providers(self) -> None:
+        """初始化完成后的联动检测: modality 伪装 + 兼容性检测 + provider 注册。"""
+        self._mark_providers_support_image()
+        self._check_compatibility()
+        self._detect_smart_imagechat_hub()
+        await self._auto_register_sih_provider()
+
+    def _init_runtime_objects(self) -> None:
+        """初始化运行时核心对象: 并发信号量 + httpx client。"""
         max_concurrent = max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -355,7 +375,8 @@ class VisionTextBridgePlugin(Star):
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
 
-        # 同步 webui_password 到 framework dashboard
+    def _sync_webui_password_to_framework(self) -> None:
+        """把 plugin.config.webui_password 同步到 framework dashboard。"""
         try:
             cfg_pwd = (
                 self.config.get("webui_password")
@@ -367,52 +388,55 @@ class VisionTextBridgePlugin(Star):
                 or self.config.get("dashboard_username")
                 or ""
             )
-            if cfg_pwd:
-                ac = getattr(self.context, "astr_context", None)
-                if ac is not None:
-                    # 写 in-memory + 尝试持久化
-                    target_dict = getattr(ac, "config", None)
-                    if isinstance(target_dict, dict):
-                        dashboard = target_dict.get("dashboard") or {}
-                        dashboard["password"] = cfg_pwd
-                        if cfg_user:
-                            dashboard["username"] = cfg_user
-                        target_dict["dashboard"] = dashboard
-                    # 尝试 save to disk via AstrBotConfigManager
-                    saved = False
-                    try:
-                        cfgmgr = getattr(ac, "config_manager", None)
-                        if cfgmgr is not None:
-                            fn = getattr(cfgmgr, "update_profile", None) or getattr(cfgmgr, "save_config", None)
-                            if callable(fn):
-                                try:
-                                    fn("default", ac.config)
-                                    saved = True
-                                except Exception:
-                                    pass
-                        if not saved:
-                            confs = getattr(cfgmgr, "confs", None) if cfgmgr else None
-                            if not confs:
-                                confs = getattr(ac, "confs", None) or getattr(ac, "_confs", None)
-                            if isinstance(confs, dict):
-                                conf = confs.get("default")
-                                save_fn = getattr(conf, "save_config", None)
-                                if callable(save_fn):
-                                    try:
-                                        save_fn()
-                                        saved = True
-                                    except Exception:
-                                        pass
-                    except Exception as e:
-                        logger.debug("[vision_text_bridge] 同步 dashboard 密码到 framework 异常: %s", e)
-                    logger.info(
-                        "[vision_text_bridge] 已设置 webui 密码到 framework (来源: plugin.config.webui_password)"
-                        + (" (持久化)" if saved else " (仅本次进程)"),
-                    )
+            if not cfg_pwd:
+                return
+            ac = getattr(self.context, "astr_context", None)
+            if ac is None:
+                return
+            self._write_password_in_memory(ac, cfg_pwd, cfg_user)
+            saved = self._persist_dashboard_password(ac)
+            logger.info(
+                "[vision_text_bridge] 已设置 webui 密码到 framework (来源: plugin.config.webui_password)"
+                + (" (持久化)" if saved else " (仅本次进程)"),
+            )
         except Exception as e:
             logger.debug("[vision_text_bridge] webui_password 处理异常: %s", e)
 
-        # SQLite 缓存初始化
+    def _write_password_in_memory(self, ac, cfg_pwd: str, cfg_user: str) -> None:
+        """把 password / username 写进 framework in-memory config。"""
+        target_dict = getattr(ac, "config", None)
+        if not isinstance(target_dict, dict):
+            return
+        dashboard = target_dict.get("dashboard") or {}
+        dashboard["password"] = cfg_pwd
+        if cfg_user:
+            dashboard["username"] = cfg_user
+        target_dict["dashboard"] = dashboard
+
+    def _persist_dashboard_password(self, ac) -> bool:
+        """尝试持久化 dashboard 配置。成功返 True。"""
+        try:
+            cfgmgr = getattr(ac, "config_manager", None)
+            if cfgmgr is not None:
+                fn = getattr(cfgmgr, "update_profile", None) or getattr(cfgmgr, "save_config", None)
+                if callable(fn):
+                    fn("default", ac.config)
+                    return True
+            confs = getattr(cfgmgr, "confs", None) if cfgmgr else None
+            if not confs:
+                confs = getattr(ac, "confs", None) or getattr(ac, "_confs", None)
+            if isinstance(confs, dict):
+                conf = confs.get("default")
+                save_fn = getattr(conf, "save_config", None)
+                if callable(save_fn):
+                    save_fn()
+                    return True
+        except Exception as e:
+            logger.debug("[vision_text_bridge] 同步 dashboard 密码到 framework 异常: %s", e)
+        return False
+
+    def _init_caption_cache(self) -> None:
+        """初始化 SQLite 描述缓存 + 恢复调用日志。失败时降级为 None。"""
         try:
             data_dir = self._get_plugin_data_dir()
             db_path = data_dir / "caption_cache.sqlite3"
@@ -421,110 +445,129 @@ class VisionTextBridgePlugin(Star):
                 "[vision_text_bridge] 描述缓存已初始化: %s (条目=%d)",
                 db_path, self._caption_cache.count(),
             )
-            # 从 SQLite 恢复调用日志
-            try:
-                loaded = self._caption_cache.load_call_logs(self._MAX_CALL_LOG)
-                if loaded:
-                    self._call_log = loaded
-                    logger.info(
-                        "[vision_text_bridge] 已从 SQLite 恢复 %d 条调用日志",
-                        len(loaded),
-                    )
-            except Exception as exc:
-                logger.warning("[vision_text_bridge] 恢复调用日志失败: %s", exc)
+            self._restore_call_log()
         except Exception as exc:
             logger.exception("[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc)
             self._caption_cache = None
 
-        # 启动 SQLite 过期清理后台 task
-        if self._caption_cache is not None:
-            try:
-                ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
-                interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
-                if ttl_days > 0:
-                    deleted = self._caption_cache.clean_expired(ttl_days)
-                    self._last_clean_at = time.time()
-                    if deleted > 0:
-                        logger.info("[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
-                if interval_h > 0 and ttl_days > 0:
-                    self._clean_task = asyncio.create_task(self._clean_loop(ttl_days, interval_h))
-                    logger.info("[vision_text_bridge] 已启动过期清理后台任务: TTL=%d天, 间隔=%d小时", ttl_days, interval_h)
-            except Exception as exc:
-                logger.exception("[vision_text_bridge] 启动过期清理 task 失败: %s", exc)
-
-        # 2. web API
+    def _restore_call_log(self) -> None:
+        """从 SQLite 恢复最近 N 条调用日志到内存。"""
+        if self._caption_cache is None:
+            return
         try:
-            self._register_web_apis()
+            loaded = self._caption_cache.load_call_logs(self._MAX_CALL_LOG)
+            if loaded:
+                self._call_log = loaded
+                logger.info(
+                    "[vision_text_bridge] 已从 SQLite 恢复 %d 条调用日志",
+                    len(loaded),
+                )
+        except Exception as exc:
+            logger.warning("[vision_text_bridge] 恢复调用日志失败: %s", exc)
+
+    def _start_cache_clean_loop(self) -> None:
+        """启动 SQLite 过期清理后台 task (含启动时一次性清理)。"""
+        if self._caption_cache is None:
+            return
+        try:
+            ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
+            interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
+            if ttl_days > 0:
+                deleted = self._caption_cache.clean_expired(ttl_days)
+                self._last_clean_at = time.time()
+                if deleted > 0:
+                    logger.info(
+                        "[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)",
+                        deleted, ttl_days,
+                    )
+            if interval_h > 0 and ttl_days > 0:
+                self._clean_task = asyncio.create_task(
+                    self._clean_loop(ttl_days, interval_h)
+                )
+                logger.info(
+                    "[vision_text_bridge] 已启动过期清理后台任务: TTL=%d天, 间隔=%d小时",
+                    ttl_days, interval_h,
+                )
+        except Exception as exc:
+            logger.exception("[vision_text_bridge] 启动过期清理 task 失败: %s", exc)
+
+    def _register_web_apis(self) -> None:
+        """向 framework 注册所有 WebUI HTTP API 路由 (委托给 web_api 模块)。"""
+        try:
+            self._register_web_apis_real()
         except Exception as exc:
             logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
 
-        # 启动独立 OpenAI 兼容 server (bypass framework JWT)
+    async def _start_openai_compat_server(self) -> None:
+        """启动独立 OpenAI 兼容 server (bypass framework JWT)。"""
         if main_server is None:
             logger.warning("[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动")
-        else:
-            self._openai_compat_port: int | None = None
-            try:
-                actual_port = await main_server.start_solo_server(self, port=2023)
-                if actual_port is None:
-                    logger.warning("[vision_text_bridge] main_server.start_solo_server 失败")
-                else:
-                    self._openai_compat_port = actual_port
-                    logger.info(
-                        "[vision_text_bridge] 独立 OpenAI 兼容 server 启动: 127.0.0.1:%d",
-                        actual_port,
-                    )
-            except Exception as exc:
-                logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
+            return
+        self._openai_compat_port = None
+        try:
+            actual_port = await main_server.start_solo_server(self, port=2023)
+            if actual_port is None:
+                logger.warning("[vision_text_bridge] main_server.start_solo_server 失败")
+            else:
+                self._openai_compat_port = actual_port
+                logger.info(
+                    "[vision_text_bridge] 独立 OpenAI 兼容 server 启动: 127.0.0.1:%d",
+                    actual_port,
+                )
+        except Exception as exc:
+            logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
 
-        # 3. mmx 安装 + 预登录
-        if not self.mmx_path and self.config.get("auto_install_cli", True):
-            # 优先持久化装到 plugin 本地 (不需 root, 不改 system PATH)
-            local_target = str(_PLUGIN_DIR / ".mmx")
-            logger.info("[vision_text_bridge] 未找到 mmx CLI, 尝试装到 plugin 本地: %s", local_target)
-            install_ok = await _install_mmx_local_fn(self.npm_path, local_target)
-            if install_ok:
-                self.mmx_path = _find_local_mmx_fn(str(_PLUGIN_DIR)) or ""
-                if self.mmx_path:
-                    logger.info("[vision_text_bridge] mmx-cli 本地装成功: %s", self.mmx_path)
-                else:
-                    logger.warning("[vision_text_bridge] 本地装成功但 .bin/mmx 仍找不到, 请检查 node_modules")
-            if not self.mmx_path:
-                # 本地装失败, 退到全局装
-                logger.info("[vision_text_bridge] 本地装失败, 尝试 npm install -g ...")
-                install_ok = await self._install_mmx_cli()
-                if install_ok:
-                    self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
-                    if self.mmx_path:
-                        logger.info("[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path)
-                else:
-                    logger.warning(
-                        "[vision_text_bridge] mmx-cli 装失败。请手动执行:\n"
-                        "  1. 装 Node.js/npm (https://nodejs.org/)\n"
-                        "  2.  npm install -g mmx-cli\n"
-                        "  3. 重启 AstrBot 或在插件配置中指定 mmx_path 绝对路径"
-                    )
+    async def _ensure_mmx_cli(self) -> bool:
+        """确保 mmx CLI 可用。成功 (本地/全局装) 返 True, 仍未找到返 False。"""
+        if self.mmx_path:
+            return True
+        if not self.config.get("auto_install_cli", True):
+            return False
+        await self._install_mmx_local_then_global()
         if not self.mmx_path:
             logger.warning(
                 "[vision_text_bridge] 未找到 mmx CLI, 插件不处理图片转换。"
                 "请手动 npm install -g mmx-cli 或在插件配置中指定 mmx_path。"
             )
+            return False
+        return True
+
+    async def _install_mmx_local_then_global(self) -> None:
+        """本地装失败后退到全局 npm install -g。"""
+        local_target = str(_PLUGIN_DIR / ".mmx")
+        logger.info("[vision_text_bridge] 未找到 mmx CLI, 尝试装到 plugin 本地: %s", local_target)
+        install_ok = await _install_mmx_local_fn(self.npm_path, local_target)
+        if install_ok:
+            self.mmx_path = _find_local_mmx_fn(str(_PLUGIN_DIR)) or ""
+            if self.mmx_path:
+                logger.info("[vision_text_bridge] mmx-cli 本地装成功: %s", self.mmx_path)
+                return
+            logger.warning("[vision_text_bridge] 本地装成功但 .bin/mmx 仍找不到, 请检查 node_modules")
+
+        # 本地装失败, 退到全局装
+        logger.info("[vision_text_bridge] 本地装失败, 尝试 npm install -g ...")
+        install_ok = await self._install_mmx_cli()
+        if install_ok:
+            self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
+            if self.mmx_path:
+                logger.info("[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path)
+        else:
+            logger.warning(
+                "[vision_text_bridge] mmx-cli 装失败。请手动执行:\n"
+                "  1. 装 Node.js/npm (https://nodejs.org/)\n"
+                "  2.  npm install -g mmx-cli\n"
+                "  3. 重启 AstrBot 或在插件配置中指定 mmx_path 绝对路径"
+            )
+
+    async def _login_mmx_if_configured(self) -> None:
+        """如果配置了 minimax_api_key 则预登录 mmx CLI。"""
+        if not self.config.get("auto_login", True):
             return
-        if self.config.get("auto_login", True):
-            api_key = (self.config.get("minimax_api_key") or "").strip()
-            if not api_key:
-                logger.info("[vision_text_bridge] 未配置 minimax_api_key，跳过自动登录")
-            else:
-                await self._login_mmx(api_key)
-
-        # 伪装 provider modality
-        self._mark_providers_support_image()
-
-        # 联动检测
-        self._check_compatibility()
-        # smart_imagechat_hub 兼容
-        self._detect_smart_imagechat_hub()
-        # 自动注册 OpenAI compatible provider
-        await self._auto_register_sih_provider()
+        api_key = (self.config.get("minimax_api_key") or "").strip()
+        if not api_key:
+            logger.info("[vision_text_bridge] 未配置 minimax_api_key，跳过自动登录")
+            return
+        await self._login_mmx(api_key)
 
     def _get_plugin_data_dir(self) -> Path:
         try:
@@ -786,7 +829,7 @@ class VisionTextBridgePlugin(Star):
     # =========================================================================
     # 页面 API
     # =========================================================================
-    def _register_web_apis(self) -> None:
+    def _register_web_apis_real(self) -> None:
         """: web API 注册委托给 web_api 模块。"""
         import web_api
         web_api.register_all_routes(self.context, self)
