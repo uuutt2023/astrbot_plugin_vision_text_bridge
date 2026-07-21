@@ -101,193 +101,26 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
     """
     _emit("info", "========== provider 注册开始 ==========")
     try:
-        # 入口探针 — 即使后面的代码异常，也至少能看到这条
-        _emit("info", f"[1/6] 进入 auto_register_provider, plugin={type(plugin).__name__}")
-        _emit("info", f"[2/6] plugin.config type={type(plugin.config).__name__}")
-
-        if plugin is None or not hasattr(plugin, "config"):
-            _emit("error", f"plugin 或 plugin.config 缺失: plugin={plugin}")
+        creds = _prepare_credentials(plugin)
+        if creds is None:
             return False
+        use_bearer, openapi_key, username, password, dash_port = creds
 
-        try:
-            openapi_key = (plugin.config.get("openapi_key") or "").strip()
-            username, password, dash_port = _read_webui_credentials(plugin)
-        except Exception as e:
-            _emit("error", f"[3/6] 读 config 异常: {e!r}")
-            raise
-
-        use_bearer = bool(openapi_key)
-        # 入口 INFO log — 一定能看见
-        _emit(
-            "info",
-            f"[3/6] provider 注册尝试: bearer={use_bearer}, "
-            f"username={username!r}, password_len={len(password)}, "
-            f"dash_port={dash_port}, "
-            f"openapi_key_prefix={openapi_key[:8] + '***' if openapi_key else '(empty)'}",
-        )
-        if not use_bearer and not password:
-            _emit(
-                "warning",
-                "OpenAPI Key 和 webui password 均未配置 — "
-                "无法通过 webui API 注册 provider. "
-                "请在 webui「设置 → OpenAPI」创建 Key 填入 openapi_key, "
-                "或在「系统配置 → dashboard」配置 password.",
-            )
-            return False
-
-        actual_port = getattr(plugin, "_openai_compat_port", None) or DEFAULT_OPENAI_COMPAT_PORT
-        api_base = f"http://127.0.0.1:{actual_port}/v1"
-
-        api_key = (
-            plugin.config.get("api_key", "")
-            or plugin.config.get("openai_compat_api_key", "")
-        )
-        model_name = (
-            plugin.config.get("model_name")
-            or DEFAULT_MODEL
-        )
-
-        # AstrBot v4.x ProviderConfigRequest schema:
-        #   to_dashboard_config() uses self.config (if present) or model_dump()
-        #   with explicit excludes. provider_config & config fields are both excluded
-        #   from model_dump(), so we put all fields flat at root level.
-        config = {
-            "provider_id": PROVIDER_ID,
-            "provider_source_id": "openai_source",
-            "id": PROVIDER_ID,
-            "enable": True,
-            "type": "openai_chat_completion",
-            "provider_type": "chat_completion",
-            "key": [api_key] if api_key else ["placeholder"],
-            "api_key": api_key if api_key else "placeholder",
-            "api_base": api_base,
-            "model": model_name,
-        }
-
+        config = _build_provider_payload(plugin)
         base_url = f"http://127.0.0.1:{dash_port}"
-        _emit(
-            "info",
-            f"[4/6] 准备调用 webui API: base_url={base_url}, "
-            f"provider_id={PROVIDER_ID}, api_base={api_base}, model={model_name}",
-        )
 
         async with _httpx.AsyncClient(timeout=15.0) as client:
-            headers = {}
-            if use_bearer:
-                headers["X-API-Key"] = openapi_key
-                _emit(
-                    "info",
-                    "[5/6] 认证方式: OpenAPI Key (X-API-Key header)",
-                )
-            else:
-                _emit(
-                    "info",
-                    f"[5/6] 认证方式: username/password (user={username})",
-                )
-                # 传统 username/password 登录
-                _emit("info", f"  → POST {base_url}/api/auth/login")
-                login_resp = await client.post(
-                    f"{base_url}/api/auth/login",
-                    json={"username": username, "password": password},
-                )
-                _emit(
-                    "info",
-                    f"  → 登录响应 status={login_resp.status_code}",
-                )
-                if login_resp.status_code not in (200, 204):
-                    _emit(
-                        "warning",
-                        f"webui 登录失败 (status={login_resp.status_code}, username={username}) — "
-                        f"请检查 password 配置. status={login_resp.status_code}",
-                    )
-                    return False
+            headers = await _build_auth_headers(
+                client, base_url, use_bearer, openapi_key, username, password
+            )
+            if headers is None:
+                return False
 
-            # 2. POST provider (id 重复 → 400/409 with "already exists")
-            try:
-                _emit(
-                    "info",
-                    f"[6/6] POST {base_url}/api/v1/providers",
-                )
-                _emit("info", f"  → payload={config}")
-                create_resp = await client.post(
-                    f"{base_url}/api/v1/providers",
-                    json=config,
-                    headers=headers,
-                )
-                _emit(
-                    "info",
-                    f"  → POST 响应 status={create_resp.status_code}",
-                )
-                if create_resp.status_code in (200, 201):
-                    _emit(
-                        "info",
-                        f"✓ 通过 webui API 注册 provider 成功: id={PROVIDER_ID}",
-                    )
-                    if log_details:
-                        _log_registered_instance(plugin)
-                    return True
-                # 完整 resp body 给 INFO 级别, 方便诊断
-                _emit(
-                    "warning",
-                    f"POST /api/v1/providers 返回 {create_resp.status_code} — body={(create_resp.text or '')[:500]}",
-                )
-                if create_resp.status_code == 403:
-                    _emit(
-                        "warning",
-                        "提示: 403 通常表示 OpenAPI Key 缺少 'provider' scope. "
-                        "请到 Dashboard「设置 → OpenAPI」编辑 Key, 勾选 'provider' scope.",
-                    )
-                elif create_resp.status_code == 401:
-                    _emit(
-                        "warning",
-                        "提示: 401 表示 OpenAPI Key 无效. "
-                        "请检查 openapi_key 是否正确 (格式 abk_xxx).",
-                    )
-                elif create_resp.status_code == 422:
-                    _emit(
-                        "warning",
-                        "提示: 422 表示 payload 校验失败. "
-                        "请看上面 resp body 的 detail 字段.",
-                    )
-                elif create_resp.status_code == 400 and "already exists" in (create_resp.text or "").lower():
-                    _emit(
-                        "warning",
-                        "提示: 'already exists' — 该 provider_id 已注册, 但本次返回 400. "
-                        "请尝试重启 AstrBot 让 framework 加载现有 provider.",
-                    )
-            except Exception as e:
-                _emit("warning", f"POST /api/v1/providers 异常: {e!r}")
+            if await _post_create_provider(client, base_url, headers, config, plugin, log_details):
+                return True
 
-            # 3. Fallback: PUT update by-id
-            try:
-                _emit(
-                    "info",
-                    f"[6/6-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
-                )
-                update_resp = await client.put(
-                    f"{base_url}/api/v1/providers/by-id",
-                    params={"provider_id": PROVIDER_ID},
-                    json=config,
-                    headers=headers,
-                )
-                _emit(
-                    "info",
-                    f"  → PUT 响应 status={update_resp.status_code}",
-                )
-                if update_resp.status_code in (200, 204):
-                    _emit(
-                        "info",
-                        f"✓ 通过 webui API 更新 provider 成功: id={PROVIDER_ID}",
-                    )
-                    if log_details:
-                        _log_registered_instance(plugin)
-                    return True
-                _emit(
-                    "warning",
-                    f"PUT /api/v1/providers/by-id 返回 {update_resp.status_code} — body={(update_resp.text or '')[:500]}",
-                )
-            except Exception as e:
-                _emit("warning", f"PUT /api/v1/providers/by-id 异常: {e!r}")
+            if await _put_update_provider(client, base_url, headers, config, plugin, log_details):
+                return True
 
             _emit(
                 "warning",
@@ -304,6 +137,205 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         return False
     finally:
         _emit("info", "========== provider 注册结束 ==========")
+
+
+def _prepare_credentials(plugin) -> Optional[tuple[bool, str, str, str, int]]:
+    """读取并校验注册凭证。失败返 None（已记 warning）。"""
+    _emit("info", f"[1/6] 进入 auto_register_provider, plugin={type(plugin).__name__}")
+    _emit("info", f"[2/6] plugin.config type={type(plugin.config).__name__}")
+
+    if plugin is None or not hasattr(plugin, "config"):
+        _emit("error", f"plugin 或 plugin.config 缺失: plugin={plugin}")
+        return None
+
+    try:
+        openapi_key = (plugin.config.get("openapi_key") or "").strip()
+        username, password, dash_port = _read_webui_credentials(plugin)
+    except Exception as e:
+        _emit("error", f"[3/6] 读 config 异常: {e!r}")
+        raise
+
+    use_bearer = bool(openapi_key)
+    _emit(
+        "info",
+        f"[3/6] provider 注册尝试: bearer={use_bearer}, "
+        f"username={username!r}, password_len={len(password)}, "
+        f"dash_port={dash_port}, "
+        f"openapi_key_prefix={openapi_key[:8] + '***' if openapi_key else '(empty)'}",
+    )
+    if not use_bearer and not password:
+        _emit(
+            "warning",
+            "OpenAPI Key 和 webui password 均未配置 — "
+            "无法通过 webui API 注册 provider. "
+            "请在 webui「设置 → OpenAPI」创建 Key 填入 openapi_key, "
+            "或在「系统配置 → dashboard」配置 password.",
+        )
+        return None
+    return (use_bearer, openapi_key, username, password, dash_port)
+
+
+def _build_provider_payload(plugin) -> dict:
+    """构造 webui POST /api/v1/providers 的请求体。"""
+    actual_port = getattr(plugin, "_openai_compat_port", None) or DEFAULT_OPENAI_COMPAT_PORT
+    api_base = f"http://127.0.0.1:{actual_port}/v1"
+    api_key = (
+        plugin.config.get("api_key", "")
+        or plugin.config.get("openai_compat_api_key", "")
+    )
+    model_name = plugin.config.get("model_name") or DEFAULT_MODEL
+
+    _emit(
+        "info",
+        f"[4/6] 准备调用 webui API: api_base={api_base}, model={model_name}",
+    )
+
+    # AstrBot v4.x ProviderConfigRequest schema:
+    #   to_dashboard_config() uses self.config (if present) or model_dump()
+    #   with explicit excludes. provider_config & config fields are both excluded
+    #   from model_dump(), so we put all fields flat at root level.
+    return {
+        "provider_id": PROVIDER_ID,
+        "provider_source_id": "openai_source",
+        "id": PROVIDER_ID,
+        "enable": True,
+        "type": "openai_chat_completion",
+        "provider_type": "chat_completion",
+        "key": [api_key] if api_key else ["placeholder"],
+        "api_key": api_key if api_key else "placeholder",
+        "api_base": api_base,
+        "model": model_name,
+    }
+
+
+async def _build_auth_headers(
+    client: "_httpx.AsyncClient",
+    base_url: str,
+    use_bearer: bool,
+    openapi_key: str,
+    username: str,
+    password: str,
+) -> Optional[dict]:
+    """根据 use_bearer 选择认证方式，返回请求头。失败返 None。"""
+    if use_bearer:
+        _emit("info", "[5/6] 认证方式: OpenAPI Key (X-API-Key header)")
+        return {"X-API-Key": openapi_key}
+
+    _emit("info", f"[5/6] 认证方式: username/password (user={username})")
+    _emit("info", f"  → POST {base_url}/api/auth/login")
+    login_resp = await client.post(
+        f"{base_url}/api/auth/login",
+        json={"username": username, "password": password},
+    )
+    _emit("info", f"  → 登录响应 status={login_resp.status_code}")
+    if login_resp.status_code not in (200, 204):
+        _emit(
+            "warning",
+            f"webui 登录失败 (status={login_resp.status_code}, username={username}) — "
+            f"请检查 password 配置. status={login_resp.status_code}",
+        )
+        return None
+    return {}
+
+
+async def _post_create_provider(
+    client: "_httpx.AsyncClient",
+    base_url: str,
+    headers: dict,
+    config: dict,
+    plugin,
+    log_details: bool,
+) -> bool:
+    """POST 注册 provider。成功返 True。"""
+    _emit("info", f"[6/6] POST {base_url}/api/v1/providers")
+    _emit("info", f"  → payload={config}")
+    try:
+        resp = await client.post(
+            f"{base_url}/api/v1/providers",
+            json=config,
+            headers=headers,
+        )
+    except Exception as e:
+        _emit("warning", f"POST /api/v1/providers 异常: {e!r}")
+        return False
+
+    _emit("info", f"  → POST 响应 status={resp.status_code}")
+    if resp.status_code in (200, 201):
+        _emit("info", f"✓ 通过 webui API 注册 provider 成功: id={PROVIDER_ID}")
+        if log_details:
+            _log_registered_instance(plugin)
+        return True
+
+    _emit(
+        "warning",
+        f"POST /api/v1/providers 返回 {resp.status_code} — body={(resp.text or '')[:500]}",
+    )
+    for hint in _hint_for_post_status(resp.status_code, resp.text or ""):
+        _emit("warning", hint)
+    return False
+
+
+async def _put_update_provider(
+    client: "_httpx.AsyncClient",
+    base_url: str,
+    headers: dict,
+    config: dict,
+    plugin,
+    log_details: bool,
+) -> bool:
+    """PUT 兜底更新 provider。成功返 True。"""
+    _emit(
+        "info",
+        f"[6/6-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
+    )
+    try:
+        resp = await client.put(
+            f"{base_url}/api/v1/providers/by-id",
+            params={"provider_id": PROVIDER_ID},
+            json=config,
+            headers=headers,
+        )
+    except Exception as e:
+        _emit("warning", f"PUT /api/v1/providers/by-id 异常: {e!r}")
+        return False
+
+    _emit("info", f"  → PUT 响应 status={resp.status_code}")
+    if resp.status_code in (200, 204):
+        _emit("info", f"✓ 通过 webui API 更新 provider 成功: id={PROVIDER_ID}")
+        if log_details:
+            _log_registered_instance(plugin)
+        return True
+
+    _emit(
+        "warning",
+        f"PUT /api/v1/providers/by-id 返回 {resp.status_code} — body={(resp.text or '')[:500]}",
+    )
+    return False
+
+
+def _hint_for_post_status(status: int, body: str) -> list[str]:
+    """根据 POST 失败状态返回 1+ 条提示。"""
+    if status == 403:
+        return [
+            "提示: 403 通常表示 OpenAPI Key 缺少 'provider' scope. "
+            "请到 Dashboard「设置 → OpenAPI」编辑 Key, 勾选 'provider' scope.",
+        ]
+    if status == 401:
+        return [
+            "提示: 401 表示 OpenAPI Key 无效. "
+            "请检查 openapi_key 是否正确 (格式 abk_xxx).",
+        ]
+    if status == 422:
+        return [
+            "提示: 422 表示 payload 校验失败. "
+            "请看上面 resp body 的 detail 字段.",
+        ]
+    if status == 400 and "already exists" in body.lower():
+        return [
+            "提示: 'already exists' — 该 provider_id 已注册, 但本次返回 400. "
+            "请尝试重启 AstrBot 让 framework 加载现有 provider.",
+        ]
+    return []
 
 
 def _log_registered_instance(plugin) -> None:
