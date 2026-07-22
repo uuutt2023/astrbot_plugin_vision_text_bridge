@@ -3,6 +3,7 @@
 设计: 检测安装 / 缩略图走 web_cache / 过期清理交 chat_archive
 作者: uuutt
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -27,6 +28,7 @@ _CAMO_URL_HASH_CACHE: dict[str, str] = {}
 # 检测
 # ---------------------------------------------------------------------------
 
+
 # 1) chat_archive 安装目录
 #    AstrBot 插件目录通常: <AstrBot data>/data/plugins/<plugin_name>/
 #    本插件无法直接拿 AstrBot data 路径, 用 plugin.parent.parent.plugins / plugin.parent.plugins 探测
@@ -34,6 +36,7 @@ def _get_plugin_root() -> Optional[Path]:
     """: 探测 AstrBot 插件目录 (data/plugins/) 的可能位置。"""
     try:
         from astrbot.api.star import StarTools
+
         d = StarTools.get_data_dir()
         # d = <data>/plugin_data/<plugin_name>
         # 父目录 = <data>/plugin_data/
@@ -81,6 +84,7 @@ def reset_cache_for_testing() -> None:
 # 路径
 # ---------------------------------------------------------------------------
 
+
 def get_chat_archive_cache_dir() -> Optional[Path]:
     """: chat_archive 的 web_cache 目录。
 
@@ -99,6 +103,7 @@ def get_chat_archive_cache_dir() -> Optional[Path]:
 # ---------------------------------------------------------------------------
 # 查图
 # ---------------------------------------------------------------------------
+
 
 def _url_hash(url: str) -> str:
     """与 chat_archive.ArchiveMediaCache._guess_extension 同一规则:
@@ -142,6 +147,7 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
     if not data or len(data) < 24:
         return 0, 0
     import struct
+
     # PNG
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         # IHDR: width (4B big-endian) + height (4B) at offset 16
@@ -157,11 +163,25 @@ def _read_image_dimensions(data: bytes) -> Tuple[int, int]:
             marker = data[i + 1]
             i += 2
             # SOFn markers (start of frame)
-            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                h_, w_ = struct.unpack(">HH", data[i + 3:i + 7])
+            if marker in (
+                0xC0,
+                0xC1,
+                0xC2,
+                0xC3,
+                0xC5,
+                0xC6,
+                0xC7,
+                0xC9,
+                0xCA,
+                0xCB,
+                0xCD,
+                0xCE,
+                0xCF,
+            ):
+                h_, w_ = struct.unpack(">HH", data[i + 3 : i + 7])
                 return int(w_), int(h_)
             # 跳过段
-            seg_len = struct.unpack(">H", data[i:i + 2])[0]
+            seg_len = struct.unpack(">H", data[i : i + 2])[0]
             i += seg_len
         return 0, 0
     # GIF

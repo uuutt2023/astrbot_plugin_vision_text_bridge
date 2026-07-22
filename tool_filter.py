@@ -10,6 +10,7 @@ from typing import Any
 # 名称匹配
 # ---------------------------------------------------------------------------
 
+
 def match_tool_name(name: str, patterns: list[str]) -> bool:
     """判断 name 是否匹配 patterns 任一模式。
 
@@ -39,6 +40,7 @@ def match_tool_name(name: str, patterns: list[str]) -> bool:
 # 容器适配
 # ---------------------------------------------------------------------------
 
+
 def _iter_tool_items(tool_container: Any) -> list[tuple[str, Any]]:
     """从各种 AstrBot tool container 接口里抽 (name, tool) 列表。
 
@@ -52,7 +54,9 @@ def _iter_tool_items(tool_container: Any) -> list[tuple[str, Any]]:
     tools = getattr(tool_container, "tools", None)
     if isinstance(tools, list):
         for t in tools:
-            n = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+            n = getattr(t, "name", None) or (
+                t.get("name") if isinstance(t, dict) else None
+            )
             if n:
                 items.append((n, t))
     flist = getattr(tool_container, "func_list", None)
@@ -81,9 +85,13 @@ def _remove_from_container(tool_container: Any, name: str) -> bool:
     if isinstance(tools, list):
         before = len(tools)
         tools[:] = [
-            t for t in tools
-            if (getattr(t, "name", None)
-                or (t.get("name") if isinstance(t, dict) else None)) != name
+            t
+            for t in tools
+            if (
+                getattr(t, "name", None)
+                or (t.get("name") if isinstance(t, dict) else None)
+            )
+            != name
         ]
         if len(tools) < before:
             did_remove = True
@@ -102,6 +110,7 @@ def _remove_from_container(tool_container: Any, name: str) -> bool:
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
+
 
 def filter_disabled_tools(tool_container: Any, mode: str, names: list[str]) -> int:
     """按 mode 删/保留 names 里的工具, 返实际删除条数。

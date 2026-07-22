@@ -22,18 +22,18 @@ def _safe_str(v, default=""):
     return str(v)
 
 
-
-from astrbot.api import logger
-
+from astrbot.api import logger  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # 数据结构
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class MmxResult:
     """``mmx`` 子进程调用结果。"""
+
     stdout: str
     stderr: str
     returncode: int
@@ -50,6 +50,7 @@ class MmxResult:
 # 命令构造
 # ---------------------------------------------------------------------------
 
+
 def build_vision_command(image: str, prompt: str) -> tuple[str, ...]:
     """构造 ``mmx vision describe`` CLI 参数。"""
     if image.startswith("file-"):
@@ -65,6 +66,7 @@ def build_vision_command(image: str, prompt: str) -> tuple[str, ...]:
 # 子进程调用
 # ---------------------------------------------------------------------------
 
+
 async def run_mmx(
     mmx_path: str,
     args: tuple[str, ...],
@@ -76,11 +78,14 @@ async def run_mmx(
         return MmxResult("", "mmx CLI 未配置或未安装", -1, False)
 
     if log_subprocess:
-        logger.info("[vision_text_bridge] mmx cmd: %s",
-                    redact_text(_truncate_cmd_log(" ".join(args))))
+        logger.info(
+            "[vision_text_bridge] mmx cmd: %s",
+            redact_text(_truncate_cmd_log(" ".join(args))),
+        )
 
     proc = await asyncio.create_subprocess_exec(
-        mmx_path, *args,
+        mmx_path,
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -98,7 +103,8 @@ async def run_mmx(
             pass
         logger.warning(
             "[vision_text_bridge] mmx 子进程超时(%ss): %s",
-            timeout, redact_text(_truncate_cmd_log(" ".join(args))),
+            timeout,
+            redact_text(_truncate_cmd_log(" ".join(args))),
         )
         return MmxResult("", f"mmx timeout after {timeout}s", -1, False)
 
@@ -107,7 +113,9 @@ async def run_mmx(
     if log_subprocess:
         logger.info(
             "[vision_text_bridge] mmx rc=%d, stdout=%dB, stderr=%dB\n%s\n%s",
-            proc.returncode, len(stdout_s), len(stderr_s),
+            proc.returncode,
+            len(stdout_s),
+            len(stderr_s),
             redact_text(stdout_s[:2000]),
             redact_text(stderr_s[:2000]),
         )
@@ -118,13 +126,15 @@ async def run_mmx(
 # 预登录 / 安装
 # ---------------------------------------------------------------------------
 
+
 async def login_mmx(mmx_path: str, api_key: str, config: dict) -> None:
     """预登录 mmx，失败仅警告。"""
     if not mmx_path:
         return
     masked = (
         f"{api_key[:4]}***REDACTED***(len={len(api_key)})"
-        if config.get("redact_sensitive", True) else api_key
+        if config.get("redact_sensitive", True)
+        else api_key
     )
     logger.info("[vision_text_bridge] 预登录 MiniMax CLI: %s", masked)
     try:
@@ -141,7 +151,8 @@ async def login_mmx(mmx_path: str, api_key: str, config: dict) -> None:
         else:
             logger.warning(
                 "[vision_text_bridge] 预登录失败: rc=%d, stderr=%s",
-                r.returncode, (r.stderr or "").strip()[:200],
+                r.returncode,
+                (r.stderr or "").strip()[:200],
             )
     except Exception as e:
         logger.warning("[vision_text_bridge] 预登录异常: %s", e)
@@ -155,7 +166,10 @@ async def install_mmx_cli(npm_path: str | None) -> bool:
     logger.info("[vision_text_bridge] 开始自动安装 mmx-cli...")
     try:
         proc = await asyncio.create_subprocess_exec(
-            npm_path, "install", "-g", "mmx-cli",
+            npm_path,
+            "install",
+            "-g",
+            "mmx-cli",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -186,12 +200,17 @@ async def install_mmx_local(npm_path: str | None, target_dir: str) -> bool:
         logger.warning("[vision_text_bridge] 未找到 npm，无法本地装 mmx-cli")
         return False
     from pathlib import Path as _P
+
     td = _P(target_dir)
     td.mkdir(parents=True, exist_ok=True)
     logger.info("[vision_text_bridge] 装 mmx-cli 到本地目录: %s", td)
     try:
         proc = await asyncio.create_subprocess_exec(
-            npm_path, "install", "--prefix", str(td), "mmx-cli",
+            npm_path,
+            "install",
+            "--prefix",
+            str(td),
+            "mmx-cli",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -218,6 +237,7 @@ async def install_mmx_local(npm_path: str | None, target_dir: str) -> bool:
 def find_local_mmx(plugin_dir: str) -> str | None:
     """查找 plugin 本地装的 mmx 二进制。多个可能位置。"""
     from pathlib import Path as _P
+
     pd = _P(plugin_dir)
     # npm 装 --prefix 后的布局
     candidates = [
@@ -234,6 +254,7 @@ def find_local_mmx(plugin_dir: str) -> str | None:
 # ---------------------------------------------------------------------------
 # 错误诊断 (warn-once)
 # ---------------------------------------------------------------------------
+
 
 def diagnose_mmx_error(
     err_text: str,
@@ -261,6 +282,7 @@ def diagnose_mmx_error(
 # ---------------------------------------------------------------------------
 # 错误诊断表（数据驱动）
 # ---------------------------------------------------------------------------
+
 
 def _is_balance_error(lo: str, raw: str) -> bool:
     return (
@@ -352,6 +374,7 @@ def _warn_once(_diagnosed: set[str], key: str, message: str) -> None:
 # 文本处理
 # ---------------------------------------------------------------------------
 
+
 def truncate(text: str, config: dict) -> str:
     """按 ``max_description_length`` (默认 800) 截断, 加省略号。"""
     max_len = _safe_int(config.get("max_description_length"), 800)
@@ -376,7 +399,11 @@ def strip_mmx_content(stdout: str, config: dict) -> str:
     # 1) 拏 content 字段
     try:
         obj = json.loads(stdout)
-        text = obj["content"] if isinstance(obj, dict) and isinstance(obj.get("content"), str) else stdout
+        text = (
+            obj["content"]
+            if isinstance(obj, dict) and isinstance(obj.get("content"), str)
+            else stdout
+        )
     except (ValueError, json.JSONDecodeError):
         text = stdout
     if not text:
@@ -422,7 +449,7 @@ def _truncate_data_url_match(m: re.Match) -> str:
     url = m.group(0)
     comma = url.find(",")
     if comma > 0:
-        b64 = url[comma + 1:]
+        b64 = url[comma + 1 :]
         return f"{url[:comma]},{b64[:8]}...{{{len(b64)}}}B"
     return url
 
@@ -436,11 +463,13 @@ def _truncate_cmd_log(text: str) -> str:
         return text
     s = _truncate_data_urls(text)
     if len(s) > _CMD_LOG_MAX_LEN:
-        s = s[:_CMD_LOG_MAX_LEN - 3] + "..."
+        s = s[: _CMD_LOG_MAX_LEN - 3] + "..."
     return s
 
 
-async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> str | None:
+async def upload_mmx_file(
+    mmx_path: str, filepath: str, timeout: float = 30
+) -> str | None:
     """上传文件到 mmx，返回 file_id，失败返 None。
 
     注意：mmx file upload 默认 purpose=retrieval，会拒绝图片扩展名 (.jpg/.png)
@@ -450,7 +479,13 @@ async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> 
     if not mmx_path:
         return None
     proc = await asyncio.create_subprocess_exec(
-        mmx_path, "file", "upload", "--file", filepath, "--purpose", "vision",
+        mmx_path,
+        "file",
+        "upload",
+        "--file",
+        filepath,
+        "--purpose",
+        "vision",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -461,12 +496,15 @@ async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> 
             proc.kill()
         except ProcessLookupError:
             pass
-        logger.warning("[vision_text_bridge] mmx 文件上传超时(%ss): %s", timeout, filepath)
+        logger.warning(
+            "[vision_text_bridge] mmx 文件上传超时(%ss): %s", timeout, filepath
+        )
         return None
     if proc.returncode != 0:
         logger.warning(
             "[vision_text_bridge] mmx 文件上传失败: rc=%d stderr=%s",
-            proc.returncode, (stderr.decode("utf-8", errors="replace") or "").strip()[:200],
+            proc.returncode,
+            (stderr.decode("utf-8", errors="replace") or "").strip()[:200],
         )
         return None
     try:
@@ -483,7 +521,8 @@ async def upload_mmx_file(mmx_path: str, filepath: str, timeout: float = 30) -> 
         pass
     logger.warning(
         "[vision_text_bridge] mmx 文件上传返回无法解析: stdout=%s stderr=%s",
-        stdout[:200], (stderr.decode("utf-8", errors="replace") or "").strip()[:200],
+        stdout[:200],
+        (stderr.decode("utf-8", errors="replace") or "").strip()[:200],
     )
     return None
 

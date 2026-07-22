@@ -17,6 +17,7 @@
 
 作者: uuutt
 """
+
 from __future__ import annotations
 
 import logging
@@ -68,13 +69,17 @@ class VisionBridgeProvider:
 
     provider_type = "chat_completion"
 
-    def __init__(self, provider_config: dict, provider_settings: dict | None = None) -> None:
+    def __init__(
+        self, provider_config: dict, provider_settings: dict | None = None
+    ) -> None:
         self.provider_config = provider_config
         self.provider_settings = provider_settings or {}
         self.api_base = (provider_config.get("api_base") or "").rstrip("/")
         # 取列表的第一个 key, 没有就用占位
         keys = provider_config.get("key") or []
-        self.api_key = keys[0] if keys else (provider_config.get("api_key") or "placeholder")
+        self.api_key = (
+            keys[0] if keys else (provider_config.get("api_key") or "placeholder")
+        )
         self.model = provider_config.get("model") or "vision-bridge"
         # 模型可换 (set_model)
         self._current_model = self.model
@@ -119,6 +124,7 @@ class VisionBridgeProvider:
         )
         try:
             from astrbot.core.provider.entities import ProviderMeta
+
             return ProviderMeta(
                 id=provider_id,
                 model=model_name,
@@ -230,7 +236,8 @@ class VisionBridgeProvider:
             err_text = resp.text[:200]
             logger.warning(
                 "[vision_text_bridge] provider text_chat 非 200 响应: status=%d body=%s",
-                resp.status_code, err_text,
+                resp.status_code,
+                err_text,
             )
             return _SimpleLLMResponse(
                 f"[vision_text_bridge error {resp.status_code}] {err_text}"
@@ -239,15 +246,15 @@ class VisionBridgeProvider:
         try:
             data = resp.json()
         except Exception as e:
-            logger.error("[vision_text_bridge] provider text_chat 解析 JSON 失败: %s", e)
+            logger.error(
+                "[vision_text_bridge] provider text_chat 解析 JSON 失败: %s", e
+            )
             return _SimpleLLMResponse(f"[vision_text_bridge error] JSON 解析失败: {e}")
 
         # 提取 OpenAI ChatCompletion 响应
         try:
             completion_text = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
+                data.get("choices", [{}])[0].get("message", {}).get("content", "")
             ) or ""
         except (IndexError, AttributeError, KeyError):
             completion_text = ""
@@ -279,7 +286,9 @@ class VisionBridgeProvider:
 # : 共享常量从 constants.py 导入 (单一定义来源, 避免 main.py 改值后脱节)
 try:
     from constants import (
-        PROVIDER_ID, DEFAULT_MODEL, PLACEHOLDER_API_KEY,
+        PROVIDER_ID,
+        DEFAULT_MODEL,
+        PLACEHOLDER_API_KEY,
     )
 except ImportError:
     # 沙箱 fallback (constants.py 缺失)

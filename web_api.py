@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -21,9 +22,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .main import VisionTextBridgePlugin
+    pass
 
 from astrbot.api import logger
+
 
 # ---------------------------------------------------------------------------
 # 本地 helper (替代 deleted config_helpers.py)
@@ -35,8 +37,8 @@ def _safe_int(v, default):
         return default
 
 
-import chat_archive_integration  # : 顶部 import, 避免函数内 import 重复
-import provider_registration  # : smart_imagechat_hub 兼容
+import chat_archive_integration  # noqa: E402
+import provider_registration  # noqa: E402
 
 
 # 顶层常量
@@ -49,13 +51,14 @@ PLUGIN_NAME = "astrbot_plugin_vision_text_bridge"
 try:
     from quart import jsonify, request as quart_request
 except ImportError:  # 测试沙箱没装 quart
+
     def jsonify(o):  # type: ignore
         return o
 
     class _MockQuartRequest:
         args: dict = {}
         _json = None
-        form = {}
+        _form = {}
         bytes_body: bytes = b""
 
         async def get_json(self, silent: bool = True):
@@ -65,7 +68,7 @@ except ImportError:  # 测试沙箱没装 quart
             return self.bytes_body.decode() if as_text else self.bytes_body
 
         async def form(self):
-            return self.form
+            return self._form
 
     quart_request = _MockQuartRequest()
 
@@ -94,7 +97,9 @@ def _require_caption_cache(plugin):
     return None
 
 
-def _build_thumbnail_payload(image_id: str, mime: str, b64: str, w: int, h: int, size: int, source: str = "local"):
+def _build_thumbnail_payload(
+    image_id: str, mime: str, b64: str, w: int, h: int, size: int, source: str = "local"
+):
     """: 统一组装缩略图 dict —— 避免 3 个分支手搓重复字段。
 
     b64 为空时 mime 保留原值 (老条目可能未存 mime, 返回空串);
@@ -108,7 +113,9 @@ def _build_thumbnail_payload(image_id: str, mime: str, b64: str, w: int, h: int,
         "image_id": image_id,
         "mime_type": effective_mime,
         "data_url": f"data:{effective_mime};base64,{b64}" if b64 else "",
-        "width": w, "height": h, "file_size": size,
+        "width": w,
+        "height": h,
+        "file_size": size,
         "has_image": bool(b64),
         "source": source,
     }
@@ -186,9 +193,7 @@ async def _try_extract(
 
 async def _extract_from_query(debug_log: _DebugLog) -> str:
     query = quart_request.args or {}
-    debug_log.add(
-        f"query={dict(query) if hasattr(query, 'items') else query!r}"
-    )
+    debug_log.add(f"query={dict(query) if hasattr(query, 'items') else query!r}")
     if not hasattr(query, "get"):
         return ""
     return (query.get("key") or "").strip()
@@ -207,9 +212,7 @@ async def _extract_from_form(debug_log: _DebugLog) -> str:
     form = await quart_request.form
     if not form or not hasattr(form, "get"):
         return ""
-    debug_log.add(
-        f"form-body={dict(form) if hasattr(form, 'items') else form!r}"
-    )
+    debug_log.add(f"form-body={dict(form) if hasattr(form, 'items') else form!r}")
     return (form.get("key") or form.get("id") or "").strip()
 
 
@@ -260,10 +263,17 @@ async def _do_thumbnail(plugin, image_id: str):
 
     # 路径 1: 本插件 SQLite 存了 b64 (老数据 / chat_archive 未装)
     if e.image_b64:
-        return ok(_build_thumbnail_payload(
-            image_id, e.mime_type, e.image_b64, e.width, e.height, e.file_size,
-            source="local",
-        ))
+        return ok(
+            _build_thumbnail_payload(
+                image_id,
+                e.mime_type,
+                e.image_b64,
+                e.width,
+                e.height,
+                e.file_size,
+                source="local",
+            )
+        )
 
     # 路径 2: 走 chat_archive
     try:
@@ -271,20 +281,35 @@ async def _do_thumbnail(plugin, image_id: str):
             found = chat_archive_integration.find_chat_archive_image(e.image_url)
             if found:
                 import base64
+
                 data, mime, w, h = found
                 b64 = base64.b64encode(data).decode("ascii")
-                return ok(_build_thumbnail_payload(
-                    image_id, mime, b64, w or e.width, h or e.height, len(data),
-                    source="chat_archive",
-                ))
+                return ok(
+                    _build_thumbnail_payload(
+                        image_id,
+                        mime,
+                        b64,
+                        w or e.width,
+                        h or e.height,
+                        len(data),
+                        source="chat_archive",
+                    )
+                )
     except Exception as ex:
         logger.debug(f"[vision_text_bridge] 跨插件媒体缓存读图失败: {ex}")
 
     # 路径 3: 都没有
-    return ok(_build_thumbnail_payload(
-        image_id, e.mime_type, "", e.width, e.height, e.file_size,
-        source="none",
-    ))
+    return ok(
+        _build_thumbnail_payload(
+            image_id,
+            e.mime_type,
+            "",
+            e.width,
+            e.height,
+            e.file_size,
+            source="none",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -296,10 +321,18 @@ async def api_stats(plugin):
         return miss
     s = plugin._caption_cache.stats().to_dict()
     s["in_memory_cache_size"] = len(plugin._description_cache)
-    s["memory_cache_ttl_seconds"] = int(plugin.config.get("memory_cache_ttl_seconds", 300) or 0)
-    s["memory_cache_max_size"] = int(plugin.config.get("memory_cache_max_size", 500) or 0)
-    s["sqlite_cache_ttl_days"] = _safe_int(plugin.config.get("sqlite_cache_ttl_days", 7), 7)
-    s["sqlite_clean_interval_hours"] = _safe_int(plugin.config.get("sqlite_clean_interval_hours", 1), 1)
+    s["memory_cache_ttl_seconds"] = int(
+        plugin.config.get("memory_cache_ttl_seconds", 300) or 0
+    )
+    s["memory_cache_max_size"] = int(
+        plugin.config.get("memory_cache_max_size", 500) or 0
+    )
+    s["sqlite_cache_ttl_days"] = _safe_int(
+        plugin.config.get("sqlite_cache_ttl_days", 7), 7
+    )
+    s["sqlite_clean_interval_hours"] = _safe_int(
+        plugin.config.get("sqlite_clean_interval_hours", 1), 1
+    )
 
     # 下次后台清理预计时间 (UTC 戳)
     last = getattr(plugin, "_last_clean_at", 0.0) or 0.0
@@ -355,38 +388,46 @@ async def api_integration_status(plugin):
         logger.debug(f"[vision_text_bridge] 检测外部图片理解插件失败: {ex}")
         sih_installed = False
     sih_compat_enabled = bool(
-    plugin.config.get("enable_openai_compat_endpoint")
-    or plugin.config.get("enable_smart_imagechat_hub_compat", True)
-)
+        plugin.config.get("enable_openai_compat_endpoint")
+        or plugin.config.get("enable_smart_imagechat_hub_compat", True)
+    )
     sih_compat_endpoint = None
     if sih_compat_enabled:
         try:
-            host = plugin.context.astr_context.config.get("dashboard", {}).get("host", "localhost")
-            port = plugin.context.astr_context.config.get("dashboard", {}).get("port", 6185)
+            host = plugin.context.astr_context.config.get("dashboard", {}).get(
+                "host", "localhost"
+            )
+            port = plugin.context.astr_context.config.get("dashboard", {}).get(
+                "port", 6185
+            )
         except Exception:
             host, port = "localhost", 6185
         sih_compat_endpoint = f"http://{host}:{port}/api/plug/astrbot_plugin_vision_text_bridge/v1/chat/completions"
 
-    return ok({
-        "chat_archive_installed": installed,
-        "chat_archive_cache_dir": cache_dir,
-        "storage_mode": storage_mode,
-        "policy": {
-            "thumbnail_source": "chat_archive" if installed else "local",
-            "image_b64_stored": not installed,
-            "expiry_cleanup": "chat_archive" if installed else "local",
-            "description_cleanup": "local",
-        },
-        "smart_imagechat_hub": {
-            "installed": sih_installed,
-            "compat_enabled": sih_compat_enabled,
-            "endpoint": sih_compat_endpoint,
-            "usage_hint": (
-                "smart_imagechat_hub 配置 default_image_caption_provider_id 为指向本 endpoint 的 OpenAI compatible provider, "
-                "它发的 image caption 请求会走本插件 mmx 流程"
-            ) if sih_installed and sih_compat_enabled else None,
-        },
-    })
+    return ok(
+        {
+            "chat_archive_installed": installed,
+            "chat_archive_cache_dir": cache_dir,
+            "storage_mode": storage_mode,
+            "policy": {
+                "thumbnail_source": "chat_archive" if installed else "local",
+                "image_b64_stored": not installed,
+                "expiry_cleanup": "chat_archive" if installed else "local",
+                "description_cleanup": "local",
+            },
+            "smart_imagechat_hub": {
+                "installed": sih_installed,
+                "compat_enabled": sih_compat_enabled,
+                "endpoint": sih_compat_endpoint,
+                "usage_hint": (
+                    "smart_imagechat_hub 配置 default_image_caption_provider_id 为指向本 endpoint 的 OpenAI compatible provider, "
+                    "它发的 image caption 请求会走本插件 mmx 流程"
+                )
+                if sih_installed and sih_compat_enabled
+                else None,
+            },
+        }
+    )
 
 
 async def api_stats_timeline(plugin):
@@ -414,13 +455,19 @@ async def api_list(plugin):
     search = (a.get("search", "") or "").strip()
     order_by = a.get("order_by", "created_at_desc") or "created_at_desc"
     items = plugin._caption_cache.list(
-        limit=limit, offset=offset, search=search, order_by=order_by,
+        limit=limit,
+        offset=offset,
+        search=search,
+        order_by=order_by,
     )
-    return ok({
-        "total": plugin._caption_cache.count(search=search),
-        "limit": limit, "offset": offset,
-        "items": [e.to_dict() for e in items],
-    })
+    return ok(
+        {
+            "total": plugin._caption_cache.count(search=search),
+            "limit": limit,
+            "offset": offset,
+            "items": [e.to_dict() for e in items],
+        }
+    )
 
 
 async def api_delete(plugin):
@@ -482,11 +529,13 @@ async def api_export(plugin):
     if miss is not None:
         return miss
     entries = plugin._caption_cache.list(limit=10000, offset=0)
-    return ok({
-        "exported_at": time.time(),
-        "count": len(entries),
-        "items": [e.to_dict() for e in entries],
-    })
+    return ok(
+        {
+            "exported_at": time.time(),
+            "count": len(entries),
+            "items": [e.to_dict() for e in entries],
+        }
+    )
 
 
 async def api_thumbnail(plugin, image_id: str = ""):
@@ -508,7 +557,8 @@ async def api_clean_expired(plugin):
         # 同步清内存热缓存的过期项 (LRU 全量访问开销大, 直接遍历 _m)
         mem_size_before = len(plugin._description_cache)
         expired_keys = [
-            k for k, (_, exp) in getattr(plugin._description_cache, "_m", {}).items()
+            k
+            for k, (_, exp) in getattr(plugin._description_cache, "_m", {}).items()
             if plugin._description_cache._ttl > 0 and time.time() >= exp
         ]
         for k in expired_keys:
@@ -516,9 +566,16 @@ async def api_clean_expired(plugin):
         purged_mem = mem_size_before - len(plugin._description_cache)
         logger.info(
             "[vision_text_bridge] 手动清理过期: SQLite=%d条, 内存=%d条",
-            deleted, purged_mem,
+            deleted,
+            purged_mem,
         )
-        return ok({"deleted_sqlite": deleted, "purged_memory": purged_mem, "ttl_days": ttl_days})
+        return ok(
+            {
+                "deleted_sqlite": deleted,
+                "purged_memory": purged_mem,
+                "ttl_days": ttl_days,
+            }
+        )
     except Exception as e:
         return err(f"清理失败: {e}", 500)
 
@@ -613,7 +670,9 @@ async def _describe_images(
     caller_prompt = "\n".join(prompt_parts).strip() if prompt_parts else ""
     try:
         coros = [
-            plugin._describe_one(u, "smart_imagechat_hub /image/caption", vision_prompt=caller_prompt)
+            plugin._describe_one(
+                u, "smart_imagechat_hub /image/caption", vision_prompt=caller_prompt
+            )
             for u in image_urls
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -638,11 +697,13 @@ def _build_chat_response(body: dict, captions: list[str]) -> dict:
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": caption},
-            "finish_reason": "stop",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": caption},
+                "finish_reason": "stop",
+            }
+        ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         "_meta": {
             "source": "astrbot_plugin_vision_text_bridge.mmx",
@@ -680,7 +741,9 @@ async def api_image_caption(plugin, *args, **kwargs):
     if not url:
         return err("缺少 url 参数", 400)
     try:
-        caption = await plugin._describe_one(url, "web_ui /image/caption", vision_prompt=caller_prompt)
+        caption = await plugin._describe_one(
+            url, "web_ui /image/caption", vision_prompt=caller_prompt
+        )
     except Exception as e:
         logger.exception("[vision_text_bridge] image_caption 调 mmx 失败: %s", e)
         return err(f"mmx 描述失败: {e}", 500)
@@ -701,14 +764,18 @@ async def api_diag(plugin):
     webui 看不到数据时调用, 验证 SQLite 里到底有没有东西。
     """
     if plugin._caption_cache is None:
-        return ok({
-            "cache_initialized": False,
-            "hint": "SQLite 缓存未初始化——请看 AstrBot 启动日志里 [vision_text_bridge] 初始化描述缓存",
-        })
+        return ok(
+            {
+                "cache_initialized": False,
+                "hint": "SQLite 缓存未初始化——请看 AstrBot 启动日志里 [vision_text_bridge] 初始化描述缓存",
+            }
+        )
     try:
         conn = sqlite3.connect(plugin._caption_cache._db_path)
         conn.row_factory = sqlite3.Row
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()]
+        cols = [
+            r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()
+        ]
         total = conn.execute("SELECT COUNT(*) FROM image_captions").fetchone()[0]
         recent = []
         for row in conn.execute(
@@ -716,28 +783,32 @@ async def api_diag(plugin):
             "mime_type, file_size, width, height, created_at "
             "FROM image_captions ORDER BY created_at DESC LIMIT 3"
         ).fetchall():
-            recent.append({
-                "image_id": row["image_id"],
-                "desc_len": row["desc_len"],
-                "has_b64": bool(row["image_b64"]),
-                "b64_len": len(row["image_b64"]) if row["image_b64"] else 0,
-                "mime_type": row["mime_type"],
-                "file_size": row["file_size"],
-                "width": row["width"],
-                "height": row["height"],
-                "created_at": row["created_at"],
-            })
+            recent.append(
+                {
+                    "image_id": row["image_id"],
+                    "desc_len": row["desc_len"],
+                    "has_b64": bool(row["image_b64"]),
+                    "b64_len": len(row["image_b64"]) if row["image_b64"] else 0,
+                    "mime_type": row["mime_type"],
+                    "file_size": row["file_size"],
+                    "width": row["width"],
+                    "height": row["height"],
+                    "created_at": row["created_at"],
+                }
+            )
         conn.close()
     except Exception as e:
         return ok({"cache_initialized": True, "error": str(e)})
-    return ok({
-        "cache_initialized": True,
-        "db_path": plugin._caption_cache._db_path,
-        "schema_columns": cols,
-        "total_entries": total,
-        "in_memory_cache_size": len(plugin._description_cache),
-        "recent_3": recent,
-    })
+    return ok(
+        {
+            "cache_initialized": True,
+            "db_path": plugin._caption_cache._db_path,
+            "schema_columns": cols,
+            "total_entries": total,
+            "in_memory_cache_size": len(plugin._description_cache),
+            "recent_3": recent,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -746,17 +817,29 @@ async def api_diag(plugin):
 _ROUTES = [
     # path (相对 PLUGIN_NAME), handler, methods, description
     ("/cache/stats", api_stats, ["GET"], "Cache stats"),
-    ("/cache/integration_status", api_integration_status, ["GET"],
-     "跨插件协同状态 (chat_archive 联动)"),
+    (
+        "/cache/integration_status",
+        api_integration_status,
+        ["GET"],
+        "跨插件协同状态 (chat_archive 联动)",
+    ),
     ("/cache/stats/timeline", api_stats_timeline, ["GET"], "按天创建量（柱状图）"),
     ("/cache/list", api_list, ["GET"], "Cache list"),
-    ("/cache/delete", api_delete, ["GET", "POST"],
-     "POST 主路径 (bridge.apiPost 带 body, angel_memory 同款)"),
+    (
+        "/cache/delete",
+        api_delete,
+        ["GET", "POST"],
+        "POST 主路径 (bridge.apiPost 带 body, angel_memory 同款)",
+    ),
     ("/cache/clear", api_clear, ["GET", "POST"], "POST 主路径"),
     ("/cache/regenerate", api_regenerate, ["GET", "POST"], "POST 主路径"),
     ("/cache/export", api_export, ["GET"], "Export JSON"),
-    ("/cache/thumbnail/<image_id>", api_thumbnail, ["GET"],
-     "缩略图：image_id 走路径参数 (GET)"),
+    (
+        "/cache/thumbnail/<image_id>",
+        api_thumbnail,
+        ["GET"],
+        "缩略图：image_id 走路径参数 (GET)",
+    ),
     ("/cache/diag", api_diag, ["GET"], "诊断：DB 路径/schema/最近 3 条"),
     ("/cache/call_log", api_call_log, ["GET"], "API 调用日志 (最近 200 条)"),
     ("/cache/clean_expired", api_clean_expired, ["GET", "POST"], "POST 主路径"),
@@ -764,8 +847,12 @@ _ROUTES = [
     #   framework legacy_router 对该 path 强制 require_dashboard_user (JWT) 校验
     #   openai SDK 发 'Authorization: Bearer placeholder' → 401 'Token 无效'
     #   该 endpoint 改走独立 server (main_server.py) on 127.0.0.1:<openai_compat_port>
-    ("/image/caption", api_image_caption, ["GET", "POST"],
-     "简单 mmx 描述 endpoint (返回纯文本或 JSON 标签)"),
+    (
+        "/image/caption",
+        api_image_caption,
+        ["GET", "POST"],
+        "简单 mmx 描述 endpoint (返回纯文本或 JSON 标签)",
+    ),
 ]
 
 

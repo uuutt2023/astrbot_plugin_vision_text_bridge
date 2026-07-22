@@ -8,12 +8,9 @@ API: is_image_url_part / extract_url_from_item / extract_urls_from_parts /
 
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
-import os
 from typing import Any, Iterable
-from urllib.parse import unquote
 
 # AstrBot 把 Pydantic TextPart 作为 content part 注入。测试沙箱 / 未来重命名可能没这个 import — try/except 兜底
 try:
@@ -29,8 +26,10 @@ except ImportError:
     _PILImage = None
 
 _EXT_TO_MIME: dict[str, str] = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".png": "image/png", ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
     ".webp": "image/webp",
 }
 
@@ -62,6 +61,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # 检测 / 提取
 # ---------------------------------------------------------------------------
+
 
 def is_image_url_part(part: Any) -> bool:
     """判断一个 content part 是不是 ``type=='image_url'``。
@@ -240,6 +240,7 @@ async def collect_image_urls_from_components(
 # TextPart 包装
 # ---------------------------------------------------------------------------
 
+
 def to_text_part(part_dict: dict) -> Any:
     """把 ``{"text": "..."}`` dict 包装成 Pydantic ``TextPart``。
 
@@ -253,6 +254,7 @@ def to_text_part(part_dict: dict) -> Any:
 # ---------------------------------------------------------------------------
 # mime / w / h 嗅探
 # ---------------------------------------------------------------------------
+
 
 def sniff_image_meta(data: bytes) -> tuple[str, int, int]:
     """嗅探图片 (mime, width, height)。失败返 ``("", 0, 0)``。
@@ -299,10 +301,10 @@ def _sniff_jpeg(data: bytes) -> tuple[str, int, int]:
         if marker in (0xC0, 0xC1, 0xC2, 0xC3):
             if i + 9 > len(data):
                 return ("image/jpeg", 0, 0)
-            h = int.from_bytes(data[i + 5:i + 7], "big")
-            w = int.from_bytes(data[i + 7:i + 9], "big")
+            h = int.from_bytes(data[i + 5 : i + 7], "big")
+            w = int.from_bytes(data[i + 7 : i + 9], "big")
             return ("image/jpeg", w, h)
-        seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+        seg_len = int.from_bytes(data[i + 2 : i + 4], "big")
         i += 2 + seg_len
     return ("image/jpeg", 0, 0)
 
@@ -332,7 +334,13 @@ def _sniff_webp(data: bytes) -> tuple[str, int, int]:
 # URL 缓存策略
 # ---------------------------------------------------------------------------
 
-_BOT_AVATAR_HOSTS = ("q.qlogo.cn", "q1.qlogo.cn", "q2.qlogo.cn", "q3.qlogo.cn", "q4.qlogo.cn")
+_BOT_AVATAR_HOSTS = (
+    "q.qlogo.cn",
+    "q1.qlogo.cn",
+    "q2.qlogo.cn",
+    "q3.qlogo.cn",
+    "q4.qlogo.cn",
+)
 _BOT_AVATAR_PATHS = ("headimg_dl",)
 
 
@@ -370,12 +378,14 @@ def is_cacheable_url(url: str, config: Any) -> bool:
 # 字节读取
 # ---------------------------------------------------------------------------
 
+
 def _read_file_bytes_sync(path: str) -> bytes:
     """同步读文件 bytes — 失败返空 bytes。"""
     try:
         with open(path, "rb") as f:
             return f.read()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log.debug("读取文件失败: path=%s, err=%s", path, e)
         return b""
 
 
@@ -384,11 +394,11 @@ def _normalize_file_url(url: str) -> str:
     if not url or not isinstance(url, str):
         return url or ""
     if url.startswith("file:///"):
-        return url[len("file:///"):]
+        return url[len("file:///") :]
     if url.startswith("file://localhost/"):
-        return url[len("file://localhost/"):]
+        return url[len("file://localhost/") :]
     if url.startswith("file://"):
-        return url[len("file://"):]
+        return url[len("file://") :]
     return url
 
 
@@ -410,11 +420,13 @@ async def read_image_bytes(url: str, http_client: Any = None) -> bytes:
     if url.startswith("data:image/"):
         try:
             import base64
+
             comma = url.find(",")
             if comma > 0:
-                b64 = url[comma + 1:]
+                b64 = url[comma + 1 :]
                 return base64.b64decode(b64, validate=False)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log.debug("base64 解码失败: %s", e)
             return b""
         return b""
     # file://
@@ -432,11 +444,13 @@ async def read_image_bytes(url: str, http_client: Any = None) -> bytes:
                 return r.content
             else:
                 import httpx
+
                 async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
                     r = await client.get(url)
                     r.raise_for_status()
                     return r.content
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log.debug("HTTP 读取图片失败: url=%.100s, err=%s", url, e)
             return b""
     # 本地路径
     return _read_file_bytes_sync(url)

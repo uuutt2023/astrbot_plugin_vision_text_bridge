@@ -26,11 +26,13 @@ try:
     from astrbot.api import logger as _astr_logger
 except Exception:  # logger 可能不存在 — 兜底
     _astr_logger = None
-import logging
+import logging  # noqa: E402
+
 logger = _astr_logger if _astr_logger is not None else logging.getLogger(__name__)
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import Context, Star, register
+from astrbot.api.event import AstrMessageEvent, filter  # noqa: E402
+from astrbot.api.provider import ProviderRequest  # noqa: E402
+from astrbot.api.star import Context, Star, register  # noqa: E402
+
 try:
     # : ContentPart 注入
     from astrbot.core.agent.message import TextPart  # type: ignore
@@ -39,7 +41,7 @@ except Exception:  # noqa: BLE001
 
 # : 同级模块直接 import
 
-from image_utils import (
+from image_utils import (  # noqa: E402
     is_image_url_part as _is_image_url_part,
     extract_urls_from_parts as _extract_urls_from_parts,
     extract_urls_from_context_list as _extract_urls_from_context_list,
@@ -48,23 +50,28 @@ from image_utils import (
     sniff_image_meta as _sniff_image_meta,
     is_cacheable_url as _is_cacheable_url,
     read_image_bytes as _read_image_bytes,
-    _read_file_bytes_sync,
     collect_image_urls_from_components as _collect_image_urls_from_components,
 )
-from tool_filter import filter_disabled_tools as _filter_disabled_tools
-import chat_archive_integration
-import provider_registration  # webui HTTP API 注册 provider (顶部 import)
-from mmx_runner import (
-    MmxResult, build_vision_command as _build_vision_command,
-    run_mmx as _run_mmx_fn, install_mmx_cli as _install_mmx_cli_fn,
+from tool_filter import filter_disabled_tools as _filter_disabled_tools  # noqa: E402
+import chat_archive_integration  # noqa: E402
+import provider_registration  # noqa: E402
+from mmx_runner import (  # noqa: E402
+    MmxResult,
+    build_vision_command as _build_vision_command,
+    run_mmx as _run_mmx_fn,
+    install_mmx_cli as _install_mmx_cli_fn,
     install_mmx_local as _install_mmx_local_fn,
     find_local_mmx as _find_local_mmx_fn,
     diagnose_mmx_error as _diagnose_mmx_error_fn,
-    truncate as _truncate_text, strip_mmx_content as _strip_mmx_content_fn,
-    preview as _preview_text, redact_text as _redact_text, redact_args as _redact_args_fn,
+    truncate as _truncate_text,
+    strip_mmx_content as _strip_mmx_content_fn,
+    preview as _preview_text,
+    redact_text as _redact_text,
+    redact_args as _redact_args_fn,
     upload_mmx_file as _upload_mmx_file_fn,
 )
-import web_api
+import web_api  # noqa: E402
+
 try:
     import main_server  # 独立 OpenAI 兼容 server (bypass framework JWT)
 except ImportError:
@@ -93,11 +100,6 @@ CaptionCache = _sibling_cache.CaptionCache
 CaptionEntry = _sibling_cache.CaptionEntry
 
 # : 共享常量跨模块来源
-from constants import (
-    PLUGIN_NAME, DEFAULT_DASHBOARD_PORT, PLUGIN_ROUTE_PREFIX,
-    OPENAI_COMPAT_PATH, IMAGE_CAPTION_PATH, PROVIDER_ID,
-    DEFAULT_MODEL, PLACEHOLDER_API_KEY,
-)
 
 # AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
 # priority 在 import 时锁定，调配置后需重启 AstrBot。
@@ -115,6 +117,7 @@ _BOT_AVATAR_PAT = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
 
 class _MemoryCache:
     """: 内存热缓存 — TTL + LRU size 上限。"""
+
     __slots__ = ("_m", "_max_size", "_ttl")
 
     def __init__(self, ttl_seconds: int, max_size: int):
@@ -171,6 +174,7 @@ def _read_plugin_version() -> str:
     """从 metadata.yaml 读版本号。"""
     try:
         import yaml  # AstrBot 依赖 PyYAML
+
         meta_path = Path(__file__).resolve().parent / "metadata.yaml"
         with open(meta_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
@@ -205,7 +209,6 @@ def _flatten_group_config(config: dict) -> dict:
     if not isinstance(config, dict):
         return config
     flat = dict(config)  # 浅拷贝, 保留 group 引用
-    SCHEMA_META_KEYS = {"description", "type", "hint", "default", "obvious_hint", "items"}
     for _key, value in list(config.items()):
         if not isinstance(value, dict):
             continue
@@ -215,7 +218,10 @@ def _flatten_group_config(config: dict) -> dict:
                 flat[ik] = iv
         else:
             # 格式 B: group 容器只有字段, 无 items 包装
-            is_schema_def = any(mk in value for mk in ("description", "type", "hint", "default", "obvious_hint"))
+            is_schema_def = any(
+                mk in value
+                for mk in ("description", "type", "hint", "default", "obvious_hint")
+            )
             if not is_schema_def:
                 # 普通 user-data group, 展平
                 for ik, iv in value.items():
@@ -248,7 +254,9 @@ class VisionTextBridgePlugin(Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.config = _flatten_group_config(config) if isinstance(config, dict) else config
+        self.config = (
+            _flatten_group_config(config) if isinstance(config, dict) else config
+        )
         self.mmx_path = (self.config.get("mmx_path") or "").strip()
         if not self.mmx_path:
             local = _find_local_mmx_fn(str(_PLUGIN_DIR))
@@ -268,7 +276,7 @@ class VisionTextBridgePlugin(Star):
         self._configured_priority: int = self._resolve_priority()
         self._last_image_bytes: dict[str, bytes] = {}
         self._priority_locked_warning_emitted = False
-        self._http_client: "httpx.AsyncClient | None" = None
+        self._http_client: "httpx.AsyncClient | None" = None  # noqa: F821
         # : 预计算白名单集合 — 避免每请求重建 set
         self._group_whitelist_set: frozenset[str] = frozenset(
             str(g) for g in (self.config.get("group_whitelist", []) or [])
@@ -278,7 +286,9 @@ class VisionTextBridgePlugin(Star):
         )
         # : 预分割工具过滤器名 — 避免每请求 re-split
         self._tool_filter_names: list[str] = [
-            n.strip() for n in _cfg_str(self.config, "tool_filter_names", "").split(",") if n.strip()
+            n.strip()
+            for n in _cfg_str(self.config, "tool_filter_names", "").split(",")
+            if n.strip()
         ]
         self._pending_urls: list[str] | None = None
         self._pending_parts: list[Any] | None = None
@@ -304,7 +314,8 @@ class VisionTextBridgePlugin(Star):
         except (TypeError, ValueError):
             logger.warning(
                 "[vision_text_bridge] priority 配置值非法 (%r)，回退到默认 %d",
-                raw, DEFAULT_PRIORITY,
+                raw,
+                DEFAULT_PRIORITY,
             )
             return DEFAULT_PRIORITY
 
@@ -321,7 +332,8 @@ class VisionTextBridgePlugin(Star):
                 "[vision_text_bridge] priority 配置=%d 与注册值=%d 不一致。"
                 "AstrBot 的 on_llm_request priority 在 import 时锁定，"
                 "需重启 AstrBot 生效。",
-                self._configured_priority, DEFAULT_PRIORITY,
+                self._configured_priority,
+                DEFAULT_PRIORITY,
             )
             self._priority_locked_warning_emitted = True
 
@@ -370,6 +382,7 @@ class VisionTextBridgePlugin(Star):
         self._vision_semaphore = asyncio.Semaphore(max_concurrent)
 
         import httpx
+
         self._http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(15.0),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
@@ -418,7 +431,9 @@ class VisionTextBridgePlugin(Star):
         try:
             cfgmgr = getattr(ac, "config_manager", None)
             if cfgmgr is not None:
-                fn = getattr(cfgmgr, "update_profile", None) or getattr(cfgmgr, "save_config", None)
+                fn = getattr(cfgmgr, "update_profile", None) or getattr(
+                    cfgmgr, "save_config", None
+                )
                 if callable(fn):
                     fn("default", ac.config)
                     return True
@@ -432,7 +447,9 @@ class VisionTextBridgePlugin(Star):
                     save_fn()
                     return True
         except Exception as e:
-            logger.debug("[vision_text_bridge] 同步 dashboard 密码到 framework 异常: %s", e)
+            logger.debug(
+                "[vision_text_bridge] 同步 dashboard 密码到 framework 异常: %s", e
+            )
         return False
 
     def _init_caption_cache(self) -> None:
@@ -443,11 +460,14 @@ class VisionTextBridgePlugin(Star):
             self._caption_cache = CaptionCache(db_path)
             logger.info(
                 "[vision_text_bridge] 描述缓存已初始化: %s (条目=%d)",
-                db_path, self._caption_cache.count(),
+                db_path,
+                self._caption_cache.count(),
             )
             self._restore_call_log()
         except Exception as exc:
-            logger.exception("[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc)
+            logger.exception(
+                "[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc
+            )
             self._caption_cache = None
 
     def _restore_call_log(self) -> None:
@@ -478,7 +498,8 @@ class VisionTextBridgePlugin(Star):
                 if deleted > 0:
                     logger.info(
                         "[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)",
-                        deleted, ttl_days,
+                        deleted,
+                        ttl_days,
                     )
             if interval_h > 0 and ttl_days > 0:
                 self._clean_task = asyncio.create_task(
@@ -486,7 +507,8 @@ class VisionTextBridgePlugin(Star):
                 )
                 logger.info(
                     "[vision_text_bridge] 已启动过期清理后台任务: TTL=%d天, 间隔=%d小时",
-                    ttl_days, interval_h,
+                    ttl_days,
+                    interval_h,
                 )
         except Exception as exc:
             logger.exception("[vision_text_bridge] 启动过期清理 task 失败: %s", exc)
@@ -501,13 +523,17 @@ class VisionTextBridgePlugin(Star):
     async def _start_openai_compat_server(self) -> None:
         """启动独立 OpenAI 兼容 server (bypass framework JWT)。"""
         if main_server is None:
-            logger.warning("[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动")
+            logger.warning(
+                "[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动"
+            )
             return
         self._openai_compat_port = None
         try:
             actual_port = await main_server.start_solo_server(self, port=2023)
             if actual_port is None:
-                logger.warning("[vision_text_bridge] main_server.start_solo_server 失败")
+                logger.warning(
+                    "[vision_text_bridge] main_server.start_solo_server 失败"
+                )
             else:
                 self._openai_compat_port = actual_port
                 logger.info(
@@ -515,7 +541,9 @@ class VisionTextBridgePlugin(Star):
                     actual_port,
                 )
         except Exception as exc:
-            logger.exception("[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc)
+            logger.exception(
+                "[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc
+            )
 
     async def _ensure_mmx_cli(self) -> bool:
         """确保 mmx CLI 可用。成功 (本地/全局装) 返 True, 仍未找到返 False。"""
@@ -535,14 +563,21 @@ class VisionTextBridgePlugin(Star):
     async def _install_mmx_local_then_global(self) -> None:
         """本地装失败后退到全局 npm install -g。"""
         local_target = str(_PLUGIN_DIR / ".mmx")
-        logger.info("[vision_text_bridge] 未找到 mmx CLI, 尝试装到 plugin 本地: %s", local_target)
+        logger.info(
+            "[vision_text_bridge] 未找到 mmx CLI, 尝试装到 plugin 本地: %s",
+            local_target,
+        )
         install_ok = await _install_mmx_local_fn(self.npm_path, local_target)
         if install_ok:
             self.mmx_path = _find_local_mmx_fn(str(_PLUGIN_DIR)) or ""
             if self.mmx_path:
-                logger.info("[vision_text_bridge] mmx-cli 本地装成功: %s", self.mmx_path)
+                logger.info(
+                    "[vision_text_bridge] mmx-cli 本地装成功: %s", self.mmx_path
+                )
                 return
-            logger.warning("[vision_text_bridge] 本地装成功但 .bin/mmx 仍找不到, 请检查 node_modules")
+            logger.warning(
+                "[vision_text_bridge] 本地装成功但 .bin/mmx 仍找不到, 请检查 node_modules"
+            )
 
         # 本地装失败, 退到全局装
         logger.info("[vision_text_bridge] 本地装失败, 尝试 npm install -g ...")
@@ -550,7 +585,9 @@ class VisionTextBridgePlugin(Star):
         if install_ok:
             self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
             if self.mmx_path:
-                logger.info("[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path)
+                logger.info(
+                    "[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path
+                )
         else:
             logger.warning(
                 "[vision_text_bridge] mmx-cli 装失败。请手动执行:\n"
@@ -572,6 +609,7 @@ class VisionTextBridgePlugin(Star):
     def _get_plugin_data_dir(self) -> Path:
         try:
             from astrbot.api.star import StarTools
+
             p = Path(StarTools.get_data_dir())
         except Exception:
             p = Path(__file__).resolve().parent / "data"
@@ -581,16 +619,20 @@ class VisionTextBridgePlugin(Star):
     def _strip_image_fields_from_req(self, req) -> None:
         """从 req 清除所有 image_url 字段。"""
         if req.extra_user_content_parts:
-            req.extra_user_content_parts[:] = [p for p in req.extra_user_content_parts
-                                               if not _is_image_url_part(p)]
-        for c in (req.contexts or []):
+            req.extra_user_content_parts[:] = [
+                p for p in req.extra_user_content_parts if not _is_image_url_part(p)
+            ]
+        for c in req.contexts or []:
             if not isinstance(c, dict):
                 continue
             content = c.get("content")
             if not isinstance(content, list):
                 continue
-            content[:] = [x for x in content
-                         if not (isinstance(x, dict) and x.get("type") == "image_url")]
+            content[:] = [
+                x
+                for x in content
+                if not (isinstance(x, dict) and x.get("type") == "image_url")
+            ]
 
     # ------------------------------------------------------------------ provider 伪装
 
@@ -602,8 +644,10 @@ class VisionTextBridgePlugin(Star):
             logger.debug("[vision_text_bridge] 检测外部图片理解插件失败: %s", e)
             return
         if installed:
-            compat_enabled = bool(self.config.get("enable_openai_compat_endpoint")
-                          or self.config.get("enable_smart_imagechat_hub_compat", True))
+            compat_enabled = bool(
+                self.config.get("enable_openai_compat_endpoint")
+                or self.config.get("enable_smart_imagechat_hub_compat", True)
+            )
             if compat_enabled:
                 logger.debug(
                     "[vision_text_bridge] smart_imagechat_hub 兼容 endpoint 已启用"
@@ -613,18 +657,20 @@ class VisionTextBridgePlugin(Star):
                     "[vision_text_bridge] smart_imagechat_hub 兼容 endpoint 未启用"
                 )
 
-
-
     async def _auto_register_sih_provider(self) -> None:
         """: 启动期自动注册 OpenAI compatible provider（后台异步，不阻塞启动）。"""
-        if not (self.config.get("auto_register")
-                or self.config.get("auto_register_openai_compat_provider")
-                or self.config.get("smart_imagechat_hub_auto_register_provider", True)):
+        if not (
+            self.config.get("auto_register")
+            or self.config.get("auto_register_openai_compat_provider")
+            or self.config.get("smart_imagechat_hub_auto_register_provider", True)
+        ):
             logger.info(
                 "[vision_text_bridge] auto_register=False, 跳过自动注册 OpenAI compatible provider"
             )
             return
-        logger.info("[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册")
+        logger.info(
+            "[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册"
+        )
         _openapi_key_set = bool((self.config.get("openapi_key") or "").strip())
         _webui_pw_set = bool((self.config.get("webui_password") or "").strip())
         logger.info(
@@ -649,7 +695,9 @@ class VisionTextBridgePlugin(Star):
         if ok:
             logger.info("[vision_text_bridge] webui API 注册成功")
         else:
-            logger.warning("[vision_text_bridge] webui API 注册返回 False — 请检查 openapi_key 或 webui_password 配置")
+            logger.warning(
+                "[vision_text_bridge] webui API 注册返回 False — 请检查 openapi_key 或 webui_password 配置"
+            )
 
     def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """: 检查群白名单 / 用户白名单 / 仅私聊权限。"""
@@ -657,7 +705,11 @@ class VisionTextBridgePlugin(Star):
             # 拿 event 的群/用户信息
             msg = getattr(event, "message_obj", None) or getattr(event, "message", None)
             group_id = str(getattr(msg, "group_id", "") or "") if msg else ""
-            user_id = str(getattr(msg, "sender", None) and (msg.sender.user_id or getattr(msg.sender, "user_id", "")) or "")
+            user_id = str(
+                getattr(msg, "sender", None)
+                and (msg.sender.user_id or getattr(msg.sender, "user_id", ""))
+                or ""
+            )
             if not user_id and hasattr(event, "get_sender_id"):
                 user_id = str(event.get_sender_id() or "")
             is_private = not group_id  # 没 group_id = 私聊
@@ -678,9 +730,9 @@ class VisionTextBridgePlugin(Star):
 
             return True, ""
         except Exception as e:
-            # 提取失败 → 保守放行 (避免因权限检查 bug 漏掉所有拦截)
-            if self._should_log("hook_trace"):
-                logger.debug("[vision_text_bridge] _check_permission 异常, 默认放行: %s", e)
+            logger.warning(
+                "[vision_text_bridge] _check_permission 异常, 默认放行: %s", e
+            )
             return True, ""
 
     def _mark_providers_support_image(self) -> None:
@@ -706,12 +758,16 @@ class VisionTextBridgePlugin(Star):
                 cfg["modalities"] = list(mods) + ["image"]
                 modified += 1
         if modified:
-            logger.info("[vision_text_bridge] 已给 %d 个 provider 补 'image' modality", modified)
+            logger.info(
+                "[vision_text_bridge] 已给 %d 个 provider 补 'image' modality", modified
+            )
 
     def _collect_all_providers(self, ctx) -> list[Any]:
         """收集所有 provider 对象，兼容多版本 AstrBot API。"""
         providers: list[Any] = []
-        manager = getattr(ctx, "provider_manager", None) or getattr(ctx, "providers", None)
+        manager = getattr(ctx, "provider_manager", None) or getattr(
+            ctx, "providers", None
+        )
         if manager is not None:
             provs = getattr(manager, "providers", None)
             if isinstance(provs, dict):
@@ -770,7 +826,8 @@ class VisionTextBridgePlugin(Star):
                 "[vision_text_bridge] ✓ AngelHeart 联动：本插件 priority=%d %s 50。"
                 "如果出现 '[Image Attachment: data:image/...]'，"
                 "请禁用 AngelHeart 的 image_caption_provider_id。",
-                self._configured_priority, cmp,
+                self._configured_priority,
+                cmp,
             )
         if "astrbot_plugin_uni_nickname" in names:
             if self._configured_priority > 0:
@@ -793,7 +850,8 @@ class VisionTextBridgePlugin(Star):
                 logger.info(
                     "[vision_text_bridge] ℹ️ 检测到 %s；本插件 priority=%d 应先于它跑。"
                     "如有冲突可把 priority 调到 500~1000。",
-                    name, self._configured_priority,
+                    name,
+                    self._configured_priority,
                 )
         if "astrbot_plugin_group_chat_plus" in names:
             logger.info(
@@ -806,7 +864,9 @@ class VisionTextBridgePlugin(Star):
         names: set[str] = set()
         manager = getattr(self.context, "plugin_manager", None)
         if manager is not None:
-            provs = getattr(manager, "plugins", None) or getattr(manager, "_plugins", None)
+            provs = getattr(manager, "plugins", None) or getattr(
+                manager, "_plugins", None
+            )
             if isinstance(provs, dict):
                 names.update(provs.keys())
             elif isinstance(provs, list):
@@ -814,7 +874,11 @@ class VisionTextBridgePlugin(Star):
                     n = getattr(p, "name", None) or getattr(p, "__name__", None)
                     if isinstance(n, str):
                         names.add(n)
-        for meth in ("get_registered_plugin_names", "list_plugin_names", "list_plugins"):
+        for meth in (
+            "get_registered_plugin_names",
+            "list_plugin_names",
+            "list_plugins",
+        ):
             fn = getattr(self.context, meth, None)
             if not callable(fn):
                 continue
@@ -831,7 +895,6 @@ class VisionTextBridgePlugin(Star):
     # =========================================================================
     def _register_web_apis_real(self) -> None:
         """: web API 注册委托给 web_api 模块。"""
-        import web_api
         web_api.register_all_routes(self.context, self)
 
     async def terminate(self) -> None:
@@ -861,7 +924,11 @@ class VisionTextBridgePlugin(Star):
                     deleted = self._caption_cache.clean_expired(ttl_days)
                     self._last_clean_at = time.time()  # : 供 webui 算下次清理
                     if deleted > 0 and self._should_log("cache_trace"):
-                        logger.info("[vision_text_bridge] 后台清理过期缓存: 删除 %d 条 (TTL=%d天)", deleted, ttl_days)
+                        logger.info(
+                            "[vision_text_bridge] 后台清理过期缓存: 删除 %d 条 (TTL=%d天)",
+                            deleted,
+                            ttl_days,
+                        )
                 except Exception as e:
                     logger.warning("[vision_text_bridge] 后台清理失败: %s", e)
         except asyncio.CancelledError:
@@ -888,7 +955,9 @@ class VisionTextBridgePlugin(Star):
                 logger.debug("[vision_text_bridge] 工具过滤跳过：%s", e)
 
         # === 1) 快照三类图片来源，**先清空** 防 AstrBot 切 fallback provider ===
-        saved_urls, saved_parts, saved_contexts = await self._capture_request_sources(event, req)
+        saved_urls, saved_parts, saved_contexts = await self._capture_request_sources(
+            event, req
+        )
         saved_urls = self._filter_image_sources(saved_urls)
 
         # 清空
@@ -903,7 +972,10 @@ class VisionTextBridgePlugin(Star):
         if self._should_log("hook_trace"):
             logger.info(
                 "[vision_text_bridge] on_llm_request: image_urls=%d, parts=%d, contexts=%d, priority=%d",
-                len(saved_urls), len(saved_parts), len(saved_contexts), self._configured_priority,
+                len(saved_urls),
+                len(saved_parts),
+                len(saved_contexts),
+                self._configured_priority,
             )
 
         # === 2) 处理 ===
@@ -945,7 +1017,8 @@ class VisionTextBridgePlugin(Star):
         saved_urls = list(req.image_urls or [])
         saved_parts = (
             list(req.extra_user_content_parts or [])
-            if req.extra_user_content_parts else []
+            if req.extra_user_content_parts
+            else []
         )
         saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
 
@@ -953,7 +1026,10 @@ class VisionTextBridgePlugin(Star):
             logger.info(
                 "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
                 len(saved_urls),
-                [u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u for u in saved_urls],
+                [
+                    u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u
+                    for u in saved_urls
+                ],
             )
 
         # req.image_urls 空时才递归补，避免同一张图重复 mmx
@@ -974,22 +1050,30 @@ class VisionTextBridgePlugin(Star):
             type_summary = [str(getattr(c, "type", "?")) for c in chain]
             logger.info(
                 "[vision_text_bridge] chain 顶层 types=%s, 递归补提了 %d 张图",
-                type_summary, added_count,
+                type_summary,
+                added_count,
             )
         except Exception as e:
             if self._should_log("hook_trace"):
-                logger.debug("[vision_text_bridge] 补提 event.message_obj 图失败: %s", e)
+                logger.debug(
+                    "[vision_text_bridge] 补提 event.message_obj 图失败: %s", e
+                )
 
     def _filter_image_sources(self, saved_urls: list) -> list:
         """过滤 bot 头像 URL (q.qlogo.cn 固定模式)。"""
         if not saved_urls:
             return saved_urls
-        filtered = [u for u in saved_urls if not (isinstance(u, str) and _BOT_AVATAR_PAT.search(u))]
+        filtered = [
+            u
+            for u in saved_urls
+            if not (isinstance(u, str) and _BOT_AVATAR_PAT.search(u))
+        ]
         if len(filtered) != len(saved_urls):
             removed = set(saved_urls) - set(filtered)
             logger.info(
                 "[vision_text_bridge] 过滤 bot 头像 %d 张: %s",
-                len(removed), list(removed),
+                len(removed),
+                list(removed),
             )
             return filtered
         return saved_urls
@@ -1006,20 +1090,34 @@ class VisionTextBridgePlugin(Star):
             if n:
                 req.image_urls = []
                 if self._should_log("hook_trace"):
-                    logger.info("[vision_text_bridge] 链末兜底: 清空 %d 个 image_urls", n)
+                    logger.info(
+                        "[vision_text_bridge] 链末兜底: 清空 %d 个 image_urls", n
+                    )
             if req.extra_user_content_parts:
-                req.extra_user_content_parts[:] = [p for p in req.extra_user_content_parts
-                                                   if not _is_image_url_part(p)]
+                req.extra_user_content_parts[:] = [
+                    p for p in req.extra_user_content_parts if not _is_image_url_part(p)
+                ]
             if req.contexts:
                 for c in req.contexts:
                     if isinstance(c, dict) and isinstance(c.get("content"), list):
-                        c["content"][:] = [x for x in c["content"]
-                                           if not (isinstance(x, dict) and x.get("type") == "image_url")]
+                        c["content"][:] = [
+                            x
+                            for x in c["content"]
+                            if not (
+                                isinstance(x, dict) and x.get("type") == "image_url"
+                            )
+                        ]
             # 可选：清 data:base64 残留
-            tag = "image_url" if self.config.get("strip_all_image_urls_in_fallback", False) else "data:base64"
+            tag = (
+                "image_url"
+                if self.config.get("strip_all_image_urls_in_fallback", False)
+                else "data:base64"
+            )
             removed = _strip_image_urls(req, only_data_url=tag == "data:base64")
             if removed and self._should_log("hook_trace"):
-                logger.info("[vision_text_bridge] 链末兜底: 删 %d 个 %s 残留", removed, tag)
+                logger.info(
+                    "[vision_text_bridge] 链末兜底: 删 %d 个 %s 残留", removed, tag
+                )
         except Exception as e:
             logger.exception("[vision_text_bridge] 链末兜底异常: %s", e)
 
@@ -1033,10 +1131,15 @@ class VisionTextBridgePlugin(Star):
                     if ft is not None:
                         n2 = _filter_disabled_tools(ft, mode, names)
                         if n2 and self._should_log("hook_trace"):
-                            logger.info("[vision_text_bridge] 链末兜底: 从 req.func_tool 移除 %d 个工具", n2)
+                            logger.info(
+                                "[vision_text_bridge] 链末兜底: 从 req.func_tool 移除 %d 个工具",
+                                n2,
+                            )
         except Exception:
             if self._should_log("hook_trace"):
-                logger.debug("[vision_text_bridge] 链末兜底跳过 func_tool", exc_info=True)
+                logger.debug(
+                    "[vision_text_bridge] 链末兜底跳过 func_tool", exc_info=True
+                )
 
     # =========================================================================
     # 内部: 处理请求
@@ -1065,10 +1168,14 @@ class VisionTextBridgePlugin(Star):
         # contexts
         if self.config.get("include_history", False):
             ctxs = self._pending_contexts or [
-                c for c in (req.contexts or [])
-                if isinstance(c, dict) and isinstance(c.get("content"), list)
-                and any(isinstance(x, dict) and x.get("type") == "image_url"
-                        for x in c.get("content", []))
+                c
+                for c in (req.contexts or [])
+                if isinstance(c, dict)
+                and isinstance(c.get("content"), list)
+                and any(
+                    isinstance(x, dict) and x.get("type") == "image_url"
+                    for x in c.get("content", [])
+                )
             ]
             for c in ctxs:
                 if not isinstance(c, dict):
@@ -1087,12 +1194,23 @@ class VisionTextBridgePlugin(Star):
         if not urls:
             return []
         # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
-        descs = await asyncio.gather(*[self._describe_one(u, "llm_request AstrBot hook") for u in urls])
+        results = await asyncio.gather(
+            *[self._describe_one(u, "llm_request AstrBot hook") for u in urls],
+            return_exceptions=True,
+        )
+        descs = [r if not isinstance(r, BaseException) else "" for r in results]
+        for url, r in zip(urls, results):
+            if isinstance(r, BaseException):
+                logger.warning(
+                    "[vision_text_bridge] _describe_one 异常 (已记录 call_log): url=%s, err=%s",
+                    self._smart_url_preview(url),
+                    r,
+                )
         if self._caption_cache is not None:
             try:
                 self._caption_cache.clean_call_logs(self._MAX_CALL_LOG)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[vision_text_bridge] clean_call_logs 失败: %s", e)
         return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
 
     _MAX_CALL_LOG = 200
@@ -1103,10 +1221,12 @@ class VisionTextBridgePlugin(Star):
         try:
             entry["created_at"] = time.time()
             self._caption_cache.insert_call_log(entry)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[vision_text_bridge] persist_call_log 失败: %s", e)
 
-    async def _describe_one(self, url: str, source: str = "unknown", vision_prompt: str = "") -> str:
+    async def _describe_one(
+        self, url: str, source: str = "unknown", vision_prompt: str = ""
+    ) -> str:
         """: 内存缓存 → SQLite 缓存 → mmx 三级查找。vision_prompt 为空时使用 config 默认值。"""
         url = (url or "").strip()
         if not url:
@@ -1124,7 +1244,9 @@ class VisionTextBridgePlugin(Star):
             "error": None,
         }
         try:
-            result = await self._describe_one_impl(url, cacheable_hint=None, vision_prompt=vision_prompt)
+            result = await self._describe_one_impl(
+                url, cacheable_hint=None, vision_prompt=vision_prompt
+            )
             entry["status"] = "ok" if result else "empty"
             entry["duration_ms"] = int((time.time() - t0) * 1000)
             self._call_log.insert(0, entry)
@@ -1140,11 +1262,18 @@ class VisionTextBridgePlugin(Star):
             if len(self._call_log) > self._MAX_CALL_LOG:
                 self._call_log.pop()
             self._persist_call_log(entry)
-            raise
+            return ""
 
-    async def _describe_one_impl(self, url: str, cacheable_hint: bool | None = None, vision_prompt: str = "") -> str:
+    async def _describe_one_impl(
+        self, url: str, cacheable_hint: bool | None = None, vision_prompt: str = ""
+    ) -> str:
         """: 原 _describe_one 逻辑, 被包装器调用。vision_prompt 为空时使用 config 默认值。"""
-        cacheable = self.config.get("cache_descriptions", True) and _is_cacheable_url(url, self.config) if cacheable_hint is None else cacheable_hint
+        cacheable = (
+            self.config.get("cache_descriptions", True)
+            and _is_cacheable_url(url, self.config)
+            if cacheable_hint is None
+            else cacheable_hint
+        )
 
         # : 快路径 — URL md5 当 id 查 (缓存命中时不需 prompt)
         if cacheable:
@@ -1152,8 +1281,11 @@ class VisionTextBridgePlugin(Star):
             # 1) 内存缓存
             if quick_key in self._description_cache:
                 if self._should_log("cache_trace"):
-                    logger.info("[vision_text_bridge] 命中内存缓存 (快路径, 跳过下载): key=%s, url=%s",
-                                quick_key[:16], self._smart_url_preview(url))
+                    logger.info(
+                        "[vision_text_bridge] 命中内存缓存 (快路径, 跳过下载): key=%s, url=%s",
+                        quick_key[:16],
+                        self._smart_url_preview(url),
+                    )
                 return self._description_cache[quick_key]
             # 2) SQLite 缓存
             if self._caption_cache is not None:
@@ -1161,12 +1293,17 @@ class VisionTextBridgePlugin(Star):
                 if entry is not None:
                     self._description_cache[quick_key] = entry.description
                     if self._should_log("cache_trace"):
-                        logger.info("[vision_text_bridge] 命中 SQLite 缓存 (快路径): key=%s, hits=%d",
-                                    quick_key[:16], entry.hit_count)
+                        logger.info(
+                            "[vision_text_bridge] 命中 SQLite 缓存 (快路径): key=%s, hits=%d",
+                            quick_key[:16],
+                            entry.hit_count,
+                        )
                     return entry.description
 
         # : 慢路径 — md5(image_bytes) 防内容重复
-        cache_key, image_bytes = await self._compute_image_cache_key(url) if cacheable else (None, b"")
+        cache_key, image_bytes = (
+            await self._compute_image_cache_key(url) if cacheable else (None, b"")
+        )
         if cacheable and cache_key:
             cache = getattr(self, "_last_image_bytes", None)
             if cache is None:
@@ -1186,13 +1323,17 @@ class VisionTextBridgePlugin(Star):
 
         # 3) 调 mmx
         try:
-            return await self._describe_via_mmx(url, cache_key, cacheable, vision_prompt=vision_prompt)
+            return await self._describe_via_mmx(
+                url, cache_key, cacheable, vision_prompt=vision_prompt
+            )
         except Exception:
             if cacheable:
                 self._last_image_bytes.pop(url, None)
             raise
 
-    async def _describe_via_mmx(self, url: str, cache_key: str | None, cacheable: bool, vision_prompt: str = "") -> str:
+    async def _describe_via_mmx(
+        self, url: str, cache_key: str | None, cacheable: bool, vision_prompt: str = ""
+    ) -> str:
         """实际调 mmx 子进程拿描述。失败返 "" + 记 log。
 
         vision_prompt 优先级: 调用方传入 > config.vision_prompt > 内置默认值。
@@ -1203,7 +1344,7 @@ class VisionTextBridgePlugin(Star):
             vision_prompt
             or self.config.get("vision_prompt", "")
             or "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
-               "严禁猜测游戏/番剧/品牌/角色名，看不出就说'无法确定'。"
+            "严禁猜测游戏/番剧/品牌/角色名，看不出就说'无法确定'。"
         )
         if self._should_log("hook_trace"):
             logger.info(
@@ -1244,7 +1385,7 @@ class VisionTextBridgePlugin(Star):
         comma = url.find(",")
         if comma <= 0:
             return None
-        b64 = url[comma + 1:]
+        b64 = url[comma + 1 :]
         ext = "png"
         prefix = url[:comma].lower()
         if "jpeg" in prefix or "jpg" in prefix:
@@ -1265,7 +1406,8 @@ class VisionTextBridgePlugin(Star):
                 tmp_path = f.name
             logger.info(
                 "[vision_text_bridge] data URL 过大(%dB)→写临时文件 %s, 正在上传 mmx",
-                len(url), tmp_path,
+                len(url),
+                tmp_path,
             )
             fid = await _upload_mmx_file_fn(str(self.mmx_path), tmp_path, timeout=30)
             if fid:
@@ -1289,35 +1431,59 @@ class VisionTextBridgePlugin(Star):
             result = await self._run_mmx(*command, timeout=timeout)
             return result, None
         except asyncio.TimeoutError:
-            logger.warning("[vision_text_bridge] mmx 超时(%ss): %s", timeout, self._smart_url_preview(url))
+            logger.warning(
+                "[vision_text_bridge] mmx 超时(%ss): %s",
+                timeout,
+                self._smart_url_preview(url),
+            )
             return None, "timeout"
         except Exception as e:
             self._diagnose_mmx_error(str(e), url)
-            logger.warning("[vision_text_bridge] mmx 异常: %s, err=%s", self._smart_url_preview(url), e)
+            logger.warning(
+                "[vision_text_bridge] mmx 异常: %s, err=%s",
+                self._smart_url_preview(url),
+                e,
+            )
             return None, str(e)
 
     def _log_mmx_failure(self, result, url: str) -> None:
-        err_text = result.stderr.strip() or result.stdout.strip() or f"exit={result.returncode}"
+        err_text = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit={result.returncode}"
+        )
         self._diagnose_mmx_error(err_text, url)
         logger.warning(
             "[vision_text_bridge] mmx 失败: %s, exit=%d, err=%s",
-            self._smart_url_preview(url), result.returncode, self._redact_text(err_text[:300]),
+            self._smart_url_preview(url),
+            result.returncode,
+            self._redact_text(err_text[:300]),
         )
         if self._should_log("mmx_subprocess"):
             # 优化: redact + slice 只在 verbose 开启时执行 (避开 2000B 字符串构造)
-            logger.info("[vision_text_bridge] mmx 完整输出:\n--- stdout ---\n%s\n--- stderr ---\n%s",
-                        self._redact_text(result.stdout[:2000]),
-                        self._redact_text(result.stderr[:2000]))
+            logger.info(
+                "[vision_text_bridge] mmx 完整输出:\n--- stdout ---\n%s\n--- stderr ---\n%s",
+                self._redact_text(result.stdout[:2000]),
+                self._redact_text(result.stderr[:2000]),
+            )
 
     def _log_mmx_success(self, url: str, description: str, elapsed: float) -> None:
         logger.info(
             "[vision_text_bridge] mmx 完成: %s, 耗时=%.2fs, 长度=%d",
-            self._smart_url_preview(url), elapsed, len(description),
+            self._smart_url_preview(url),
+            elapsed,
+            len(description),
         )
-        logger.info("[vision_text_bridge] 描述预览: %s", self._preview(description, 120))
+        logger.info(
+            "[vision_text_bridge] 描述预览: %s", self._preview(description, 120)
+        )
 
     async def _persist(
-        self, image_id: str, url: str, description: str, image_bytes: bytes = b"",
+        self,
+        image_id: str,
+        url: str,
+        description: str,
+        image_bytes: bytes = b"",
     ) -> None:
         """写 SQLite 缓存，含 base64/mime/dim 元信息。"""
         if self._caption_cache is None:
@@ -1328,21 +1494,34 @@ class VisionTextBridgePlugin(Star):
             b64 = ""
         try:
             self._caption_cache.put(
-                image_id=image_id, url=url, description=description,
-                image_b64=b64, mime_type=mime, file_size=size, width=w, height=h,
+                image_id=image_id,
+                url=url,
+                description=description,
+                image_b64=b64,
+                mime_type=mime,
+                file_size=size,
+                width=w,
+                height=h,
             )
             # **重要：始终 log 持久化结果** （不依赖 verbose 配置） 。
             # 用户反馈 "webui 看不到缓存" 场景：都是这里没日志。
             logger.info(
                 "[vision_text_bridge] 写 SQLite 缓存成功: id=%s, url=%s, "
                 "desc_len=%d, b64=%dB, mime=%s, size=%d",
-                image_id[:16], self._smart_url_preview(url, 60), len(description), len(b64), mime, size,
+                image_id[:16],
+                self._smart_url_preview(url, 60),
+                len(description),
+                len(b64),
+                mime,
+                size,
             )
         except Exception as e:
             logger.warning("[vision_text_bridge] 写 SQLite 缓存失败: %s", e)
 
     async def _fetch_image_meta(
-        self, url: str, preloaded: bytes = b"",
+        self,
+        url: str,
+        preloaded: bytes = b"",
     ) -> tuple[str, str, int, int, int]:
         """读图片字节并算 base64/mime/dim/size。失败只影响缩略图。"""
         if preloaded:
@@ -1352,7 +1531,8 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.warning(
                 "[vision_text_bridge] 读图字节失败（仅缩略图受影响，description 仍会写）: %s",
-                self._smart_url_preview(url), exc_info=False,
+                self._smart_url_preview(url),
+                exc_info=False,
             )
             if self._should_log("id_computation"):
                 logger.debug("[vision_text_bridge] 读字节异常详情: %s", e)
@@ -1374,7 +1554,8 @@ class VisionTextBridgePlugin(Star):
             if self._should_log("cache_trace"):
                 logger.info(
                     "[vision_text_bridge] 跳过 b64 存储: size=%dB > %dKB",
-                    size, max_b64_kb,
+                    size,
+                    max_b64_kb,
                 )
         return b64, mime, w, h, size
 
@@ -1382,8 +1563,14 @@ class VisionTextBridgePlugin(Star):
         """把描述作为 TextPart 注入 req.extra_user_content_parts。"""
         if not descriptions:
             return
-        ph = self.config.get("image_placeholder_template", "") or "[Image {index} 描述] {description}"
-        fail = self.config.get("failure_message", "") or "[Image {index} 描述] 理解失败：{error}"
+        ph = (
+            self.config.get("image_placeholder_template", "")
+            or "[Image {index} 描述] {description}"
+        )
+        fail = (
+            self.config.get("failure_message", "")
+            or "[Image {index} 描述] 理解失败：{error}"
+        )
         if req.extra_user_content_parts is None:
             req.extra_user_content_parts = []
         ok_n = fail_n = 0
@@ -1395,42 +1582,61 @@ class VisionTextBridgePlugin(Star):
             else:
                 text = fail.format(index=gi, error="mmx 调用失败或超时")
                 fail_n += 1
-            req.extra_user_content_parts.append(_to_text_part({"type": "text", "text": text}))
+            req.extra_user_content_parts.append(
+                _to_text_part({"type": "text", "text": text})
+            )
         # 同步清掉被处理过的 image_url（仅对应字段）
         if field == "image_urls":
             req.image_urls = []
         elif field == "extra_user_content_parts" and req.extra_user_content_parts:
-            req.extra_user_content_parts[:] = [p for p in req.extra_user_content_parts
-                                               if not _is_image_url_part(p)]
+            req.extra_user_content_parts[:] = [
+                p for p in req.extra_user_content_parts if not _is_image_url_part(p)
+            ]
         elif field == "contexts" and isinstance(context_target, dict):
             content = context_target.get("content")
             if isinstance(content, list):
-                content[:] = [x for x in content
-                              if not (isinstance(x, dict) and x.get("type") == "image_url")]
+                content[:] = [
+                    x
+                    for x in content
+                    if not (isinstance(x, dict) and x.get("type") == "image_url")
+                ]
         if self._should_log("hook_trace"):
-            logger.info("[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d", field, ok_n, fail_n)
+            logger.info(
+                "[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d",
+                field,
+                ok_n,
+                fail_n,
+            )
 
     def _inject_guidance(self, req):
         """: 向 system_prompt 注入图说引导提示。"""
         if not self.config.get("inject_system_prompt_guidance", True):
             return
         captions = []
-        for p in (req.extra_user_content_parts or []):
-            text = p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "") or ""
+        for p in req.extra_user_content_parts or []:
+            text = (
+                p.get("text", "")
+                if isinstance(p, dict)
+                else getattr(p, "text", "") or ""
+            )
             if text and re.search(r"\[Image\s+\d+\s+描述\]", text):
                 captions.append(text)
         if not captions:
             return
         n = len(captions)
-        tags = "[Image 1 描述]" if n == 1 else ", ".join(f"[Image {i+1} 描述]" for i in range(n))
+        tags = (
+            "[Image 1 描述]"
+            if n == 1
+            else ", ".join(f"[Image {i + 1} 描述]" for i in range(n))
+        )
         if self.config.get("inject_caption_text_to_system_prompt", False):
             guidance = (
                 f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述如下：\n\n"
                 + "\n\n".join(captions)
                 + f"\n\n以上描述标记为 {tags}。请严格基于这些描述回答，"
-                  "不要猜测未出现的游戏/番剧/品牌/角色名，不要补充背景知识，"
-                  "不要改写/扩充，不要装作'看到'描述外的信息。"
-                  "如描述不足请明确说'无法从图中看出'。"
+                "不要猜测未出现的游戏/番剧/品牌/角色名，不要补充背景知识，"
+                "不要改写/扩充，不要装作'看到'描述外的信息。"
+                "如描述不足请明确说'无法从图中看出'。"
             )
         else:
             guidance = (
@@ -1444,8 +1650,11 @@ class VisionTextBridgePlugin(Star):
             )
         req.system_prompt = (req.system_prompt or "") + guidance
         if self._should_log("hook_trace"):
-            logger.info("[vision_text_bridge] system_prompt 注入提示，图片数=%d, 增量=%d",
-                        n, len(guidance))
+            logger.info(
+                "[vision_text_bridge] system_prompt 注入提示，图片数=%d, 增量=%d",
+                n,
+                len(guidance),
+            )
 
     # =========================================================================
     # mmx CLI 封装 (: 逻辑全抽到 mmx_runner, main.py 只留薄包装)
@@ -1456,25 +1665,34 @@ class VisionTextBridgePlugin(Star):
 
     async def _run_mmx(self, *args, timeout) -> MmxResult:
         return await _run_mmx_fn(
-            self.mmx_path, args, timeout,
+            self.mmx_path,
+            args,
+            timeout,
             log_subprocess=self._should_log("mmx_subprocess"),
         )
 
     async def _login_mmx(self, api_key: str) -> None:
         if not self.mmx_path:
             return
-        masked = (f"{api_key[:4]}***REDACTED***(len={len(api_key)})"
-                  if self.config.get("redact_sensitive", True) else api_key)
+        masked = (
+            f"{api_key[:4]}***REDACTED***(len={len(api_key)})"
+            if self.config.get("redact_sensitive", True)
+            else api_key
+        )
         logger.info("[vision_text_bridge] 预登录 MiniMax CLI: %s", masked)
         try:
             # 走 self._run_mmx 让 patch.object 仍能拦截 (老测试依赖这个 path)
             r = await self._run_mmx("auth", "login", "--api-key", api_key, timeout=30)
             if r.ok:
-                logger.info("[vision_text_bridge] 预登录成功: %s", (r.stdout or "").strip() or "(无输出)")
+                logger.info(
+                    "[vision_text_bridge] 预登录成功: %s",
+                    (r.stdout or "").strip() or "(无输出)",
+                )
             else:
                 logger.warning(
                     "[vision_text_bridge] 预登录失败: rc=%d, stderr=%s",
-                    r.returncode, (r.stderr or "").strip()[:200],
+                    r.returncode,
+                    (r.stderr or "").strip()[:200],
                 )
         except Exception as e:
             logger.warning("[vision_text_bridge] 预登录异常: %s", e)
@@ -1484,7 +1702,9 @@ class VisionTextBridgePlugin(Star):
         return await _install_mmx_cli_fn(self.npm_path)
 
     def _diagnose_mmx_error(self, err_text: str, url: str) -> None:
-        _diagnose_mmx_error_fn(err_text, url, self._preview, VisionTextBridgePlugin._DIAGNOSED)
+        _diagnose_mmx_error_fn(
+            err_text, url, self._preview, VisionTextBridgePlugin._DIAGNOSED
+        )
 
     def _warn_once(self, key: str, message: str) -> None:
         if key in VisionTextBridgePlugin._DIAGNOSED:
@@ -1514,7 +1734,7 @@ class VisionTextBridgePlugin(Star):
         if url.startswith("data:") and "," in url:
             comma = url.find(",")
             prefix = url[:comma]  # data:image/jpeg;base64
-            b64 = url[comma + 1:]
+            b64 = url[comma + 1 :]
             if len(b64) > 10:
                 return f"{prefix},{b64[:8]}...{{{len(b64)}}}B"
             return f"{prefix},{b64[:8]}"
@@ -1529,7 +1749,9 @@ class VisionTextBridgePlugin(Star):
         names = self._tool_filter_names
         if not names:
             return
-        extra_key = _cfg_str(self.config, "tool_filter_extra_key", "_group_chat_plus_func_tool").strip()
+        extra_key = _cfg_str(
+            self.config, "tool_filter_extra_key", "_group_chat_plus_func_tool"
+        ).strip()
         # 1) 清 event.get_extra(extra_key) 里的待合并 tool set
         if extra_key:
             try:
@@ -1539,7 +1761,12 @@ class VisionTextBridgePlugin(Star):
             if plugin_tool_set is not None:
                 n = _filter_disabled_tools(plugin_tool_set, mode, names)
                 if n and self._should_log("hook_trace"):
-                    logger.info("[vision_text_bridge] 从 %s 移除了 %d 个工具（mode=%s）", extra_key, n, mode)
+                    logger.info(
+                        "[vision_text_bridge] 从 %s 移除了 %d 个工具（mode=%s）",
+                        extra_key,
+                        n,
+                        mode,
+                    )
         # 2) 同步清 req.func_tool 里已注册的工具（防御性：其它插件可能直接 push）
         try:
             ft = getattr(req, "func_tool", None)
@@ -1548,7 +1775,11 @@ class VisionTextBridgePlugin(Star):
         if ft is not None:
             n = _filter_disabled_tools(ft, mode, names)
             if n and self._should_log("hook_trace"):
-                logger.info("[vision_text_bridge] 从 req.func_tool 移除了 %d 个工具（mode=%s）", n, mode)
+                logger.info(
+                    "[vision_text_bridge] 从 req.func_tool 移除了 %d 个工具（mode=%s）",
+                    n,
+                    mode,
+                )
 
     def _redact(self, args):
         return _redact_args_fn(args, self.config)
@@ -1564,14 +1795,20 @@ class VisionTextBridgePlugin(Star):
             data = await self._read_image_bytes(url)
         except Exception as e:
             if self._should_log("id_computation"):
-                logger.debug("[vision_text_bridge] 读图字节失败，image_id 退到 md5(url): %s, err=%s",
-                             self._smart_url_preview(url), e)
+                logger.debug(
+                    "[vision_text_bridge] 读图字节失败，image_id 退到 md5(url): %s, err=%s",
+                    self._smart_url_preview(url),
+                    e,
+                )
             return CaptionCache.make_id_from_url(url), b""
         if not data:
             return CaptionCache.make_id_from_url(url), b""
         if self._should_log("id_computation"):
-            logger.info("[vision_text_bridge] image_id=md5(%dB)=%s", len(data),
-                        CaptionCache.make_id_from_bytes(data)[:16] + "…")
+            logger.info(
+                "[vision_text_bridge] image_id=md5(%dB)=%s",
+                len(data),
+                CaptionCache.make_id_from_bytes(data)[:16] + "…",
+            )
         return CaptionCache.make_id_from_bytes(data), data
 
     async def _read_image_bytes(self, url):
@@ -1582,7 +1819,8 @@ class VisionTextBridgePlugin(Star):
 # ===========================================================================
 # : 工具已抽到 image_utils/tool_filter, 此处为向后兼容 shim
 # ===========================================================================
-import fnmatch as _fnmatch
+import fnmatch as _fnmatch  # noqa: E402
+
+
 def _glob_match(name: str, pattern: str) -> bool:
     return _fnmatch.fnmatchcase(name, pattern)
-

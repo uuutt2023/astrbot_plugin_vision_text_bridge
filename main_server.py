@@ -6,6 +6,7 @@ openai SDK 发 'Authorization: Bearer placeholder' → 不匹配 JWT → framewo
 解决: 我方 start 独立 HTTP server on 127.0.0.1:<port>. zero deps (Python stdlib + asyncio).
 框架 ProviderOpenAIOfficial uses openai SDK → POST 我方独立 server (no JWT) → 200.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +18,7 @@ try:
     from astrbot.api import logger
 except ImportError:
     import logging
+
     logger = logging.getLogger("astrbot_plugin_vision_text_bridge")
 
 _server: "asyncio.AbstractServer | None" = None
@@ -32,7 +34,11 @@ async def _wrap_sync_result(value):
 def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
     """构造 HTTP/1.1 响应."""
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    reason = "OK" if status == 200 else ("Bad Request" if status == 400 else "Internal Server Error")
+    reason = (
+        "OK"
+        if status == 200
+        else ("Bad Request" if status == 400 else "Internal Server Error")
+    )
     headers = (
         f"HTTP/1.1 {status} {reason}\r\n"
         f"Content-Type: application/json; charset=utf-8\r\n"
@@ -44,7 +50,9 @@ def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
     return headers + payload
 
 
-async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, plugin) -> None:
+async def _handle_request(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, plugin
+) -> None:
     """处理一个 HTTP request — 解析 + 调 plugin._describe_one."""
     peer = writer.get_extra_info("peername")
     peer_str = f"{peer[0]}:{peer[1]}" if peer else "?"
@@ -56,9 +64,14 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
             writer.close()
             return
         try:
-            method, path, _ = request_line.decode("utf-8", errors="replace").split(" ", 2)
+            method, path, _ = request_line.decode("utf-8", errors="replace").split(
+                " ", 2
+            )
         except ValueError:
-            response_bytes = _build_response({"status": "error", "message": "bad request"}, 400); writer.write(response_bytes)
+            response_bytes = _build_response(
+                {"status": "error", "message": "bad request"}, 400
+            )
+            writer.write(response_bytes)
             await writer.drain()
             writer.close()
             return
@@ -70,16 +83,22 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
             if line in (b"\r\n", b"", b"\n"):
                 break
             try:
-                k, _, v = line.decode("utf-8", errors="replace").rstrip("\r\n").partition(":")
+                k, _, v = (
+                    line.decode("utf-8", errors="replace").rstrip("\r\n").partition(":")
+                )
                 headers[k.strip().lower()] = v.strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[vision_text_bridge] HTTP header parse failed: %s", e)
 
         # 读 body (if Content-Length)
         content_length = int(headers.get("content-length", "0") or "0")
         if content_length > _MAX_BODY_BYTES:
             response_bytes = _build_response(
-                {"status": "error", "message": f"request body too large (max {_MAX_BODY_BYTES} bytes)"}, 413,
+                {
+                    "status": "error",
+                    "message": f"request body too large (max {_MAX_BODY_BYTES} bytes)",
+                },
+                413,
             )
             writer.write(response_bytes)
             await writer.drain()
@@ -91,38 +110,59 @@ async def _handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 
         logger.debug(
             "[vision_text_bridge] ⇠ 请求: %s %s from %s | content-length=%d | ua=%s",
-            method, path, peer_str, content_length,
+            method,
+            path,
+            peer_str,
+            content_length,
             headers.get("user-agent", "-"),
         )
 
         # 路由
-        if method.upper() == "POST" and path in ("/v1/chat/completions", "/v1/chat/completions/chat/completions", "/v1"):
+        if method.upper() == "POST" and path in (
+            "/v1/chat/completions",
+            "/v1/chat/completions/chat/completions",
+            "/v1",
+        ):
             try:
                 body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             except Exception as e:
-                response_bytes = _build_response({"status": "error", "message": f"无法解析请求体: {e}"}, 400)
+                response_bytes = _build_response(
+                    {"status": "error", "message": f"无法解析请求体: {e}"}, 400
+                )
                 writer.write(response_bytes)
                 await writer.drain()
                 writer.close()
-                logger.warning("[vision_text_bridge] /v1/chat/completions 请求体解析失败: %s", e)
+                logger.warning(
+                    "[vision_text_bridge] /v1/chat/completions 请求体解析失败: %s", e
+                )
                 return
             response_body, status = await _handle_chat_completions(body, plugin)
             response_bytes = _build_response(response_body, status)
             writer.write(response_bytes)
             await writer.drain()
             elapsed_ms = (time.perf_counter() - t_start) * 1000
-            content_len = response_body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content_len = (
+                response_body.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
             logger.debug(
                 "[vision_text_bridge] ⇠ 响应: POST /v1/chat/completions status=%d 耗时=%.1fms 内容预览=%s",
-                status, elapsed_ms, repr((content_len or "")[:120]),
+                status,
+                elapsed_ms,
+                repr((content_len or "")[:120]),
             )
         elif method.upper() == "GET" and path == "/health":
-            response_bytes = _build_response({"status": "ok", "server": "vision_text_bridge_solo"}, 200)
+            response_bytes = _build_response(
+                {"status": "ok", "server": "vision_text_bridge_solo"}, 200
+            )
             writer.write(response_bytes)
             await writer.drain()
             logger.debug("[vision_text_bridge] ⇠ GET /health 200")
         else:
-            response_bytes = _build_response({"status": "error", "message": f"未找到路由: {method} {path}"}, 400)
+            response_bytes = _build_response(
+                {"status": "error", "message": f"未找到路由: {method} {path}"}, 400
+            )
             writer.write(response_bytes)
             await writer.drain()
             logger.debug("[vision_text_bridge] ⇠ 404: %s %s", method, path)
@@ -142,7 +182,8 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     messages = body.get("messages") or []
     logger.debug(
         "[vision_text_bridge] OpenAI 请求解析: model=%s messages=%d",
-        model_in, len(messages),
+        model_in,
+        len(messages),
     )
     if not messages:
         return {"status": "error", "message": "messages 不能为空"}, 400
@@ -155,7 +196,8 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
     logger.info(
         "[vision_text_bridge] 收到 /v1/chat/completions 请求: images=%d "
         "prompt_len=%d caller_prompt=%s",
-        len(image_urls), len(caller_prompt),
+        len(image_urls),
+        len(caller_prompt),
         repr(caller_prompt[:120]),
     )
 
@@ -178,7 +220,8 @@ def _parse_messages(messages: list) -> tuple[list[str], list[str]]:
                 prompt_parts.append(text)
     logger.debug(
         "[vision_text_bridge] 提取结果: image_urls=%d, prompt_chars=%d",
-        len(image_urls), sum(len(p) for p in prompt_parts),
+        len(image_urls),
+        sum(len(p) for p in prompt_parts),
     )
     return image_urls, prompt_parts
 
@@ -214,7 +257,9 @@ async def _describe_all_images(
     """并发调 plugin._describe_one 处理所有图片。返回非空描述列表。"""
     try:
         coros = [
-            plugin._describe_one(u, "main_server /v1/chat/completions", vision_prompt=caller_prompt)
+            plugin._describe_one(
+                u, "main_server /v1/chat/completions", vision_prompt=caller_prompt
+            )
             for u in image_urls
         ]
         wrapped = [c if asyncio.iscoroutine(c) else _wrap_sync_result(c) for c in coros]
@@ -234,12 +279,15 @@ async def _describe_all_images(
             captions.append(cap)
             logger.debug(
                 "[vision_text_bridge] mmx 调 #%d 结果长度=%d 预览=%s",
-                idx, len(cap), repr(cap[:80]),
+                idx,
+                len(cap),
+                repr(cap[:80]),
             )
         else:
             logger.warning(
                 "[vision_text_bridge] mmx 调 #%d 返回空 url=%s",
-                idx, url_preview,
+                idx,
+                url_preview,
             )
     return captions
 
@@ -248,7 +296,9 @@ def _preview_url(url: str) -> str:
     """data URL 紧凑预览；普通 URL 截 80 字符。"""
     if url.startswith("data:") and "," in url:
         comma = url.find(",")
-        return f"{url[:comma]},{url[comma+1:comma+9]}...{{{len(url)-comma-1}}}B"
+        return (
+            f"{url[:comma]},{url[comma + 1 : comma + 9]}...{{{len(url) - comma - 1}}}B"
+        )
     return (url[:80] + "...") if len(url) > 80 else url
 
 
@@ -257,18 +307,21 @@ def _build_chat_response(model: str, captions: list[str]) -> dict:
     caption_text = "\n".join(captions)
     logger.debug(
         "[vision_text_bridge] 描述合并完成: 共 %d 张, 总长 %d 字符",
-        len(captions), len(caption_text),
+        len(captions),
+        len(caption_text),
     )
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": caption_text},
-            "finish_reason": "stop",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": caption_text},
+                "finish_reason": "stop",
+            }
+        ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
@@ -284,7 +337,9 @@ async def start_solo_server(plugin, port: int = 2023) -> int | None:
     """
     global _server, _port
     if _server is not None:
-        logger.info("[vision_text_bridge] solo server 已在跑, port=%d — 跳过启动", _port)
+        logger.info(
+            "[vision_text_bridge] solo server 已在跑, port=%d — 跳过启动", _port
+        )
         return _port
     logger.info("[vision_text_bridge] start_solo_server 调用: port=%d", port)
     try:
@@ -305,7 +360,9 @@ async def start_solo_server(plugin, port: int = 2023) -> int | None:
         return actual_port
     except OSError as e:
         if "Address already in use" in str(e) or "in use" in str(e):
-            logger.warning("[vision_text_bridge] port %d 已被占用 — solo server 未启动.", port)
+            logger.warning(
+                "[vision_text_bridge] port %d 已被占用 — solo server 未启动.", port
+            )
         else:
             logger.exception("[vision_text_bridge] solo server 启动失败: %s", e)
         return None

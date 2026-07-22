@@ -5,6 +5,7 @@ PROVIDER_ID / DEFAULT_MODEL / PLACEHOLDER_API_KEY 的模块统一从这里 impor
 
 : uuutt
 """
+
 from __future__ import annotations
 
 # : AstrBot dashboard 默认端口 — 用户可通过 schema "dashboard_port" 覆盖
@@ -34,4 +35,6 @@ DEFAULT_OPENAI_COMPAT_PORT = 2023
 # : 独立 OpenAI 兼容 endpoint URL — 供框架 openai_chat_completion 实例使用
 #   直接走 127.0.0.1:<port>/v1/chat/completions
 #   bypass framework legacy_router JWT 验证 (JWT 总是 401 'Token 无效')
-DEFAULT_OPENAI_COMPAT_ENDPOINT = f"http://127.0.0.1:{DEFAULT_OPENAI_COMPAT_PORT}/v1/chat/completions"
+DEFAULT_OPENAI_COMPAT_ENDPOINT = (
+    f"http://127.0.0.1:{DEFAULT_OPENAI_COMPAT_PORT}/v1/chat/completions"
+)

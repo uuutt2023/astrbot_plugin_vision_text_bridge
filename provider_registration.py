@@ -6,6 +6,7 @@
   - 通过 webui 接口 (POST /api/v1/providers) 注册
   - endpoint 用独立 server (127.0.0.1:2023) — bypass framework legacy_router JWT
 """
+
 from __future__ import annotations
 
 import sys
@@ -18,6 +19,7 @@ try:
     from astrbot.api import logger
 except ImportError:
     import logging
+
     logger = logging.getLogger(__name__)
 
 
@@ -33,12 +35,16 @@ def _emit(level: str, msg: str) -> None:
         pass
     try:
         ts = __import__("datetime").datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        print(f"[{ts}] [vision_text_bridge] [{level.upper()}] {msg}", file=sys.stderr, flush=True)
+        print(
+            f"[{ts}] [vision_text_bridge] [{level.upper()}] {msg}",
+            file=sys.stderr,
+            flush=True,
+        )
     except Exception:
         pass
 
 
-from constants import (
+from constants import (  # noqa: E402
     PROVIDER_ID,
     DEFAULT_OPENAI_COMPAT_PORT,
     DEFAULT_DASHBOARD_PORT,
@@ -116,10 +122,14 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
             if headers is None:
                 return False
 
-            if await _post_create_provider(client, base_url, headers, config, plugin, log_details):
+            if await _post_create_provider(
+                client, base_url, headers, config, plugin, log_details
+            ):
                 return True
 
-            if await _put_update_provider(client, base_url, headers, config, plugin, log_details):
+            if await _put_update_provider(
+                client, base_url, headers, config, plugin, log_details
+            ):
                 return True
 
             _emit(
@@ -177,11 +187,12 @@ def _prepare_credentials(plugin) -> Optional[tuple[bool, str, str, str, int]]:
 
 def _build_provider_payload(plugin) -> dict:
     """构造 webui POST /api/v1/providers 的请求体。"""
-    actual_port = getattr(plugin, "_openai_compat_port", None) or DEFAULT_OPENAI_COMPAT_PORT
+    actual_port = (
+        getattr(plugin, "_openai_compat_port", None) or DEFAULT_OPENAI_COMPAT_PORT
+    )
     api_base = f"http://127.0.0.1:{actual_port}/v1"
-    api_key = (
-        plugin.config.get("api_key", "")
-        or plugin.config.get("openai_compat_api_key", "")
+    api_key = plugin.config.get("api_key", "") or plugin.config.get(
+        "openai_compat_api_key", ""
     )
     model_name = plugin.config.get("model_name") or DEFAULT_MODEL
 
@@ -327,8 +338,7 @@ def _hint_for_post_status(status: int, body: str) -> list[str]:
         ]
     if status == 422:
         return [
-            "提示: 422 表示 payload 校验失败. "
-            "请看上面 resp body 的 detail 字段.",
+            "提示: 422 表示 payload 校验失败. 请看上面 resp body 的 detail 字段.",
         ]
     if status == 400 and "already exists" in body.lower():
         return [
@@ -365,7 +375,8 @@ def _log_registered_instance(plugin) -> None:
         model = (
             getattr(inst, "model_name", None)
             or getattr(inst, "_current_model", None)
-            or getattr(inst, "model", "") or ""
+            or getattr(inst, "model", "")
+            or ""
         )
         if len(api_key) > 8:
             key_masked = api_key[:4] + "***" + api_key[-4:]

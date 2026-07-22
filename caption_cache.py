@@ -127,12 +127,17 @@ class CaptionCache:
             table_exists = row is not None
             if table_exists:
                 existing_cols = {
-                    r[1] for r in conn.execute("PRAGMA table_info(image_captions)").fetchall()
+                    r[1]
+                    for r in conn.execute(
+                        "PRAGMA table_info(image_captions)"
+                    ).fetchall()
                 }
                 if "image_key" in existing_cols and "image_id" not in existing_cols:
                     # 升级路径 1：老库 (用 image_key)。重命名表后用新 schema 重建，
                     # 再把数据迁过来。**老库的 image_key 需要拷贝到新库的 image_id**（两者是同一个东西）。
-                    conn.execute("ALTER TABLE image_captions RENAME TO image_captions__legacy")
+                    conn.execute(
+                        "ALTER TABLE image_captions RENAME TO image_captions__legacy"
+                    )
                     conn.executescript(self.SCHEMA)
                     conn.execute(
                         "INSERT INTO image_captions "
@@ -246,7 +251,8 @@ class CaptionCache:
             # 现在打 warning。
             _log.warning(
                 "[caption_cache] put() 被调用但 image_id=%r description_len=%d，**未写入**。",
-                image_id, len(description) if description else 0,
+                image_id,
+                len(description) if description else 0,
             )
             return False
         with self._lock, self._connect() as conn:
@@ -267,7 +273,17 @@ class CaptionCache:
                     image_b64 = excluded.image_b64,
                     created_at = excluded.created_at
                 """,
-                (image_id, url, description, mime_type, file_size, width, height, image_b64, now),
+                (
+                    image_id,
+                    url,
+                    description,
+                    mime_type,
+                    file_size,
+                    width,
+                    height,
+                    image_b64,
+                    now,
+                ),
             )
             conn.commit()
         return True
@@ -307,7 +323,13 @@ class CaptionCache:
         offset = max(0, int(offset))
         # : 用列下标 (1=created_at) + ASC/DESC 标识 - 避免 f-string 拼 order_by
         #   白名单兜底 - 未知值默认 created_at DESC
-        _order_dir = "ASC" if order_by.endswith("_asc") else "DESC" if order_by.endswith("_desc") else "DESC"
+        _order_dir = (
+            "ASC"
+            if order_by.endswith("_asc")
+            else "DESC"
+            if order_by.endswith("_desc")
+            else "DESC"
+        )
         # 只认 2 个列下标
         order_clause = f"ORDER BY 1 {_order_dir}"
 
@@ -325,9 +347,7 @@ class CaptionCache:
                     f"SELECT * FROM image_captions {order_clause} LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
-        return [
-            self._row_to_entry(r, with_b64=include_b64) for r in rows
-        ]
+        return [self._row_to_entry(r, with_b64=include_b64) for r in rows]
 
     def _row_to_entry(self, r, with_b64: bool = False) -> CaptionEntry:
         b64 = r["image_b64"] if with_b64 else ""
@@ -353,7 +373,9 @@ class CaptionCache:
                     (like, like),
                 ).fetchone()
             else:
-                row = conn.execute("SELECT COUNT(*) AS c FROM image_captions").fetchone()
+                row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM image_captions"
+                ).fetchone()
             return int(row["c"])
 
     def stats(self) -> CacheStats:
