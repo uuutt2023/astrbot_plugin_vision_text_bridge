@@ -40,6 +40,17 @@
 - 其他插件需要一个统一的 vision provider
 - 需要看图片描述的调用记录和缓存状态
 
+## 适用人群
+
+本插件调用 MiniMax `mmx vision describe`，底层使用 [MCP API-vlm 模型](https://platform.minimaxi.com/docs/guides/pricing-paygo#mcp)进行图片理解。
+
+| 方案 | 说明 |
+|------|------|
+| **Token Plan 用户** | 调用 API-vlm 时由套餐内 Token Plan 额度扣减，超出部分可由已购积分自动补充 |
+| **非 Token Plan 用户** | 使用 MiniMax 普通 API Key，API-vlm 按量计费 0.025 元/次（从账户余额扣除） |
+
+> **注意**：Token Plan 订阅 Key 和普通 API Key 是两套独立的账户体系。Token Plan 的积分仅限 MCP 工具调用，普通 Key 的余额覆盖全部 API 产品。详见 [MiniMax 按量计费文档](https://platform.minimaxi.com/docs/guides/pricing-paygo)。
+
 ---
 
 ## 快速开始
