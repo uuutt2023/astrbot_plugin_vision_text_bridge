@@ -472,9 +472,8 @@ async def upload_mmx_file(
 ) -> str | None:
     """上传文件到 mmx，返回 file_id，失败返 None。
 
-    注意：mmx file upload 默认 purpose=retrieval，会拒绝图片扩展名 (.jpg/.png)
-    并返回 'invalid file ext for retrieval'。图像理解场景必须显式传
-    ``--purpose vision``，让服务端走 vision 扩展名白名单。
+    图像理解场景通过 ``mmx file upload`` 获取 file_id，再用
+    ``mmx vision describe --file-id <fid>`` 调视觉理解。
     """
     if not mmx_path:
         return None
@@ -484,8 +483,6 @@ async def upload_mmx_file(
         "upload",
         "--file",
         filepath,
-        "--purpose",
-        "vision",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -501,7 +498,7 @@ async def upload_mmx_file(
         )
         return None
     if proc.returncode != 0:
-        logger.warning(
+        logger.info(
             "[vision_text_bridge] mmx 文件上传失败: rc=%d stderr=%s",
             proc.returncode,
             (stderr.decode("utf-8", errors="replace") or "").strip()[:200],

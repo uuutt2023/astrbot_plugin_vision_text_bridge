@@ -108,6 +108,7 @@ DEFAULT_PRIORITY = 100
 # : data URL 超过此阈值（字节）改用 mmx file upload 而非 --image 命令行参数，
 #   规避 OS ARG_MAX / "Argument list too long" 错误。
 _DATA_URL_CMD_THRESHOLD = 40 * 1024
+_DATA_URL_ARG_MAX_SAFE = 100 * 1024  # 超过此值走命令行大概率触发 ARG_MAX 限制
 
 # 预编译 bot 头像 URL 过滤 regex
 _BOT_AVATAR_PAT = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
@@ -1357,6 +1358,14 @@ class VisionTextBridgePlugin(Star):
             fid = await self._upload_data_url_to_mmx(url)
             if fid:
                 effective_url = f"file-{fid}"
+            elif len(url) > _DATA_URL_ARG_MAX_SAFE:
+                # 上传失败且 data URL 过大, 直接传参会触发 OS ARG_MAX 限制, 放弃
+                logger.debug(
+                    "[vision_text_bridge] 大图上传失败且超过命令行安全阈值: %s",
+                    self._smart_url_preview(url),
+                )
+                self._last_image_bytes.pop(url, None)
+                return ""
 
         command = self._build_vision_command(effective_url, vision_prompt)
         assert self._vision_semaphore is not None
@@ -1413,7 +1422,6 @@ class VisionTextBridgePlugin(Star):
             if fid:
                 logger.info("[vision_text_bridge] mmx 文件上传成功, file_id=%s", fid)
                 return fid
-            logger.warning("[vision_text_bridge] mmx 文件上传失败，回退到直接传参")
             return None
         except Exception as e:
             logger.warning("[vision_text_bridge] mmx 文件上传流程异常: %s", e)
