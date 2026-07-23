@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -1384,7 +1385,10 @@ class VisionTextBridgePlugin(Star):
 
     @staticmethod
     def _decode_data_url_to_tempfile(url: str) -> str | None:
-        """将 data: URL 解码为临时文件，返回路径。失败返 None。"""
+        """将 data: URL 解码为临时文件，返回路径。失败返 None。
+
+        GIF 会被转为 PNG (mmx vision describe 不支持 GIF)。
+        """
         comma = url.find(",")
         if comma <= 0:
             return None
@@ -1393,16 +1397,31 @@ class VisionTextBridgePlugin(Star):
         prefix = url[:comma].lower()
         if "jpeg" in prefix or "jpg" in prefix:
             ext = "jpg"
-        elif "gif" in prefix:
-            ext = "gif"
         elif "webp" in prefix:
             ext = "webp"
+        elif "gif" in prefix:
+            ext = "gif"
         try:
             raw = base64.b64decode(b64)
         except Exception as e:
             logger.warning("[vision_text_bridge] base64 解码失败: %s", e)
             return None
         try:
+            if ext == "gif":
+                from PIL import Image
+
+                img = Image.open(io.BytesIO(raw))
+                if img.mode in ("P", "PA"):
+                    img = img.convert("RGBA")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                raw = buf.getvalue()
+                ext = "png"
+                logger.debug(
+                    "[vision_text_bridge] GIF 转 PNG: %dB → %dB",
+                    len(b64),
+                    len(raw),
+                )
             with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
                 f.write(raw)
                 tmp_path = f.name
