@@ -735,6 +735,16 @@ class VisionTextBridgePlugin(Star):
             )
             return True, ""
 
+    @staticmethod
+    def _is_private_chat(event: AstrMessageEvent) -> bool:
+        """判断是否为私聊（无 group_id 即私聊）。"""
+        try:
+            msg = getattr(event, "message_obj", None) or getattr(event, "message", None)
+            group_id = getattr(msg, "group_id", None) if msg else None
+            return not group_id
+        except Exception:
+            return True
+
     def _mark_providers_support_image(self) -> None:
         """给所有 provider 补 'image' modality 标签，防 AstrBot 切 fallback。"""
         if self.config.get("keep_provider_modality_as_is", False):
@@ -980,8 +990,9 @@ class VisionTextBridgePlugin(Star):
 
         # === 2) 处理 ===
         try:
-            await self._process_request(req)
-            self._inject_guidance(req)
+            is_private = self._is_private_chat(event)
+            await self._process_request(req, is_private)
+            self._inject_guidance(req, is_private)
         except Exception as e:
             logger.exception("[vision_text_bridge] 处理请求时未捕获异常: %s", e)
 
@@ -1144,14 +1155,14 @@ class VisionTextBridgePlugin(Star):
     # =========================================================================
     # 内部: 处理请求
     # =========================================================================
-    async def _process_request(self, req: ProviderRequest) -> None:
+    async def _process_request(self, req: ProviderRequest, is_private: bool = False) -> None:
         """按 image_urls → extra_parts → contexts 顺序处理。"""
         idx = 1
         # image_urls
         urls = self._pending_urls or list(req.image_urls or [])
         if urls:
             results = await self._describe_urls(urls)
-            self._attach(req, results, idx, "image_urls")
+            self._attach(req, results, idx, "image_urls", is_private=is_private)
             idx += len(results)
         self._pending_urls = None
 
@@ -1161,7 +1172,7 @@ class VisionTextBridgePlugin(Star):
             urls = _extract_urls_from_parts(parts)
             if urls:
                 results = await self._describe_urls(urls)
-                self._attach(req, results, idx, "extra_user_content_parts")
+                self._attach(req, results, idx, "extra_user_content_parts", is_private=is_private)
                 idx += len(results)
         self._pending_parts = None
 
@@ -1185,7 +1196,7 @@ class VisionTextBridgePlugin(Star):
                     urls = _extract_urls_from_context_list(content)
                     if urls:
                         results = await self._describe_urls(urls)
-                        self._attach(req, results, idx, "contexts", context_target=c)
+                        self._attach(req, results, idx, "contexts", context_target=c, is_private=is_private)
                         idx += len(results)
         self._pending_contexts = None
 
@@ -1577,8 +1588,12 @@ class VisionTextBridgePlugin(Star):
                 )
         return b64, mime, w, h, size
 
-    def _attach(self, req, descriptions, start_index, field, context_target=None):
-        """把描述作为 TextPart 注入 req.extra_user_content_parts。"""
+    def _attach(self, req, descriptions, start_index, field, context_target=None, is_private=False):
+        """把描述注入请求。
+
+        群聊：写入 req.extra_user_content_parts（面向用户消息）。
+        私聊：收集到 req._vision_descriptions（供 _inject_guidance 注入 system_prompt）。
+        """
         if not descriptions:
             return
         ph = (
@@ -1589,20 +1604,28 @@ class VisionTextBridgePlugin(Star):
             self.config.get("failure_message", "")
             or "[Image {index} 描述] 理解失败：{error}"
         )
-        if req.extra_user_content_parts is None:
-            req.extra_user_content_parts = []
-        ok_n = fail_n = 0
+        # 收集描述文本
+        captions = []
         for off, (_, _url, desc) in enumerate(descriptions):
             gi = start_index + off
             if desc:
                 text = ph.format(index=gi, description=desc)
-                ok_n += 1
             else:
                 text = fail.format(index=gi, error="mmx 调用失败或超时")
-                fail_n += 1
-            req.extra_user_content_parts.append(
-                _to_text_part({"type": "text", "text": text})
-            )
+            captions.append(text)
+
+        if is_private:
+            if not hasattr(req, "_vision_descriptions"):
+                req._vision_descriptions = []
+            req._vision_descriptions.extend(captions)
+        else:
+            if req.extra_user_content_parts is None:
+                req.extra_user_content_parts = []
+            for text in captions:
+                req.extra_user_content_parts.append(
+                    _to_text_part({"type": "text", "text": text})
+                )
+
         # 同步清掉被处理过的 image_url（仅对应字段）
         if field == "image_urls":
             req.image_urls = []
@@ -1620,25 +1643,33 @@ class VisionTextBridgePlugin(Star):
                 ]
         if self._should_log("hook_trace"):
             logger.info(
-                "[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d",
+                "[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d, private=%s",
                 field,
-                ok_n,
-                fail_n,
+                len(captions),
+                0,
+                is_private,
             )
 
-    def _inject_guidance(self, req):
-        """: 向 system_prompt 注入图说引导提示。"""
+    def _inject_guidance(self, req, is_private=False):
+        """: 向 system_prompt 注入图说引导提示。
+
+        私聊：始终注入完整描述文本（persona agent 不传递 extra_user_content_parts）。
+        群聊：按 inject_caption_text_to_system_prompt 配置决定是否注入完整描述。
+        """
         if not self.config.get("inject_system_prompt_guidance", True):
             return
-        captions = []
-        for p in req.extra_user_content_parts or []:
-            text = (
-                p.get("text", "")
-                if isinstance(p, dict)
-                else getattr(p, "text", "") or ""
-            )
-            if text and re.search(r"\[Image\s+\d+\s+描述\]", text):
-                captions.append(text)
+        if is_private:
+            captions = list(getattr(req, "_vision_descriptions", None) or [])
+        else:
+            captions = []
+            for p in req.extra_user_content_parts or []:
+                text = (
+                    p.get("text", "")
+                    if isinstance(p, dict)
+                    else getattr(p, "text", "") or ""
+                )
+                if text and re.search(r"\[Image\s+\d+\s+描述\]", text):
+                    captions.append(text)
         if not captions:
             return
         n = len(captions)
@@ -1647,7 +1678,7 @@ class VisionTextBridgePlugin(Star):
             if n == 1
             else ", ".join(f"[Image {i + 1} 描述]" for i in range(n))
         )
-        if self.config.get("inject_caption_text_to_system_prompt", False):
+        if is_private or self.config.get("inject_caption_text_to_system_prompt", False):
             guidance = (
                 f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述如下：\n\n"
                 + "\n\n".join(captions)
@@ -1669,9 +1700,10 @@ class VisionTextBridgePlugin(Star):
         req.system_prompt = (req.system_prompt or "") + guidance
         if self._should_log("hook_trace"):
             logger.info(
-                "[vision_text_bridge] system_prompt 注入提示，图片数=%d, 增量=%d",
+                "[vision_text_bridge] system_prompt 注入提示，图片数=%d, 增量=%d, private=%s",
                 n,
                 len(guidance),
+                is_private,
             )
 
     # =========================================================================
