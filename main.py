@@ -693,6 +693,11 @@ class VisionTextBridgePlugin(Star):
             logger.exception("[vision_text_bridge] _bg_register_provider 异常: %s", e)
             return
         if ok:
+            # 重新跑一次: 把我方 provider 补上 ['text', 'image'] modalities
+            # (initialize 时还没注册, 现在补一下, 让 private_companion 等
+            #  _provider_supports_image 返 True)
+            self._mark_providers_support_image()
+
             logger.info("[vision_text_bridge] webui API 注册成功")
         else:
             logger.warning(

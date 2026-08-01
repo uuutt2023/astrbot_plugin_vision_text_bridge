@@ -216,6 +216,12 @@ def _build_provider_payload(plugin) -> dict:
         "api_key": api_key if api_key else "placeholder",
         "api_base": api_base,
         "model": model_name,
+        # 兼容其他插件 (如 astrbot_plugin_private_companion) 检查 provider_config.modalities
+        # private_companion 在 _provider_supports_image 里:
+        #   if modalities == []: return True  (AstrBot 旧空 list 当作"全部")
+        #   return isinstance(modalities, list) and "image" in modalities
+        # 没设 → 返 None → isinstance(..., list) False → 当作不支持图片 → attempts=0
+        "modalities": ["text", "image"],
     }
 
 
