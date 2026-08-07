@@ -91,11 +91,12 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 
 配置按使用顺序重排：先填 API Key，再配图像理解提示词，其余按需调整。
 
-### MiniMax API Key
+### API 密钥
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `minimax_api_key` | — | **必填，第一步**。MiniMax 开放平台 sk- 开头的 Key |
+| `openapi_key` | — | **第一步**。Dashboard OpenAPI Key（`abk_` 开头），注册 provider 的唯一认证方式 |
 
 ### 图像理解
 
@@ -128,7 +129,6 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 | `port` | `2023` | 独立 server 监听端口 |
 | `dashboard_port` | `6185` | AstrBot Dashboard webui 端口（注册 provider 用） |
 | `register_max_attempts` | `30` | 注册失败后每隔 5 秒重试的次数（启动时 Dashboard 可能未就绪） |
-| `openapi_key` | — | Dashboard OpenAPI Key，注册 provider 的唯一认证方式 |
 | `auto_register` | `true` | 启动时注册到 provider_manager |
 | `api_key` | `placeholder` | 端点 API Key（本端点不校验，填占位值即可） |
 | `model_name` | `vision-bridge` | 注册时的模型显示名 |
