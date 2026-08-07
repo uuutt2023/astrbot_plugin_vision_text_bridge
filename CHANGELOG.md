@@ -1,5 +1,15 @@
 # 更新日志
 
+## v2.0.1 (2026-08-07)
+
+### 注册认证精简
+
+- provider 注册认证只保留 OpenAPI Key（`X-API-Key` header），删除 username/password 登录回退
+- `_read_webui_credentials` 精简为 `_read_dashboard_port`
+- 配置 JSON 重排：按使用顺序 `MiniMax API Key` → `图像理解`（vision_prompt）→ `MiniMax CLI` → `并发` → `OpenAI 兼容接口` → `日志` → `脱敏`
+- 删除 `webui_username` / `webui_password` 配置项
+- 修复 `_prepare_credentials` 中 config 存在性检查位于访问之后的问题
+
 ## v2.0.0 (2026-08-07)
 
 ### 精简重构

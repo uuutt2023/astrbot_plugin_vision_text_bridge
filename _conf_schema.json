@@ -1,8 +1,8 @@
 {
-  "MiniMax CLI": {
-    "description": "MiniMax CLI",
+  "MiniMax API Key": {
+    "description": "MiniMax API Key",
     "type": "object",
-    "hint": "mmx vision describe 认证与超时。",
+    "hint": "首次使用第一步：填写 MiniMax 开放平台 sk- 开头的 Key，用于图像理解。",
     "items": {
       "minimax_api_key": {
         "description": "MiniMax API Key",
@@ -10,7 +10,39 @@
         "hint": "MiniMax 开放平台获取 sk- 开头的 Key。",
         "obvious_hint": true,
         "default": ""
+      }
+    }
+  },
+  "图像理解": {
+    "description": "图像理解",
+    "type": "object",
+    "hint": "首次使用第二步：配置图像理解默认提示词与输出格式。",
+    "items": {
+      "vision_prompt": {
+        "description": "视觉理解提示词",
+        "type": "text",
+        "hint": "传给 mmx 的默认提示词，调用方可覆盖。要求 mmx 客观描述，严禁猜测游戏/角色名。",
+        "default": "请客观描述图中可见的元素，列出主体人物/物品、场景背景、出现的文字（原文）、色调、风格。\n严禁猜测未明确显示的游戏/番剧/品牌/角色名称——如果不能从图中明确看出，请说'无法确定'。\n描述中只能包含你看到的事实，不要补充背景知识或推断。"
       },
+      "max_description_length": {
+        "description": "描述最大字符数",
+        "type": "int",
+        "hint": "超长截断省 token。0 = 不限制。",
+        "default": 800
+      },
+      "strip_mmx_markdown": {
+        "description": "清理 markdown 噪音",
+        "type": "bool",
+        "hint": "去掉加粗/列表前缀/多余空行，省 ~25% token。",
+        "default": true
+      }
+    }
+  },
+  "MiniMax CLI": {
+    "description": "MiniMax CLI",
+    "type": "object",
+    "hint": "mmx CLI 路径与调用行为。",
+    "items": {
       "mmx_path": {
         "description": "mmx 路径",
         "type": "string",
@@ -34,31 +66,6 @@
         "type": "int",
         "hint": "通常 10-30 秒，大图建议调高。",
         "default": 60
-      }
-    }
-  },
-  "图像理解": {
-    "description": "图像理解",
-    "type": "object",
-    "hint": "mmx 提示词与输出格式。",
-    "items": {
-      "vision_prompt": {
-        "description": "视觉理解提示词",
-        "type": "text",
-        "hint": "要求 mmx 客观描述，严禁猜测游戏/角色名。",
-        "default": "请客观描述图中可见的元素，列出主体人物/物品、场景背景、出现的文字（原文）、色调、风格。\n严禁猜测未明确显示的游戏/番剧/品牌/角色名称——如果不能从图中明确看出，请说'无法确定'。\n描述中只能包含你看到的事实，不要补充背景知识或推断。"
-      },
-      "max_description_length": {
-        "description": "描述最大字符数",
-        "type": "int",
-        "hint": "超长截断省 token。0 = 不限制。",
-        "default": 800
-      },
-      "strip_mmx_markdown": {
-        "description": "清理 markdown 噪音",
-        "type": "bool",
-        "hint": "去掉加粗/列表前缀/多余空行，省 ~25% token。",
-        "default": true
       }
     }
   },
@@ -92,6 +99,13 @@
         "hint": "独立 server 监听 127.0.0.1:<port>。",
         "default": 2023
       },
+      "openapi_key": {
+        "description": "OpenAPI 访问密钥",
+        "type": "string",
+        "default": "",
+        "obvious_hint": true,
+        "hint": "在 Dashboard「设置→OpenAPI」创建。注册 provider 的唯一认证方式。"
+      },
       "dashboard_port": {
         "description": "Dashboard 端口",
         "type": "int",
@@ -104,25 +118,6 @@
         "hint": "启动时 Dashboard 可能未就绪，每隔 5 秒重试一次。0 = 只试一次。",
         "default": 30
       },
-      "openapi_key": {
-        "description": "OpenAPI 访问密钥",
-        "type": "string",
-        "default": "",
-        "obvious_hint": true,
-        "hint": "在 Dashboard「设置→OpenAPI」创建。X-API-Key 方式认证，优先级高于 webui_password。"
-      },
-      "webui_username": {
-        "description": "Dashboard 用户名",
-        "type": "string",
-        "default": "admin",
-        "hint": "默认 admin。"
-      },
-      "webui_password": {
-        "description": "Dashboard 密码",
-        "type": "string",
-        "default": "",
-        "hint": "用于 webui API 登录注册 provider。"
-      },
       "auto_register": {
         "description": "自动注册",
         "type": "bool",
@@ -130,9 +125,9 @@
         "default": true
       },
       "api_key": {
-        "description": "端点 API Key（非 OpenAPI 密钥）",
+        "description": "端点 API Key",
         "type": "string",
-        "hint": "本端点不校验，填 placeholder 即可。注册用 openapi_key 字段。",
+        "hint": "调用方使用的占位 Key，本端点不校验。",
         "default": "placeholder"
       },
       "model_name": {

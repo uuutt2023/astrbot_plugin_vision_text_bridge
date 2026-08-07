@@ -85,29 +85,20 @@ def is_smart_imagechat_hub_installed() -> bool:
     return False
 
 
-def _read_webui_credentials(plugin) -> tuple[str, str, int]:
-    """读 dashboard 用户名/密码/端口，Dashboard 端口默认 6185 可被 dashboard_port 覆盖。"""
-    username = ""
-    password = ""
+def _read_dashboard_port(plugin) -> int:
+    """读 dashboard 端口，默认 6185，可被 dashboard_port 覆盖。"""
     port = DEFAULT_DASHBOARD_PORT
     try:
         pc = plugin.config if plugin and hasattr(plugin, "config") else {}
         if isinstance(pc, dict):
-            cu = pc.get("webui_username") or pc.get("dashboard_username")
-            cp = pc.get("webui_password") or pc.get("dashboard_password")
             cport = pc.get("dashboard_port")
             if cport:
-                try:
-                    port = int(cport)
-                except (TypeError, ValueError):
-                    pass
-            if cu:
-                username = cu.strip()
-            if cp:
-                password = cp.strip()
+                port = int(cport)
+    except (TypeError, ValueError):
+        pass
     except Exception as e:
-        _emit("debug", f"_read_webui_credentials 异常: {e}")
-    return username, password, port
+        _emit("debug", f"_read_dashboard_port 异常: {e}")
+    return port
 
 
 async def auto_register_provider(
@@ -115,11 +106,9 @@ async def auto_register_provider(
 ) -> bool:
     """通过 webui HTTP API 注册 OpenAI compatible provider (OpenAI-compat mode).
 
-    支持两种认证方式 (优先级从高到低):
-      1. OpenAPI Key (Bearer token) — 在 Dashboard「设置→OpenAPI」创建
-      2. username + password — 在 plugin.config 配 webui_password
+    认证方式: OpenAPI Key (X-API-Key header) — 在 Dashboard「设置→OpenAPI」创建。
 
-    quiet=True 时抑制 [1/6] 等步骤日志 (重试用)，只保留 warning/error。
+    quiet=True 时抑制 [1/5] 等步骤日志 (重试用)，只保留 warning/error。
     """
     global _quiet
     _quiet = quiet
@@ -128,17 +117,13 @@ async def auto_register_provider(
         creds = _prepare_credentials(plugin)
         if creds is None:
             return False
-        use_bearer, openapi_key, username, password, dash_port = creds
+        openapi_key, dash_port = creds
 
         config = _build_provider_payload(plugin)
         base_url = f"http://127.0.0.1:{dash_port}"
 
         async with _httpx.AsyncClient(timeout=15.0) as client:
-            headers = await _build_auth_headers(
-                client, base_url, use_bearer, openapi_key, username, password
-            )
-            if headers is None:
-                return False
+            headers = {"X-API-Key": openapi_key}
 
             if await _post_create_provider(
                 client, base_url, headers, config, plugin, log_details
@@ -168,40 +153,36 @@ async def auto_register_provider(
         _quiet = False
 
 
-def _prepare_credentials(plugin) -> Optional[tuple[bool, str, str, str, int]]:
-    """读取并校验注册凭证。失败返 None（已记 warning）。"""
-    _emit("info", f"[1/6] 进入 auto_register_provider, plugin={type(plugin).__name__}")
-    _emit("info", f"[2/6] plugin.config type={type(plugin.config).__name__}")
+def _prepare_credentials(plugin) -> Optional[tuple[str, int]]:
+    """读取并校验注册凭证 (openapi_key, dash_port)。失败返 None（已记 warning）。"""
+    _emit("info", f"[1/5] 进入 auto_register_provider, plugin={type(plugin).__name__}")
 
     if plugin is None or not hasattr(plugin, "config"):
         _emit("error", f"plugin 或 plugin.config 缺失: plugin={plugin}")
         return None
 
+    _emit("info", f"[2/5] plugin.config type={type(plugin.config).__name__}")
+
     try:
         openapi_key = (plugin.config.get("openapi_key") or "").strip()
-        username, password, dash_port = _read_webui_credentials(plugin)
+        dash_port = _read_dashboard_port(plugin)
     except Exception as e:
-        _emit("error", f"[3/6] 读 config 异常: {e!r}")
+        _emit("error", f"[3/5] 读 config 异常: {e!r}")
         raise
 
-    use_bearer = bool(openapi_key)
     _emit(
         "info",
-        f"[3/6] provider 注册尝试: bearer={use_bearer}, "
-        f"username={username!r}, password_len={len(password)}, "
-        f"dash_port={dash_port}, "
+        f"[3/5] 注册凭证: dash_port={dash_port}, "
         f"openapi_key_prefix={openapi_key[:8] + '***' if openapi_key else '(empty)'}",
     )
-    if not use_bearer and not password:
+    if not openapi_key:
         _emit(
             "warning",
-            "OpenAPI Key 和 webui password 均未配置 — "
-            "无法通过 webui API 注册 provider. "
-            "请在 webui「设置 → OpenAPI」创建 Key 填入 openapi_key, "
-            "或在「系统配置 → dashboard」配置 password.",
+            "OpenAPI Key 未配置 — 无法通过 webui API 注册 provider. "
+            "请在 webui「设置 → OpenAPI」创建 Key 填入 openapi_key.",
         )
         return None
-    return (use_bearer, openapi_key, username, password, dash_port)
+    return (openapi_key, dash_port)
 
 
 def _build_provider_payload(plugin) -> dict:
@@ -217,7 +198,7 @@ def _build_provider_payload(plugin) -> dict:
 
     _emit(
         "info",
-        f"[4/6] 准备调用 webui API: api_base={api_base}, model={model_name}",
+        f"[4/5] 准备调用 webui API: api_base={api_base}, model={model_name}",
     )
 
     # AstrBot v4.x ProviderConfigRequest schema:
@@ -244,36 +225,6 @@ def _build_provider_payload(plugin) -> dict:
     }
 
 
-async def _build_auth_headers(
-    client: "_httpx.AsyncClient",
-    base_url: str,
-    use_bearer: bool,
-    openapi_key: str,
-    username: str,
-    password: str,
-) -> Optional[dict]:
-    """根据 use_bearer 选择认证方式，返回请求头。失败返 None。"""
-    if use_bearer:
-        _emit("info", "[5/6] 认证方式: OpenAPI Key (X-API-Key header)")
-        return {"X-API-Key": openapi_key}
-
-    _emit("info", f"[5/6] 认证方式: username/password (user={username})")
-    _emit("info", f"  → POST {base_url}/api/auth/login")
-    login_resp = await client.post(
-        f"{base_url}/api/auth/login",
-        json={"username": username, "password": password},
-    )
-    _emit("info", f"  → 登录响应 status={login_resp.status_code}")
-    if login_resp.status_code not in (200, 204):
-        _emit(
-            "warning",
-            f"webui 登录失败 (status={login_resp.status_code}, username={username}) — "
-            f"请检查 password 配置. status={login_resp.status_code}",
-        )
-        return None
-    return {}
-
-
 async def _post_create_provider(
     client: "_httpx.AsyncClient",
     base_url: str,
@@ -283,7 +234,7 @@ async def _post_create_provider(
     log_details: bool,
 ) -> bool:
     """POST 注册 provider。成功返 True。"""
-    _emit("info", f"[6/6] POST {base_url}/api/v1/providers")
+    _emit("info", f"[5/5] POST {base_url}/api/v1/providers")
     _emit("info", f"  → payload={config}")
     try:
         resp = await client.post(
@@ -322,7 +273,7 @@ async def _put_update_provider(
     """PUT 兜底更新 provider。成功返 True。"""
     _emit(
         "info",
-        f"[6/6-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
+        f"[5/5-fallback] PUT {base_url}/api/v1/providers/by-id?provider_id={PROVIDER_ID}",
     )
     try:
         resp = await client.put(
@@ -421,22 +372,15 @@ def _log_registered_instance(plugin) -> None:
 
 
 async def remove_provider(plugin) -> bool:
-    """通过 webui DELETE 卸载 provider。支持 OpenAPI Key (X-API-Key) 或 username/password。"""
+    """通过 webui DELETE 卸载 provider。使用 OpenAPI Key (X-API-Key) 认证。"""
     try:
         openapi_key = (plugin.config.get("openapi_key") or "").strip()
-        username, password, dash_port = _read_webui_credentials(plugin)
-        if not openapi_key and not password:
+        if not openapi_key:
             return False
+        dash_port = _read_dashboard_port(plugin)
         base_url = f"http://127.0.0.1:{dash_port}"
-        headers = {}
+        headers = {"X-API-Key": openapi_key}
         async with _httpx.AsyncClient(timeout=10.0) as client:
-            if openapi_key:
-                headers["X-API-Key"] = openapi_key
-            else:
-                await client.post(
-                    f"{base_url}/api/auth/login",
-                    json={"username": username, "password": password},
-                )
             r = await client.delete(
                 f"{base_url}/api/v1/providers/by-id",
                 params={"provider_id": PROVIDER_ID},

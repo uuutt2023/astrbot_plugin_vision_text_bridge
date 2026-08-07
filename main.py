@@ -307,7 +307,7 @@ class VisionTextBridgePlugin(Star):
                 )
         logger.warning(
             "[vision_text_bridge] provider 注册失败 — 已达最大重试次数 (%d)，"
-            "请检查 openapi_key / webui_password / dashboard_port 配置",
+            "请检查 openapi_key / dashboard_port 配置",
             max_attempts,
         )
 
