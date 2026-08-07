@@ -89,6 +89,8 @@
 
 ### 安装步骤
 
+> 如需完整 WebUI + 缓存 + LLM 拦截，请使用 [full-version 分支安装链接](https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/tree/full-version)。
+
 1. 获取 MiniMax API Key 于 [https://platform.minimax.io](https://platform.minimax.io)（创建 sk- 开头的 Key）
 2. 获取 OpenAPI Key 于 Dashboard → 设置 → OpenAPI（创建 abk_ 开头的 Key，勾选 provider scope）
 
