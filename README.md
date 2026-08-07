@@ -1,10 +1,61 @@
-# 图片转文字插件
+# 图片转文字 — 图像理解桥接
 
-基于 MiniMax CLI（`mmx vision describe`）的图像理解服务。
+基于 MiniMax CLI（`mmx vision describe`）的图像理解服务，为 AstrBot 提供一个开箱即用的视觉 provider。
 
-启动后自动注册为 AstrBot provider，暴露 OpenAI 兼容接口。接口**模拟 AI 模型**：收到标准 `/v1/chat/completions` 请求后，从 messages 中提取图片，调用 MiniMax CLI 做图像理解，再把理解内容作为模型回复返回。
+<!-- PROJECT SHIELDS -->
 
----
+[![Contributors][contributors-shield]][contributors-url]
+[![Forks][forks-shield]][forks-url]
+[![Stargazers][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
+[![AGPL License][license-shield]][license-url]
+[![AstrBot][astrbot-shield]][astrbot-url]
+
+<!-- PROJECT LOGO -->
+<br />
+
+<p align="center">
+  <a href="https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/">
+    <img src="logo.png" alt="Logo" width="80" height="80">
+  </a>
+
+  <h3 align="center">图片转文字 — 图像理解桥接</h3>
+  <p align="center">
+    一个让 AstrBot 拥有"看图说话"能力的插件
+    <br />
+    <a href="https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge"><strong>探索本项目的文档 »</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues">报告 Bug</a>
+    ·
+    <a href="https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues">提出新特性</a>
+  </p>
+</p>
+
+本插件暴露 OpenAI 兼容接口并注册为 AstrBot provider，**模拟 AI 模型**：收到标准 `/v1/chat/completions` 请求后，从 messages 中提取图片，调用 MiniMax CLI 做图像理解，再把理解内容作为模型回复返回。
+
+> 本插件专注于图像理解服务，不拦截对话 LLM 请求、不做缓存、无 WebUI。
+
+## 目录
+
+- [它能做什么](#它能做什么)
+- [上手指南](#上手指南)
+  - [开发前的配置要求](#开发前的配置要求)
+  - [安装步骤](#安装步骤)
+- [文件目录说明](#文件目录说明)
+- [开发的架构](#开发的架构)
+- [配置参考](#配置参考)
+- [API 端点](#api-端点)
+- [部署](#部署)
+- [使用到的框架](#使用到的框架)
+- [常见问题](#常见问题)
+- [更新日志](#更新日志)
+- [贡献者](#贡献者)
+  - [如何参与开源项目](#如何参与开源项目)
+- [版本控制](#版本控制)
+- [作者](#作者)
+- [版权说明](#版权说明)
+- [鸣谢](#鸣谢)
 
 ## 它能做什么
 
@@ -12,17 +63,13 @@
 - **OpenAI 兼容接口** — 注册为 AstrBot provider，其他插件可通过标准 `/v1/chat/completions` 调用，传入图片即返回理解内容
 - **模拟 AI 模型** — 接口按 OpenAI ChatCompletion 协议应答，调用方无感知底层是 mmx
 
-> 本插件专注于图像理解服务，不拦截对话 LLM 请求、不做缓存、无 WebUI。
-
----
-
-## 适用场景
+### 适用场景
 
 - 其他插件需要一个统一的 vision provider（纯文本模型无法看图时）
 - 想省 token（文字描述通常 50–300 字，比 base64 小得多）
 - 把 MiniMax 的 API-vlm 图片理解能力包装成标准 OpenAI 接口
 
-## 适用人群
+### 适用人群
 
 本插件调用 MiniMax `mmx vision describe`，底层使用 [MCP API-vlm 模型](https://platform.minimaxi.com/docs/guides/pricing-paygo#mcp)进行图片理解。
 
@@ -33,21 +80,25 @@
 
 > **注意**：Token Plan 订阅 Key 和普通 API Key 是两套独立的账户体系。Token Plan 的积分仅限 MCP 工具调用，普通 Key 的余额覆盖全部 API 产品。详见 [MiniMax 按量计费文档](https://platform.minimaxi.com/docs/guides/pricing-paygo)。
 
----
+## 上手指南
 
-## 快速开始
+### 开发前的配置要求
 
-### 1. 安装
+1. AstrBot >= 4.0.0
+2. Node.js >= 18（运行 mmx CLI，首次启动会自动安装到插件本地目录，无需手动装）
+
+### 安装步骤
+
+1. 获取 MiniMax API Key 于 [https://platform.minimax.io](https://platform.minimax.io)（创建 sk- 开头的 Key）
+2. 获取 OpenAPI Key 于 Dashboard → 设置 → OpenAPI（创建 abk_ 开头的 Key，勾选 provider scope）
 
 Dashboard → 插件管理 → 添加插件，填入：
 
-```
+```sh
 https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge.git
 ```
 
-### 2. 配置
-
-Dashboard → 插件管理 → 图片转文字 → 配置，填入：
+然后到 插件管理 → 图片转文字 → 配置，填入两个 Key：
 
 | 字段 | 在哪获取 |
 |------|----------|
@@ -56,9 +107,7 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 
 `minimax_api_key` 是必填项。`openapi_key` 如果不填不影响接口本身，只是没法自动注册 provider。
 
-### 3. 重启
-
-改了 Key 之后重启 AstrBot，看到启动日志里有这些就是成功了：
+重启后看到启动日志里有这些就是成功了：
 
 ```
 [vision_text_bridge] mmx-cli 本地装成功
@@ -67,14 +116,29 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 [vision_text_bridge] OpenAI 兼容 provider 注册成功
 ```
 
-### 依赖
+## 文件目录说明
 
-- **Node.js >= 18**（运行 mmx CLI）
-- 首次启动自动下载 mmx 到插件本地目录，不用手动装
+```
+filetree
+├── main.py                    # 插件入口：mmx 就绪 + 接口启动 + provider 注册 + 图像理解
+├── main_server.py             # 独立 OpenAI 兼容 server（模拟 AI 模型返回理解内容）
+├── mmx_runner.py              # MiniMax CLI subprocess 包装
+├── provider_registration.py   # 通过 webui HTTP API 注册 provider（仅 API_KEY 认证）
+├── constants.py               # 常量（端口、provider id、URL 前缀）
+├── _conf_schema.json          # 可视化配置 JSON（API 密钥 → 图像理解 → CLI → 并发 → 接口 → 日志 → 脱敏）
+├── ARCHITECTURE.md            # 架构说明
+├── CHANGELOG.md               # 更新日志
+├── metadata.yaml              # 插件元数据
+├── requirements.txt           # Python 依赖
+├── logo.png                   # 插件 Logo
+└── LICENSE                    # AGPL-3.0 开源协议
+```
 
----
+## 开发的架构
 
-## 它是怎么工作的
+请阅读 [ARCHITECTURE.md](ARCHITECTURE.md) 查阅为该项目的架构。
+
+简要流程：
 
 ```
 外部插件 → POST /v1/chat/completions (127.0.0.1:2023)
@@ -84,8 +148,6 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 ```
 
 接口对请求方完全模拟一个 OpenAI 兼容的 AI 模型：模型名、消息格式、响应结构都遵循标准协议，`choices[0].message.content` 即图片理解结果。
-
----
 
 ## 配置参考
 
@@ -141,8 +203,6 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 | `verbose_mmx_subprocess` | `false` | mmx 完整命令行和 stdout/stderr |
 | `redact_sensitive` | `true` | 关闭后日志输出完整 URL |
 
----
-
 ## API 端点
 
 ### OpenAI 兼容接口
@@ -172,16 +232,22 @@ GET /health
 
 返回 `{"status": "ok"}`。
 
----
-
-## 端口
+### 端口
 
 | 端口 | 用途 |
 |------|------|
 | `2023` | 本插件 OpenAI 兼容 server（可用 `port` 配置修改） |
 | `6185` | AstrBot Dashboard（注册 provider 时向这里发请求） |
 
----
+## 部署
+
+本插件在 AstrBot 内以插件形式运行，无需独立部署。
+
+## 使用到的框架
+
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) — 插件宿主框架，webui HTTP API 注册 provider
+- [MiniMax](https://www.minimax.io) — MCP API-vlm 图片理解模型，经 mmx CLI 调用
+- [mmx-cli](https://www.npmjs.com/package/mmx-cli) — MiniMax 官方 CLI，执行 `mmx vision describe`
 
 ## 常见问题
 
@@ -214,22 +280,66 @@ lsof -i :2023
 | `OpenAI 兼容 provider 注册成功` | provider 已注册 |
 | `provider 注册失败` | 检查 openapi_key |
 
----
-
 ## 更新日志
 
 ### 2026-08-07
 
+- **2.0.1**：注册认证只保留 OpenAPI Key；配置 JSON 重排（API 密钥置于头部）
 - **2.0.0**：大幅精简
   - 移除 WebUI 缓存管理面板
   - 移除图像理解缓存（内存 / SQLite）
   - 移除 AstrBot LLM 请求拦截（不再改写对话请求）
   - 保留 MiniMax CLI 图像理解、OpenAI 兼容接口与 provider 注册
   - 接口模拟 AI 模型：收到 `/v1/chat/completions` 后调 mmx 理解图片并返回内容
-  - 配置精简为 6 组核心项
+  - 配置精简为核心配置组
 
----
+完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-## 协议
+## 贡献者
 
-本插件继承 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) 开源协议。
+请阅读 **CHANGELOG.md** 查阅为该项目做出贡献的记录。你所作的任何贡献都是**非常感谢**的。
+
+### 如何参与开源项目
+
+贡献使开源社区成为一个学习、激励和创造的绝佳场所。
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 版本控制
+
+该项目使用 Git 进行版本管理，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 作者
+
+[uuutt](https://github.com/uuutt2023)
+
+*您也可以在贡献者名单中参看所有参与该项目的开发者。*
+
+## 版权说明
+
+该项目签署了 AGPL-3.0 授权许可，详情请参阅 [LICENSE](LICENSE)。本插件继承 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html) 开源协议。
+
+## 鸣谢
+
+- [MiniMax](https://www.minimax.io) — 提供图片理解模型与 CLI
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) — 插件框架与 webui API
+- [Img Shields](https://shields.io) — 项目徽章
+- [Choose an Open Source License](https://choosealicense.com) — 开源协议参考
+
+<!-- links -->
+[contributors-shield]: https://img.shields.io/github/contributors/uuutt2023/astrbot_plugin_vision_text_bridge.svg?style=flat-square
+[contributors-url]: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/uuutt2023/astrbot_plugin_vision_text_bridge.svg?style=flat-square
+[forks-url]: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/network/members
+[stars-shield]: https://img.shields.io/github/stars/uuutt2023/astrbot_plugin_vision_text_bridge.svg?style=flat-square
+[stars-url]: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/stargazers
+[issues-shield]: https://img.shields.io/github/issues/uuutt2023/astrbot_plugin_vision_text_bridge.svg?style=flat-square
+[issues-url]: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/issues
+[license-shield]: https://img.shields.io/github/license/uuutt2023/astrbot_plugin_vision_text_bridge.svg?style=flat-square
+[license-url]: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge/blob/main/LICENSE
+[astrbot-shield]: https://img.shields.io/badge/AstrBot-%3E%3D4.0.0-blue.svg?style=flat-square
+[astrbot-url]: https://github.com/AstrBotDevs/AstrBot
