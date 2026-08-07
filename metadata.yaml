@@ -1,19 +1,9 @@
 name: astrbot_plugin_vision_text_bridge
 display_name: 图片转文字 — 图像理解桥接
-desc: 基于 MiniMax CLI 的图像理解服务。暴露 OpenAI 兼容接口并注册为 AstrBot provider，模拟 AI 模型接收 /v1/chat/completions 请求，提取图片调用 mmx 图像理解后返回文字描述。
-short_desc: 图片转文字桥接：用 MiniMax CLI 做图像理解，以 OpenAI 兼容接口返回理解内容。
-version: 2.0.0
+desc: 基于 MiniMax CLI 的图像理解服务，暴露 OpenAI 兼容接口并注册为 AstrBot provider。
+short_desc: 图片转文字：MiniMax CLI 图像理解，以 OpenAI 兼容接口返回理解内容。
+version: 2.0.1
 author: "uuutt"
 repo: https://github.com/uuutt2023/astrbot_plugin_vision_text_bridge
 license: AGPL-3.0
 astrbot_version: ">=4.0.0"
-support_platforms:
-  - aiocqhttp
-  - telegram
-  - slack
-  - lark
-  - wecom
-  - discord
-  - dingtalk
-  - gewechat
-  - wechatpad
