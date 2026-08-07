@@ -23,12 +23,18 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 
+_quiet = False
+
+
 def _emit(level: str, msg: str) -> None:
     """emit 一行 — 同时走 logger 和 print，绕开任何 logger 过滤/路由问题.
 
     print 直接到 stdout，docker/终端/tmux 必能看到。
     logger 走 AstrBot 的 loguru 桥接，WebUI 控制台也能看到。
+    _quiet 开启时只保留 warning/error，避免注册重试刷屏。
     """
+    if _quiet and level not in ("warning", "error"):
+        return
     try:
         getattr(logger, level)(msg)
     except Exception:
@@ -80,7 +86,7 @@ def is_smart_imagechat_hub_installed() -> bool:
 
 
 def _read_webui_credentials(plugin) -> tuple[str, str, int]:
-    """读 dashboard 用户名/密码，Dashboard 端口固定 6185。"""
+    """读 dashboard 用户名/密码/端口，Dashboard 端口默认 6185 可被 dashboard_port 覆盖。"""
     username = ""
     password = ""
     port = DEFAULT_DASHBOARD_PORT
@@ -89,6 +95,12 @@ def _read_webui_credentials(plugin) -> tuple[str, str, int]:
         if isinstance(pc, dict):
             cu = pc.get("webui_username") or pc.get("dashboard_username")
             cp = pc.get("webui_password") or pc.get("dashboard_password")
+            cport = pc.get("dashboard_port")
+            if cport:
+                try:
+                    port = int(cport)
+                except (TypeError, ValueError):
+                    pass
             if cu:
                 username = cu.strip()
             if cp:
@@ -98,13 +110,19 @@ def _read_webui_credentials(plugin) -> tuple[str, str, int]:
     return username, password, port
 
 
-async def auto_register_provider(plugin, log_details: bool = False) -> bool:
+async def auto_register_provider(
+    plugin, log_details: bool = False, quiet: bool = False
+) -> bool:
     """通过 webui HTTP API 注册 OpenAI compatible provider (OpenAI-compat mode).
 
     支持两种认证方式 (优先级从高到低):
       1. OpenAPI Key (Bearer token) — 在 Dashboard「设置→OpenAPI」创建
       2. username + password — 在 plugin.config 配 webui_password
+
+    quiet=True 时抑制 [1/6] 等步骤日志 (重试用)，只保留 warning/error。
     """
+    global _quiet
+    _quiet = quiet
     _emit("info", "========== provider 注册开始 ==========")
     try:
         creds = _prepare_credentials(plugin)
@@ -147,6 +165,7 @@ async def auto_register_provider(plugin, log_details: bool = False) -> bool:
         return False
     finally:
         _emit("info", "========== provider 注册结束 ==========")
+        _quiet = False
 
 
 def _prepare_credentials(plugin) -> Optional[tuple[bool, str, str, str, int]]:

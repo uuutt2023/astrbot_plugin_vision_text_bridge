@@ -92,6 +92,18 @@
         "hint": "独立 server 监听 127.0.0.1:<port>。",
         "default": 2023
       },
+      "dashboard_port": {
+        "description": "Dashboard 端口",
+        "type": "int",
+        "hint": "AstrBot Dashboard webui 监听端口，注册 provider 用。",
+        "default": 6185
+      },
+      "register_max_attempts": {
+        "description": "注册重试次数",
+        "type": "int",
+        "hint": "启动时 Dashboard 可能未就绪，每隔 5 秒重试一次。0 = 只试一次。",
+        "default": 30
+      },
       "openapi_key": {
         "description": "OpenAPI 访问密钥",
         "type": "string",

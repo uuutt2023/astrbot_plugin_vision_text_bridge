@@ -119,6 +119,8 @@ Dashboard → 插件管理 → 图片转文字 → 配置，填入：
 |------|------|------|
 | `enabled` | `true` | 暴露 `/v1/chat/completions` 端点 |
 | `port` | `2023` | 独立 server 监听端口 |
+| `dashboard_port` | `6185` | AstrBot Dashboard webui 端口（注册 provider 用） |
+| `register_max_attempts` | `30` | 注册失败后每隔 5 秒重试的次数（启动时 Dashboard 可能未就绪） |
 | `openapi_key` | — | Dashboard OpenAPI Key（推荐），注册必需 |
 | `webui_username` | `admin` | Dashboard 登录用户名 |
 | `webui_password` | — | Dashboard 登录密码 |

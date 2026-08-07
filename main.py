@@ -281,18 +281,35 @@ class VisionTextBridgePlugin(Star):
             logger.exception("[vision_text_bridge] 创建后台注册任务失败: %s", e)
 
     async def _bg_register_provider(self) -> None:
-        await asyncio.sleep(5)
-        try:
-            ok = await provider_registration.auto_register_provider(self)
-        except Exception as e:
-            logger.exception("[vision_text_bridge] _bg_register_provider 异常: %s", e)
-            return
-        if ok:
-            logger.info("[vision_text_bridge] OpenAI 兼容 provider 注册成功")
-        else:
-            logger.warning(
-                "[vision_text_bridge] provider 注册失败 — 请检查 openapi_key 或 webui_password 配置"
-            )
+        max_attempts = max(1, _cfg_int(self.config, "register_max_attempts", 30))
+        interval = 5
+        for attempt in range(1, max_attempts + 1):
+            await asyncio.sleep(interval)
+            try:
+                ok = await provider_registration.auto_register_provider(
+                    self, quiet=attempt > 1
+                )
+            except Exception as e:
+                logger.exception(
+                    "[vision_text_bridge] _bg_register_provider 异常: %s", e
+                )
+                return
+            if ok:
+                logger.info("[vision_text_bridge] OpenAI 兼容 provider 注册成功")
+                return
+            if attempt < max_attempts:
+                logger.warning(
+                    "[vision_text_bridge] provider 注册失败 (第 %d/%d 次, %ds 后重试) — "
+                    "若 Dashboard 尚未就绪属正常",
+                    attempt,
+                    max_attempts,
+                    interval,
+                )
+        logger.warning(
+            "[vision_text_bridge] provider 注册失败 — 已达最大重试次数 (%d)，"
+            "请检查 openapi_key / webui_password / dashboard_port 配置",
+            max_attempts,
+        )
 
     # ---------------------------------------------------------- 图像理解核心
 
