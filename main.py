@@ -1,23 +1,29 @@
-"""main.py - 插件入口、业务核心与 AstrBot 钩子实现。"""
+"""main.py - 插件入口：MiniMax CLI 图像理解 OpenAI 兼容接口。
+
+保留能力:
+  - MiniMax CLI (mmx vision describe) 图像理解
+  - OpenAI 兼容接口注册 (provider_registration)
+  - 独立 OpenAI 兼容 server: 模拟 AI 模型接收 /v1/chat/completions，
+    提取图片后调用 mmx 图像理解，返回理解内容
+
+已移除:
+  - WebUI 缓存管理面板
+  - 图像理解缓存 (内存 / SQLite)
+  - AstrBot LLM 请求拦截
+"""
 
 from __future__ import annotations
 
-# : import 报错清缓存
-
 import asyncio
 import base64
-import importlib.util
 import io
 import os
-import re
 import shutil
 import sys
 import tempfile
-import time
 from pathlib import Path
-from typing import Any
 
-# 插件目录加 sys.path (AstrBot 加载器不自动加, 8 个同级模块都需要)
+# 插件目录加 sys.path (AstrBot 加载器不自动加)
 _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
@@ -30,144 +36,64 @@ except Exception:  # logger 可能不存在 — 兜底
 import logging  # noqa: E402
 
 logger = _astr_logger if _astr_logger is not None else logging.getLogger(__name__)
-from astrbot.api.event import AstrMessageEvent, filter  # noqa: E402
-from astrbot.api.provider import ProviderRequest  # noqa: E402
 from astrbot.api.star import Context, Star, register  # noqa: E402
 
-try:
-    # : ContentPart 注入
-    from astrbot.core.agent.message import TextPart  # type: ignore
-except Exception:  # noqa: BLE001
-    TextPart = None  # 测试沙箱/未来重命名兼容
-
-# : 同级模块直接 import
-
-from image_utils import (  # noqa: E402
-    is_image_url_part as _is_image_url_part,
-    extract_urls_from_parts as _extract_urls_from_parts,
-    extract_urls_from_context_list as _extract_urls_from_context_list,
-    strip_image_urls as _strip_image_urls,
-    to_text_part as _to_text_part,
-    sniff_image_meta as _sniff_image_meta,
-    is_cacheable_url as _is_cacheable_url,
-    read_image_bytes as _read_image_bytes,
-    collect_image_urls_from_components as _collect_image_urls_from_components,
-)
-from tool_filter import filter_disabled_tools as _filter_disabled_tools  # noqa: E402
-import chat_archive_integration  # noqa: E402
-import provider_registration  # noqa: E402
 from mmx_runner import (  # noqa: E402
     MmxResult,
-    build_vision_command as _build_vision_command,
-    run_mmx as _run_mmx_fn,
-    install_mmx_cli as _install_mmx_cli_fn,
-    install_mmx_local as _install_mmx_local_fn,
-    find_local_mmx as _find_local_mmx_fn,
-    diagnose_mmx_error as _diagnose_mmx_error_fn,
-    truncate as _truncate_text,
-    strip_mmx_content as _strip_mmx_content_fn,
-    preview as _preview_text,
-    redact_text as _redact_text,
-    redact_args as _redact_args_fn,
+    build_vision_command,
+    run_mmx,
+    install_mmx_cli,
+    install_mmx_local,
+    find_local_mmx,
+    diagnose_mmx_error,
+    truncate,
+    strip_mmx_content,
+    preview,
+    redact_text,
 )
-import web_api  # noqa: E402
 
 try:
     import main_server  # 独立 OpenAI 兼容 server (bypass framework JWT)
 except ImportError:
     main_server = None
 
+try:
+    import provider_registration
+except ImportError:
+    provider_registration = None
 
-# ---------------------------------------------------------------------------
-# 动态加载同级 caption_cache.py（AstrBot 不会把插件目录加到 sys.path）
-# ---------------------------------------------------------------------------
-def _load_sibling_module(name: str):
-    here = Path(__file__).resolve().parent
-    target = here / f"{name}.py"
-    if not target.exists():
-        raise ImportError(f"插件目录中找不到依赖文件: {target}")
-    spec = importlib.util.spec_from_file_location(
-        f"astrbot_plugin_vision_text_bridge.{name}", target
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from constants import DEFAULT_OPENAI_COMPAT_PORT  # noqa: E402
 
+DEFAULT_VISION_PROMPT = (
+    "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
+    "严禁猜测游戏/番剧/品牌/角色名，看不出就说'无法确定'。"
+)
 
-_sibling_cache = _load_sibling_module("caption_cache")
-CaptionCache = _sibling_cache.CaptionCache
-CaptionEntry = _sibling_cache.CaptionEntry
-
-# : 共享常量跨模块来源
-
-# AstrBot on_llm_request priority 越大越先跑；100 高于多数常见插件。
-# priority 在 import 时锁定，调配置后需重启 AstrBot。
-DEFAULT_PRIORITY = 100
-
-# : data URL 超过此阈值（字节）改用 mmx file upload 而非 --image 命令行参数，
-#   规避 OS ARG_MAX / "Argument list too long" 错误。
+# data URL 超过此阈值（字节）改用临时文件 --image 传参，规避 OS ARG_MAX 报错
 _DATA_URL_CMD_THRESHOLD = 40 * 1024
 
-# 预编译 bot 头像 URL 过滤 regex
-_BOT_AVATAR_PAT = re.compile(r"q\.qlogo\.cn/headimg_dl\?", re.IGNORECASE)
 
-# : 正则见 mmx_runner
-
-
-class _MemoryCache:
-    """: 内存热缓存 — TTL + LRU size 上限。"""
-
-    __slots__ = ("_m", "_max_size", "_ttl")
-
-    def __init__(self, ttl_seconds: int, max_size: int):
-        self._m: dict[str, tuple[str, float]] = {}
-        self._max_size = max(1, int(max_size))
-        self._ttl = max(0, int(ttl_seconds))
-
-    def get(self, key: str) -> str | None:
-        v = self._m.get(key)
-        if v is None:
-            return None
-        text, expire_at = v
-        if self._ttl > 0 and time.time() >= expire_at:
-            self._m.pop(key, None)  # 过期懒删除
-            return None
-        return text
-
-    def put(self, key: str, value: str) -> None:
-        if self._max_size <= 0:
-            return
-        if key in self._m:
-            self._m.pop(key, None)
-        expire = time.time() + self._ttl if self._ttl > 0 else float("inf")
-        self._m[key] = (value, expire)
-        while len(self._m) > self._max_size:
-            oldest = next(iter(self._m))
-            self._m.pop(oldest, None)
-
-    def pop(self, key: str) -> str | None:
-        v = self._m.pop(key, None)
-        return v[0] if v else None
-
-    def clear(self) -> None:
-        self._m.clear()
-
-    def __len__(self) -> int:
-        return len(self._m)
-
-    def __contains__(self, key: str) -> bool:
-        return self.get(key) is not None
-
-    # 字典语法糖
-    def __setitem__(self, key: str, value: str) -> None:
-        self.put(key, value)
-
-    def __getitem__(self, key: str) -> str:
-        v = self.get(key)
-        if v is None:
-            raise KeyError(key)
-        return v
+def _flatten_group_config(config: dict) -> dict:
+    """展平嵌套 group config，兼容多种 schema 格式。"""
+    if not isinstance(config, dict):
+        return config
+    flat = dict(config)
+    for _key, value in list(config.items()):
+        if not isinstance(value, dict):
+            continue
+        if "items" in value and isinstance(value["items"], dict):
+            for ik, iv in value["items"].items():
+                flat[ik] = iv
+        else:
+            is_schema_def = any(
+                mk in value
+                for mk in ("description", "type", "hint", "default", "obvious_hint")
+            )
+            if not is_schema_def:
+                for ik, iv in value.items():
+                    if ik not in flat:
+                        flat[ik] = iv
+    return flat
 
 
 def _read_plugin_version() -> str:
@@ -183,7 +109,6 @@ def _read_plugin_version() -> str:
         return "0.0.0"
 
 
-# : 配置读取 helper
 def _cfg_int(config, key: str, default: int) -> int:
     v = config.get(key, default)
     if v is None or v == "":
@@ -194,498 +119,168 @@ def _cfg_int(config, key: str, default: int) -> int:
         return default
 
 
-def _cfg_str(config, key: str, default: str) -> str:
-    v = config.get(key, default)
-    if v is None:
-        return default
-    return str(v)
-
-
 PLUGIN_VERSION = _read_plugin_version()
 
 
-def _flatten_group_config(config: dict) -> dict:
-    """: 展平嵌套 group config，兼容 3 种 schema 格式。"""
-    if not isinstance(config, dict):
-        return config
-    flat = dict(config)  # 浅拷贝, 保留 group 引用
-    for _key, value in list(config.items()):
-        if not isinstance(value, dict):
-            continue
-        if "items" in value and isinstance(value["items"], dict):
-            # 格式 A: schema definition with items wrapper
-            for ik, iv in value["items"].items():
-                flat[ik] = iv
-        else:
-            # 格式 B: group 容器只有字段, 无 items 包装
-            is_schema_def = any(
-                mk in value
-                for mk in ("description", "type", "hint", "default", "obvious_hint")
-            )
-            if not is_schema_def:
-                # 普通 user-data group, 展平
-                for ik, iv in value.items():
-                    if ik not in flat:  # 不覆盖已有顶层 key
-                        flat[ik] = iv
-    return flat
-
-
-# ===========================================================================
-# 数据结构 (MmxResult 移到 mmx_runner.py — 在 import 区域透传过来)
-# ===========================================================================
-
-
-# ===========================================================================
-# 插件主体
-# ===========================================================================
 @register(
     "astrbot_plugin_vision_text_bridge",
     "uuutt",
-    "把图片转成 MiniMax CLI 图像理解后的文本，再喂给对话 LLM",
+    "MiniMax CLI 图像理解 OpenAI 兼容接口",
     PLUGIN_VERSION,
 )
 class VisionTextBridgePlugin(Star):
-    """Vision -> Text 桥接，拦截图片消息并调用 mmx 生成文字描述。"""
-
-    # mmx 同一错误只诊断一次，避免刷屏
-    _DIAGNOSED: set[str] = set()
-
-    # ------------------------------------------------------------------ init
+    """MiniMax CLI 图像理解服务：注册 OpenAI 兼容接口，模拟 AI 模型返回理解内容。"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = (
             _flatten_group_config(config) if isinstance(config, dict) else config
         )
-        self.mmx_path = (self.config.get("mmx_path") or "").strip()
-        if not self.mmx_path:
-            local = _find_local_mmx_fn(str(_PLUGIN_DIR))
-            if local:
-                self.mmx_path = local
-                logger.info("[vision_text_bridge] 找到 plugin 本地装 mmx: %s", local)
-        if not self.mmx_path:
-            self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
+        self.mmx_path = self._resolve_mmx_path()
         self.npm_path = shutil.which("npm") or shutil.which("npm.cmd")
-        self._caption_cache: CaptionCache | None = None
-        # : 内存热缓存 — TTL + LRU size 上限
-        self._description_cache: _MemoryCache = _MemoryCache(
-            ttl_seconds=_cfg_int(self.config, "memory_cache_ttl_seconds", 300),
-            max_size=_cfg_int(self.config, "memory_cache_max_size", 500),
-        )
         self._vision_semaphore: asyncio.Semaphore | None = None
-        self._configured_priority: int = self._resolve_priority()
-        self._last_image_bytes: dict[str, bytes] = {}
-        self._priority_locked_warning_emitted = False
-        self._http_client: "httpx.AsyncClient | None" = None  # noqa: F821
-        # : 预计算白名单集合 — 避免每请求重建 set
-        self._group_whitelist_set: frozenset[str] = frozenset(
-            str(g) for g in (self.config.get("group_whitelist", []) or [])
-        )
-        self._user_whitelist_set: frozenset[str] = frozenset(
-            str(u) for u in (self.config.get("user_whitelist", []) or [])
-        )
-        # : 预分割工具过滤器名 — 避免每请求 re-split
-        self._tool_filter_names: list[str] = [
-            n.strip()
-            for n in _cfg_str(self.config, "tool_filter_names", "").split(",")
-            if n.strip()
-        ]
-        self._pending_urls: list[str] | None = None
-        self._pending_parts: list[Any] | None = None
-        self._pending_contexts: list[Any] | None = None
-        self._call_log: list[dict] = []  # 最近 200 条 API 调用记录 (内存 + SQLite 双写)
+        self._diagnosed: set[str] = set()
+        self._openai_compat_port: int | None = None
 
-        if not self.config.get("enabled", True):
-            logger.info("[vision_text_bridge] 插件已配置为关闭，不会拦截任何请求")
-        logger.info(
-            "[vision_text_bridge] 已加载，mmx_path=%s, enabled=%s, priority=%d",
-            self.mmx_path or "<未找到>",
-            self.config.get("enabled", True),
-            self._configured_priority,
-        )
-        self._warn_if_priority_mismatch()
+    # ------------------------------------------------------------------ mmx 路径
 
-    def _resolve_priority(self) -> int:
-        raw = self.config.get("priority", None)
-        if raw is None or raw == "":
-            return DEFAULT_PRIORITY
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            logger.warning(
-                "[vision_text_bridge] priority 配置值非法 (%r)，回退到默认 %d",
-                raw,
-                DEFAULT_PRIORITY,
-            )
-            return DEFAULT_PRIORITY
-
-    def _warn_if_priority_mismatch(self) -> None:
-        if self._configured_priority == DEFAULT_PRIORITY:
-            return
-        if not (-1000 <= self._configured_priority <= 10000):
-            logger.warning(
-                "[vision_text_bridge] priority=%d 超出建议范围 [-1000, 10000]",
-                self._configured_priority,
-            )
-        if not self._priority_locked_warning_emitted:
-            logger.warning(
-                "[vision_text_bridge] priority 配置=%d 与注册值=%d 不一致。"
-                "AstrBot 的 on_llm_request priority 在 import 时锁定，"
-                "需重启 AstrBot 生效。",
-                self._configured_priority,
-                DEFAULT_PRIORITY,
-            )
-            self._priority_locked_warning_emitted = True
-
-    # ------------------------------------------------------------------ 详细日志开关
-
-    def _should_log(self, *flags: str) -> bool:
-        """verbose_logging 总开关或任一细粒度开关为 true 即开。"""
-        if self.config.get("verbose_logging", False):
-            return True
-        return any(bool(self.config.get(f"verbose_{f}", False)) for f in flags)
-
-    def _vdebug(self, flag: str, msg: str, *args) -> None:
-        """: 细粒度调试日志。"""
-        if self._should_log(flag):
-            logger.debug(msg, *args)
-
-    def _vinfo(self, flag: str, msg: str, *args) -> None:
-        """: 细粒度信息日志。"""
-        if self._should_log(flag):
-            logger.info(msg, *args)
+    def _resolve_mmx_path(self) -> str:
+        mmx_path = (self.config.get("mmx_path") or "").strip()
+        if mmx_path:
+            return mmx_path
+        local = find_local_mmx(str(_PLUGIN_DIR))
+        if local:
+            logger.info("[vision_text_bridge] 找到 plugin 本地装 mmx: %s", local)
+            return local
+        return shutil.which("mmx") or shutil.which("mmx.cmd") or ""
 
     # ------------------------------------------------------------------ lifecycle
 
     async def initialize(self) -> None:
-        self._init_runtime_objects()
-        self._sync_webui_password_to_framework()
-        self._init_caption_cache()
-        self._start_cache_clean_loop()
-        self._register_web_apis()
-        await self._start_openai_compat_server()
         if not await self._ensure_mmx_cli():
+            logger.warning(
+                "[vision_text_bridge] mmx CLI 不可用，图像理解接口将不可用"
+            )
             return
         await self._login_mmx_if_configured()
-        await self._setup_providers()
+        await self._start_openai_compat_server()
+        await self._auto_register_provider()
 
-    async def _setup_providers(self) -> None:
-        """初始化完成后的联动检测: modality 伪装 + 兼容性检测 + provider 注册。"""
-        self._mark_providers_support_image()
-        self._check_compatibility()
-        self._detect_smart_imagechat_hub()
-        await self._auto_register_sih_provider()
+    async def terminate(self) -> None:
+        if main_server is not None:
+            try:
+                await main_server.stop_solo_server()
+            except Exception as e:
+                logger.debug("[vision_text_bridge] 停止 server 异常: %s", e)
+        logger.info("[vision_text_bridge] 插件已卸载")
 
-    def _init_runtime_objects(self) -> None:
-        """初始化运行时核心对象: 并发信号量 + httpx client。"""
-        max_concurrent = max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
-        self._vision_semaphore = asyncio.Semaphore(max_concurrent)
-
-        import httpx
-
-        self._http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(15.0),
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-        )
-
-    def _sync_webui_password_to_framework(self) -> None:
-        """把 plugin.config.webui_password 同步到 framework dashboard。"""
-        try:
-            cfg_pwd = (
-                self.config.get("webui_password")
-                or self.config.get("dashboard_password")
-                or ""
-            )
-            cfg_user = (
-                self.config.get("webui_username")
-                or self.config.get("dashboard_username")
-                or ""
-            )
-            if not cfg_pwd:
-                return
-            ac = getattr(self.context, "astr_context", None)
-            if ac is None:
-                return
-            self._write_password_in_memory(ac, cfg_pwd, cfg_user)
-            saved = self._persist_dashboard_password(ac)
-            logger.info(
-                "[vision_text_bridge] 已设置 webui 密码到 framework (来源: plugin.config.webui_password)"
-                + (" (持久化)" if saved else " (仅本次进程)"),
-            )
-        except Exception as e:
-            logger.debug("[vision_text_bridge] webui_password 处理异常: %s", e)
-
-    def _write_password_in_memory(self, ac, cfg_pwd: str, cfg_user: str) -> None:
-        """把 password / username 写进 framework in-memory config。"""
-        target_dict = getattr(ac, "config", None)
-        if not isinstance(target_dict, dict):
-            return
-        dashboard = target_dict.get("dashboard") or {}
-        dashboard["password"] = cfg_pwd
-        if cfg_user:
-            dashboard["username"] = cfg_user
-        target_dict["dashboard"] = dashboard
-
-    def _persist_dashboard_password(self, ac) -> bool:
-        """尝试持久化 dashboard 配置。成功返 True。"""
-        try:
-            cfgmgr = getattr(ac, "config_manager", None)
-            if cfgmgr is not None:
-                fn = getattr(cfgmgr, "update_profile", None) or getattr(
-                    cfgmgr, "save_config", None
-                )
-                if callable(fn):
-                    fn("default", ac.config)
-                    return True
-            confs = getattr(cfgmgr, "confs", None) if cfgmgr else None
-            if not confs:
-                confs = getattr(ac, "confs", None) or getattr(ac, "_confs", None)
-            if isinstance(confs, dict):
-                conf = confs.get("default")
-                save_fn = getattr(conf, "save_config", None)
-                if callable(save_fn):
-                    save_fn()
-                    return True
-        except Exception as e:
-            logger.debug(
-                "[vision_text_bridge] 同步 dashboard 密码到 framework 异常: %s", e
-            )
-        return False
-
-    def _init_caption_cache(self) -> None:
-        """初始化 SQLite 描述缓存 + 恢复调用日志。失败时降级为 None。"""
-        try:
-            data_dir = self._get_plugin_data_dir()
-            db_path = data_dir / "caption_cache.sqlite3"
-            self._caption_cache = CaptionCache(db_path)
-            logger.info(
-                "[vision_text_bridge] 描述缓存已初始化: %s (条目=%d)",
-                db_path,
-                self._caption_cache.count(),
-            )
-            self._restore_call_log()
-        except Exception as exc:
-            logger.exception(
-                "[vision_text_bridge] 初始化描述缓存失败，降级为内存缓存: %s", exc
-            )
-            self._caption_cache = None
-
-    def _restore_call_log(self) -> None:
-        """从 SQLite 恢复最近 N 条调用日志到内存。"""
-        if self._caption_cache is None:
-            return
-        try:
-            loaded = self._caption_cache.load_call_logs(self._MAX_CALL_LOG)
-            if loaded:
-                self._call_log = loaded
-                logger.info(
-                    "[vision_text_bridge] 已从 SQLite 恢复 %d 条调用日志",
-                    len(loaded),
-                )
-        except Exception as exc:
-            logger.warning("[vision_text_bridge] 恢复调用日志失败: %s", exc)
-
-    def _start_cache_clean_loop(self) -> None:
-        """启动 SQLite 过期清理后台 task (含启动时一次性清理)。"""
-        if self._caption_cache is None:
-            return
-        try:
-            ttl_days = _cfg_int(self.config, "sqlite_cache_ttl_days", 7)
-            interval_h = _cfg_int(self.config, "sqlite_clean_interval_hours", 1)
-            if ttl_days > 0:
-                deleted = self._caption_cache.clean_expired(ttl_days)
-                self._last_clean_at = time.time()
-                if deleted > 0:
-                    logger.info(
-                        "[vision_text_bridge] 启动时清理过期缓存: 删除 %d 条 (TTL=%d天)",
-                        deleted,
-                        ttl_days,
-                    )
-            if interval_h > 0 and ttl_days > 0:
-                self._clean_task = asyncio.create_task(
-                    self._clean_loop(ttl_days, interval_h)
-                )
-                logger.info(
-                    "[vision_text_bridge] 已启动过期清理后台任务: TTL=%d天, 间隔=%d小时",
-                    ttl_days,
-                    interval_h,
-                )
-        except Exception as exc:
-            logger.exception("[vision_text_bridge] 启动过期清理 task 失败: %s", exc)
-
-    def _register_web_apis(self) -> None:
-        """向 framework 注册所有 WebUI HTTP API 路由 (委托给 web_api 模块)。"""
-        try:
-            self._register_web_apis_real()
-        except Exception as exc:
-            logger.exception("[vision_text_bridge] 注册 web API 失败: %s", exc)
-
-    async def _start_openai_compat_server(self) -> None:
-        """启动独立 OpenAI 兼容 server (bypass framework JWT)。"""
-        if main_server is None:
-            logger.warning(
-                "[vision_text_bridge] main_server 模块未 import, 跳过独立 server 启动"
-            )
-            return
-        self._openai_compat_port = None
-        try:
-            actual_port = await main_server.start_solo_server(self, port=2023)
-            if actual_port is None:
-                logger.warning(
-                    "[vision_text_bridge] main_server.start_solo_server 失败"
-                )
-            else:
-                self._openai_compat_port = actual_port
-                logger.info(
-                    "[vision_text_bridge] 独立 OpenAI 兼容 server 启动: 127.0.0.1:%d",
-                    actual_port,
-                )
-        except Exception as exc:
-            logger.exception(
-                "[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", exc
-            )
+    # ------------------------------------------------------------------ mmx 就绪
 
     async def _ensure_mmx_cli(self) -> bool:
-        """确保 mmx CLI 可用。成功 (本地/全局装) 返 True, 仍未找到返 False。"""
         if self.mmx_path:
             return True
         if not self.config.get("auto_install_cli", True):
             return False
-        await self._install_mmx_local_then_global()
-        if not self.mmx_path:
-            logger.warning(
-                "[vision_text_bridge] 未找到 mmx CLI, 插件不处理图片转换。"
-                "请手动 npm install -g mmx-cli 或在插件配置中指定 mmx_path。"
-            )
-            return False
-        return True
-
-    async def _install_mmx_local_then_global(self) -> None:
-        """本地装失败后退到全局 npm install -g。"""
         local_target = str(_PLUGIN_DIR / ".mmx")
-        logger.info(
-            "[vision_text_bridge] 未找到 mmx CLI, 尝试装到 plugin 本地: %s",
-            local_target,
-        )
-        install_ok = await _install_mmx_local_fn(self.npm_path, local_target)
-        if install_ok:
-            self.mmx_path = _find_local_mmx_fn(str(_PLUGIN_DIR)) or ""
+        if await install_mmx_local(self.npm_path, local_target):
+            self.mmx_path = find_local_mmx(str(_PLUGIN_DIR)) or ""
             if self.mmx_path:
                 logger.info(
                     "[vision_text_bridge] mmx-cli 本地装成功: %s", self.mmx_path
                 )
-                return
-            logger.warning(
-                "[vision_text_bridge] 本地装成功但 .bin/mmx 仍找不到, 请检查 node_modules"
-            )
-
-        # 本地装失败, 退到全局装
-        logger.info("[vision_text_bridge] 本地装失败, 尝试 npm install -g ...")
-        install_ok = await self._install_mmx_cli()
-        if install_ok:
+                return True
+        if await install_mmx_cli(self.npm_path):
             self.mmx_path = shutil.which("mmx") or shutil.which("mmx.cmd") or ""
             if self.mmx_path:
                 logger.info(
                     "[vision_text_bridge] mmx-cli 全局装成功: %s", self.mmx_path
                 )
-        else:
-            logger.warning(
-                "[vision_text_bridge] mmx-cli 装失败。请手动执行:\n"
-                "  1. 装 Node.js/npm (https://nodejs.org/)\n"
-                "  2.  npm install -g mmx-cli\n"
-                "  3. 重启 AstrBot 或在插件配置中指定 mmx_path 绝对路径"
-            )
+                return True
+        logger.warning(
+            "[vision_text_bridge] 未找到 mmx CLI。请手动执行 npm install -g mmx-cli "
+            "或在插件配置中指定 mmx_path。"
+        )
+        return False
 
     async def _login_mmx_if_configured(self) -> None:
-        """如果配置了 minimax_api_key 则预登录 mmx CLI。"""
         if not self.config.get("auto_login", True):
             return
         api_key = (self.config.get("minimax_api_key") or "").strip()
         if not api_key:
             logger.info("[vision_text_bridge] 未配置 minimax_api_key，跳过自动登录")
             return
-        await self._login_mmx(api_key)
-
-    def _get_plugin_data_dir(self) -> Path:
-        try:
-            from astrbot.api.star import StarTools
-
-            p = Path(StarTools.get_data_dir())
-        except Exception:
-            p = Path(__file__).resolve().parent / "data"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    def _strip_image_fields_from_req(self, req) -> None:
-        """从 req 清除所有 image_url 字段。"""
-        if req.extra_user_content_parts:
-            req.extra_user_content_parts[:] = [
-                p for p in req.extra_user_content_parts if not _is_image_url_part(p)
-            ]
-        for c in req.contexts or []:
-            if not isinstance(c, dict):
-                continue
-            content = c.get("content")
-            if not isinstance(content, list):
-                continue
-            content[:] = [
-                x
-                for x in content
-                if not (isinstance(x, dict) and x.get("type") == "image_url")
-            ]
-
-    # ------------------------------------------------------------------ provider 伪装
-
-    def _detect_smart_imagechat_hub(self) -> None:
-        """: 启动期检测 smart_imagechat_hub 是否安装。"""
-        try:
-            installed = provider_registration.is_smart_imagechat_hub_installed()
-        except Exception as e:
-            logger.debug("[vision_text_bridge] 检测外部图片理解插件失败: %s", e)
+        if not self.mmx_path:
             return
-        if installed:
-            compat_enabled = bool(
-                self.config.get("enable_openai_compat_endpoint")
-                or self.config.get("enable_smart_imagechat_hub_compat", True)
+        masked = (
+            f"{api_key[:4]}***REDACTED***(len={len(api_key)})"
+            if self.config.get("redact_sensitive", True)
+            else api_key
+        )
+        logger.info("[vision_text_bridge] 预登录 MiniMax CLI: %s", masked)
+        try:
+            r = await run_mmx(
+                self.mmx_path,
+                ("auth", "login", "--api-key", api_key),
+                timeout=30,
+                log_subprocess=self._should_log("mmx_subprocess"),
             )
-            if compat_enabled:
-                logger.debug(
-                    "[vision_text_bridge] smart_imagechat_hub 兼容 endpoint 已启用"
+            if r.ok:
+                logger.info(
+                    "[vision_text_bridge] 预登录成功: %s",
+                    (r.stdout or "").strip() or "(无输出)",
                 )
             else:
-                logger.debug(
-                    "[vision_text_bridge] smart_imagechat_hub 兼容 endpoint 未启用"
+                logger.warning(
+                    "[vision_text_bridge] 预登录失败: rc=%d, stderr=%s",
+                    r.returncode,
+                    (r.stderr or "").strip()[:200],
                 )
+        except Exception as e:
+            logger.warning("[vision_text_bridge] 预登录异常: %s", e)
 
-    async def _auto_register_sih_provider(self) -> None:
-        """: 启动期自动注册 OpenAI compatible provider（后台异步，不阻塞启动）。"""
-        if not (
-            self.config.get("auto_register")
-            or self.config.get("auto_register_openai_compat_provider")
-            or self.config.get("smart_imagechat_hub_auto_register_provider", True)
-        ):
-            logger.info(
-                "[vision_text_bridge] auto_register=False, 跳过自动注册 OpenAI compatible provider"
+    # ------------------------------------------------------ OpenAI 兼容接口
+
+    async def _start_openai_compat_server(self) -> None:
+        if main_server is None:
+            logger.warning(
+                "[vision_text_bridge] main_server 模块未 import，跳过独立 server 启动"
             )
             return
-        logger.info(
-            "[vision_text_bridge] 调度 smart_imagechat_hub OpenAI compatible provider 注册"
-        )
-        _openapi_key_set = bool((self.config.get("openapi_key") or "").strip())
-        _webui_pw_set = bool((self.config.get("webui_password") or "").strip())
-        logger.info(
-            "[vision_text_bridge] 注册前置状态: openapi_key=%s, webui_password=%s",
-            "已设置" if _openapi_key_set else "(空)",
-            "已设置" if _webui_pw_set else "(空)",
-        )
+        if not self.config.get("enabled", True):
+            logger.info("[vision_text_bridge] OpenAI 兼容接口已关闭")
+            return
+        port = _cfg_int(self.config, "port", DEFAULT_OPENAI_COMPAT_PORT)
+        try:
+            actual_port = await main_server.start_solo_server(self, port=port)
+        except Exception as e:
+            logger.exception(
+                "[vision_text_bridge] 启动独立 OpenAI endpoint server 失败: %s", e
+            )
+            return
+        if actual_port is None:
+            logger.warning("[vision_text_bridge] main_server.start_solo_server 失败")
+        else:
+            self._openai_compat_port = actual_port
+            logger.info(
+                "[vision_text_bridge] 独立 OpenAI 兼容 server 启动: 127.0.0.1:%d",
+                actual_port,
+            )
+
+    async def _auto_register_provider(self) -> None:
+        if not self.config.get("auto_register", True):
+            logger.info("[vision_text_bridge] auto_register=False，跳过自动注册")
+            return
+        if provider_registration is None:
+            logger.warning(
+                "[vision_text_bridge] provider_registration 模块缺失，跳过注册"
+            )
+            return
         try:
             asyncio.create_task(self._bg_register_provider())
         except Exception as e:
             logger.exception("[vision_text_bridge] 创建后台注册任务失败: %s", e)
-            return
 
     async def _bg_register_provider(self) -> None:
-        """: 后台等待 Dashboard 就绪后注册 provider。"""
         await asyncio.sleep(5)
         try:
             ok = await provider_registration.auto_register_provider(self)
@@ -693,680 +288,32 @@ class VisionTextBridgePlugin(Star):
             logger.exception("[vision_text_bridge] _bg_register_provider 异常: %s", e)
             return
         if ok:
-            # 重新跑一次: 把我方 provider 补上 ['text', 'image'] modalities
-            # (initialize 时还没注册, 现在补一下, 让 private_companion 等
-            #  _provider_supports_image 返 True)
-            self._mark_providers_support_image()
-
-            logger.info("[vision_text_bridge] webui API 注册成功")
+            logger.info("[vision_text_bridge] OpenAI 兼容 provider 注册成功")
         else:
             logger.warning(
-                "[vision_text_bridge] webui API 注册返回 False — 请检查 openapi_key 或 webui_password 配置"
+                "[vision_text_bridge] provider 注册失败 — 请检查 openapi_key 或 webui_password 配置"
             )
 
-    def _check_permission(self, event: AstrMessageEvent) -> tuple[bool, str]:
-        """: 检查群白名单 / 用户白名单 / 仅私聊权限。"""
-        try:
-            # 拿 event 的群/用户信息
-            msg = getattr(event, "message_obj", None) or getattr(event, "message", None)
-            group_id = str(getattr(msg, "group_id", "") or "") if msg else ""
-            user_id = str(
-                getattr(msg, "sender", None)
-                and (msg.sender.user_id or getattr(msg.sender, "user_id", ""))
-                or ""
-            )
-            if not user_id and hasattr(event, "get_sender_id"):
-                user_id = str(event.get_sender_id() or "")
-            is_private = not group_id  # 没 group_id = 私聊
-
-            # 1. 仅私聊 + 当前是群 → 跳过
-            if not is_private and self.config.get("private_chat_only", False):
-                return False, "private_chat_only"
-
-            # 2. 群白名单
-            if not is_private and self.config.get("enable_group_whitelist", False):
-                if group_id not in self._group_whitelist_set:
-                    return False, "group_not_in_whitelist"
-
-            # 3. 用户白名单 (私聊/群聊都生效)
-            if self.config.get("enable_user_whitelist", False):
-                if user_id not in self._user_whitelist_set:
-                    return False, "user_not_in_whitelist"
-
-            return True, ""
-        except Exception as e:
-            logger.warning(
-                "[vision_text_bridge] _check_permission 异常, 默认放行: %s", e
-            )
-            return True, ""
-
-    @staticmethod
-    def _is_private_chat(event: AstrMessageEvent) -> bool:
-        """判断是否为私聊（无 group_id 即私聊）。"""
-        try:
-            msg = getattr(event, "message_obj", None) or getattr(event, "message", None)
-            group_id = getattr(msg, "group_id", None) if msg else None
-            return not group_id
-        except Exception:
-            return True
-
-    def _mark_providers_support_image(self) -> None:
-        """给所有 provider 补 'image' modality 标签，防 AstrBot 切 fallback。"""
-        if self.config.get("keep_provider_modality_as_is", False):
-            return
-        try:
-            ctx = self.context.astr_context  # type: ignore[attr-defined]
-        except Exception:
-            return
-        providers = self._collect_all_providers(ctx)
-        # 改 modalities
-        modified = 0
-        for prov in providers:
-            cfg = getattr(prov, "provider_config", None)
-            if not isinstance(cfg, dict):
-                continue
-            mods = cfg.get("modalities")
-            if mods is None:
-                cfg["modalities"] = ["text", "image"]
-                modified += 1
-            elif isinstance(mods, list) and "image" not in mods:
-                cfg["modalities"] = list(mods) + ["image"]
-                modified += 1
-        if modified:
-            logger.info(
-                "[vision_text_bridge] 已给 %d 个 provider 补 'image' modality", modified
-            )
-
-    def _collect_all_providers(self, ctx) -> list[Any]:
-        """收集所有 provider 对象，兼容多版本 AstrBot API。"""
-        providers: list[Any] = []
-        manager = getattr(ctx, "provider_manager", None) or getattr(
-            ctx, "providers", None
-        )
-        if manager is not None:
-            provs = getattr(manager, "providers", None)
-            if isinstance(provs, dict):
-                providers.extend(provs.values())
-            elif isinstance(provs, list):
-                providers.extend(provs)
-            getter = getattr(manager, "get_all_providers", None)
-            if callable(getter):
-                try:
-                    providers.extend(getter())
-                except Exception:
-                    pass
-            return providers
-        # 无 manager: 从 id 反查
-        return self._resolve_providers_by_id(ctx)
-
-    def _resolve_providers_by_id(self, ctx) -> list[Any]:
-        """从 provider id (当前/fallback) 反查 provider 对象。"""
-        providers: list[Any] = []
-        seen: set[str] = set()
-        for attr in ("_using_provider_id", "default_provider_id"):
-            pid = getattr(ctx, attr, None)
-            if pid and pid not in seen and hasattr(ctx, "get_provider_by_id"):
-                seen.add(pid)
-                p = ctx.get_provider_by_id(pid)
-                if p is not None:
-                    providers.append(p)
-        try:
-            cfg = ctx.get_config() if hasattr(ctx, "get_config") else None
-        except Exception:
-            cfg = None
-        if cfg and isinstance(cfg.get("provider_settings"), dict):
-            for pid in cfg["provider_settings"].get("fallback_chat_models", []) or []:
-                if pid not in seen and hasattr(ctx, "get_provider_by_id"):
-                    prov = ctx.get_provider_by_id(pid)
-                    if prov is not None:
-                        providers.append(prov)
-        return providers
-
-    # ------------------------------------------------------------------ 兼容性
-
-    def _check_compatibility(self) -> None:
-        """检查已装插件并给出兼容性提示。"""
-        names = self._get_installed_plugin_names()
-        if not names:
-            return
-        if "astrbot_plugin_chat_archive" in names:
-            logger.info(
-                "[vision_text_bridge] ℹ️ 检测到 astrbot_plugin_chat_archive。"
-                "本插件不与之联动，图片存到本插件自己的 SQLite（含 base64）。"
-                "两个插件可同装互不干扰。"
-            )
-        if "astrbot_plugin_angel_heart" in names:
-            cmp = ">" if self._configured_priority > 50 else "<="
-            logger.info(
-                "[vision_text_bridge] ✓ AngelHeart 联动：本插件 priority=%d %s 50。"
-                "如果出现 '[Image Attachment: data:image/...]'，"
-                "请禁用 AngelHeart 的 image_caption_provider_id。",
-                self._configured_priority,
-                cmp,
-            )
-        if "astrbot_plugin_uni_nickname" in names:
-            if self._configured_priority > 0:
-                logger.info(
-                    "[vision_text_bridge] ✓ uni_nickname：本插件 priority=%d > 0，会先跑。",
-                    self._configured_priority,
-                )
-            else:
-                logger.warning(
-                    "[vision_text_bridge] 检测到 uni_nickname 但本插件 priority=%d <= 0，"
-                    "uni_nickname 可能会先改 prompt。建议 priority 调到 >= 50。",
-                    self._configured_priority,
-                )
-        for name in (
-            "astrbot_plugin_sylanne",
-            "astrbot_plugin_conversation_ledger",
-            "astrbot_plugin_minimax_image_caption",
-        ):
-            if name in names:
-                logger.info(
-                    "[vision_text_bridge] ℹ️ 检测到 %s；本插件 priority=%d 应先于它跑。"
-                    "如有冲突可把 priority 调到 500~1000。",
-                    name,
-                    self._configured_priority,
-                )
-        if "astrbot_plugin_group_chat_plus" in names:
-            logger.info(
-                "[vision_text_bridge] ✓ 检测到 chat_plus (priority=-1 会重填 image_urls)。"
-                "本插件链末钩子 (priority=-10000) 总清 image_urls 防住干扰。"
-            )
-
-    def _get_installed_plugin_names(self) -> set[str]:
-        """从 context 拿已装插件名（兼容多版本 API）。"""
-        names: set[str] = set()
-        manager = getattr(self.context, "plugin_manager", None)
-        if manager is not None:
-            provs = getattr(manager, "plugins", None) or getattr(
-                manager, "_plugins", None
-            )
-            if isinstance(provs, dict):
-                names.update(provs.keys())
-            elif isinstance(provs, list):
-                for p in provs:
-                    n = getattr(p, "name", None) or getattr(p, "__name__", None)
-                    if isinstance(n, str):
-                        names.add(n)
-        for meth in (
-            "get_registered_plugin_names",
-            "list_plugin_names",
-            "list_plugins",
-        ):
-            fn = getattr(self.context, meth, None)
-            if not callable(fn):
-                continue
-            try:
-                r = fn()
-            except Exception:
-                continue
-            if isinstance(r, (list, tuple, set)):
-                names.update(str(x) for x in r if x)
-        return names
-
-    # =========================================================================
-    # 页面 API
-    # =========================================================================
-    def _register_web_apis_real(self) -> None:
-        """: web API 注册委托给 web_api 模块。"""
-        web_api.register_all_routes(self.context, self)
-
-    async def terminate(self) -> None:
-        if getattr(self, "_clean_task", None) is not None:
-            self._clean_task.cancel()
-            try:
-                await self._clean_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._clean_task = None
-        self._description_cache.clear()
-        self._caption_cache = None
-        if self._http_client is not None:
-            await self._http_client.aclose()
-            self._http_client = None
-        logger.info("[vision_text_bridge] 插件已卸载，缓存已清理")
-
-    async def _clean_loop(self, ttl_days: int, interval_h: int) -> None:
-        """: 定期清理过期 SQLite 缓存的后台 task。"""
-        interval_s = interval_h * 3600
-        try:
-            while True:
-                await asyncio.sleep(interval_s)
-                if self._caption_cache is None:
-                    break
-                try:
-                    deleted = self._caption_cache.clean_expired(ttl_days)
-                    self._last_clean_at = time.time()  # : 供 webui 算下次清理
-                    if deleted > 0 and self._should_log("cache_trace"):
-                        logger.info(
-                            "[vision_text_bridge] 后台清理过期缓存: 删除 %d 条 (TTL=%d天)",
-                            deleted,
-                            ttl_days,
-                        )
-                except Exception as e:
-                    logger.warning("[vision_text_bridge] 后台清理失败: %s", e)
-        except asyncio.CancelledError:
-            pass  # terminate() 取消时正常退出
-
-    # =========================================================================
-    # 主钩子: bridge_vision_to_text
-    # =========================================================================
-    @filter.on_llm_request(priority=DEFAULT_PRIORITY)
-    async def bridge_vision_to_text(
-        self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs
-    ) -> None:
-        if not self._should_handle_hook(event):
-            return
-
-        self._ensure_vision_semaphore()
-
-        # === 0) 预先过滤待注入的工具集 ===
-        # chat_plus 在 priority=-1 才会 merge, 我们提前清理
-        try:
-            self._filter_tools_in_event(event, req)
-        except Exception as e:
-            if self._should_log("hook_trace"):
-                logger.debug("[vision_text_bridge] 工具过滤跳过：%s", e)
-
-        # === 1) 快照三类图片来源，**先清空** 防 AstrBot 切 fallback provider ===
-        saved_urls, saved_parts, saved_contexts = await self._capture_request_sources(
-            event, req
-        )
-        saved_urls = self._filter_image_sources(saved_urls)
-
-        # 清空
-        req.image_urls = []
-        self._strip_image_fields_from_req(req)
-
-        # 存快照
-        self._pending_urls = saved_urls
-        self._pending_parts = saved_parts
-        self._pending_contexts = saved_contexts
-
-        if self._should_log("hook_trace"):
-            logger.info(
-                "[vision_text_bridge] on_llm_request: image_urls=%d, parts=%d, contexts=%d, priority=%d",
-                len(saved_urls),
-                len(saved_parts),
-                len(saved_contexts),
-                self._configured_priority,
-            )
-
-        # === 2) 处理 ===
-        try:
-            is_private = self._is_private_chat(event)
-            await self._process_request(req, is_private)
-            self._inject_guidance(req, is_private)
-        except Exception as e:
-            logger.exception("[vision_text_bridge] 处理请求时未捕获异常: %s", e)
-
-    def _should_handle_hook(self, event: AstrMessageEvent) -> bool:
-        """guard 子句集中: 启用 / mmx CLI / 权限三道前置检查。"""
-        if not self.config.get("enabled", True):
-            return False
-        if not self.mmx_path:
-            logger.warning("[vision_text_bridge] 跳过本次拦截：未配置 mmx CLI")
-            return False
-        allowed, skip_reason = self._check_permission(event)
-        if not allowed:
-            if self._should_log("hook_trace"):
-                logger.info("[vision_text_bridge] 跳过拦截（%s）", skip_reason)
-            return False
-        return True
+    # ---------------------------------------------------------- 图像理解核心
 
     def _ensure_vision_semaphore(self) -> None:
-        """懒初始化并发信号量。"""
         if self._vision_semaphore is None:
             self._vision_semaphore = asyncio.Semaphore(
                 max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
             )
 
-    async def _capture_request_sources(
-        self, event: AstrMessageEvent, req: ProviderRequest
-    ) -> tuple[list, list, list]:
-        """快照 req 上的三类图片来源 (image_urls / parts / contexts)。
-
-        当 req.image_urls 为空时, 额外从 event.message_obj 递归补提 (防御
-        chat_plus 提前抽走图)。
-        """
-        saved_urls = list(req.image_urls or [])
-        saved_parts = (
-            list(req.extra_user_content_parts or [])
-            if req.extra_user_content_parts
-            else []
-        )
-        saved_contexts = [c for c in (req.contexts or []) if isinstance(c, dict)]
-
-        if self._should_log("hook_trace"):
-            logger.info(
-                "[vision_text_bridge] hook 入口 saved_urls (size=%d): %s",
-                len(saved_urls),
-                [
-                    u[:80] + "..." if isinstance(u, str) and len(u) > 80 else u
-                    for u in saved_urls
-                ],
-            )
-
-        # req.image_urls 空时才递归补，避免同一张图重复 mmx
-        if event is not None and not saved_urls:
-            await self._maybe_collect_from_event_chain(event, saved_urls)
-
-        return saved_urls, saved_parts, saved_contexts
-
-    async def _maybe_collect_from_event_chain(
-        self, event: AstrMessageEvent, saved_urls: list
-    ) -> None:
-        """从 event.message_obj 递归补提图片 URL (防御 chat_plus 抽走图)。"""
-        try:
-            chain = getattr(getattr(event, "message_obj", None), "message", None)
-            if not chain:
-                return
-            added_count = await _collect_image_urls_from_components(chain, saved_urls)
-            type_summary = [str(getattr(c, "type", "?")) for c in chain]
-            logger.info(
-                "[vision_text_bridge] chain 顶层 types=%s, 递归补提了 %d 张图",
-                type_summary,
-                added_count,
-            )
-        except Exception as e:
-            if self._should_log("hook_trace"):
-                logger.debug(
-                    "[vision_text_bridge] 补提 event.message_obj 图失败: %s", e
-                )
-
-    def _filter_image_sources(self, saved_urls: list) -> list:
-        """过滤 bot 头像 URL (q.qlogo.cn 固定模式)。"""
-        if not saved_urls:
-            return saved_urls
-        filtered = [
-            u
-            for u in saved_urls
-            if not (isinstance(u, str) and _BOT_AVATAR_PAT.search(u))
-        ]
-        if len(filtered) != len(saved_urls):
-            removed = set(saved_urls) - set(filtered)
-            logger.info(
-                "[vision_text_bridge] 过滤 bot 头像 %d 张: %s",
-                len(removed),
-                list(removed),
-            )
-            return filtered
-        return saved_urls
-
-    @filter.on_llm_request(priority=-10000)
-    async def strip_residual_base64(
-        self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs
-    ) -> None:
-        """链末兜底：总清 image_urls（防 chat_plus 等中间插件重填）+ 可选删 data:base64。"""
-        if not self.config.get("enabled", True):
-            return
-        try:
-            n = len(req.image_urls or [])
-            if n:
-                req.image_urls = []
-                if self._should_log("hook_trace"):
-                    logger.info(
-                        "[vision_text_bridge] 链末兜底: 清空 %d 个 image_urls", n
-                    )
-            if req.extra_user_content_parts:
-                req.extra_user_content_parts[:] = [
-                    p for p in req.extra_user_content_parts if not _is_image_url_part(p)
-                ]
-            if req.contexts:
-                for c in req.contexts:
-                    if isinstance(c, dict) and isinstance(c.get("content"), list):
-                        c["content"][:] = [
-                            x
-                            for x in c["content"]
-                            if not (
-                                isinstance(x, dict) and x.get("type") == "image_url"
-                            )
-                        ]
-            # 可选：清 data:base64 残留
-            tag = (
-                "image_url"
-                if self.config.get("strip_all_image_urls_in_fallback", False)
-                else "data:base64"
-            )
-            removed = _strip_image_urls(req, only_data_url=tag == "data:base64")
-            if removed and self._should_log("hook_trace"):
-                logger.info(
-                    "[vision_text_bridge] 链末兜底: 删 %d 个 %s 残留", removed, tag
-                )
-        except Exception as e:
-            logger.exception("[vision_text_bridge] 链末兜底异常: %s", e)
-
-        # === : 链末兜底删 func_tool ===
-        try:
-            mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
-            if mode != "off":
-                names = self._tool_filter_names
-                if names:
-                    ft = getattr(req, "func_tool", None)
-                    if ft is not None:
-                        n2 = _filter_disabled_tools(ft, mode, names)
-                        if n2 and self._should_log("hook_trace"):
-                            logger.info(
-                                "[vision_text_bridge] 链末兜底: 从 req.func_tool 移除 %d 个工具",
-                                n2,
-                            )
-        except Exception:
-            if self._should_log("hook_trace"):
-                logger.debug(
-                    "[vision_text_bridge] 链末兜底跳过 func_tool", exc_info=True
-                )
-
-    # =========================================================================
-    # 内部: 处理请求
-    # =========================================================================
-    async def _process_request(self, req: ProviderRequest, is_private: bool = False) -> None:
-        """按 image_urls → extra_parts → contexts 顺序处理。"""
-        idx = 1
-        # image_urls
-        urls = self._pending_urls or list(req.image_urls or [])
-        if urls:
-            results = await self._describe_urls(urls)
-            self._attach(req, results, idx, "image_urls", is_private=is_private)
-            idx += len(results)
-        self._pending_urls = None
-
-        # extra_user_content_parts
-        if self.config.get("include_extra_parts", True):
-            parts = self._pending_parts or list(req.extra_user_content_parts or [])
-            urls = _extract_urls_from_parts(parts)
-            if urls:
-                results = await self._describe_urls(urls)
-                self._attach(req, results, idx, "extra_user_content_parts", is_private=is_private)
-                idx += len(results)
-        self._pending_parts = None
-
-        # contexts
-        if self.config.get("include_history", False):
-            ctxs = self._pending_contexts or [
-                c
-                for c in (req.contexts or [])
-                if isinstance(c, dict)
-                and isinstance(c.get("content"), list)
-                and any(
-                    isinstance(x, dict) and x.get("type") == "image_url"
-                    for x in c.get("content", [])
-                )
-            ]
-            for c in ctxs:
-                if not isinstance(c, dict):
-                    continue
-                content = c.get("content")
-                if isinstance(content, list):
-                    urls = _extract_urls_from_context_list(content)
-                    if urls:
-                        results = await self._describe_urls(urls)
-                        self._attach(req, results, idx, "contexts", context_target=c, is_private=is_private)
-                        idx += len(results)
-        self._pending_contexts = None
-
-    async def _describe_urls(self, urls):
-        """: 并行调 mmx，并发度由 _vision_semaphore 控制。"""
-        if not urls:
-            return []
-        # : gather 返 list[str] desc — 包装回 caller 期望的 [(idx, url, desc)] 格式
-        results = await asyncio.gather(
-            *[self._describe_one(u, "llm_request AstrBot hook") for u in urls],
-            return_exceptions=True,
-        )
-        descs = [r if not isinstance(r, BaseException) else "" for r in results]
-        for url, r in zip(urls, results):
-            if isinstance(r, BaseException):
-                logger.warning(
-                    "[vision_text_bridge] _describe_one 异常 (已记录 call_log): url=%s, err=%s",
-                    self._smart_url_preview(url),
-                    r,
-                )
-        if self._caption_cache is not None:
-            try:
-                self._caption_cache.clean_call_logs(self._MAX_CALL_LOG)
-            except Exception as e:
-                logger.debug("[vision_text_bridge] clean_call_logs 失败: %s", e)
-        return [(i + 1, u, d) for i, (u, d) in enumerate(zip(urls, descs))]
-
-    _MAX_CALL_LOG = 200
-
-    def _persist_call_log(self, entry: dict) -> None:
-        if self._caption_cache is None:
-            return
-        try:
-            entry["created_at"] = time.time()
-            self._caption_cache.insert_call_log(entry)
-        except Exception as e:
-            logger.debug("[vision_text_bridge] persist_call_log 失败: %s", e)
-
-    async def _describe_one(
-        self, url: str, source: str = "unknown", vision_prompt: str = ""
-    ) -> str:
-        """: 内存缓存 → SQLite 缓存 → mmx 三级查找。vision_prompt 为空时使用 config 默认值。"""
+    async def describe_one(self, url: str, vision_prompt: str = "") -> str:
+        """对单张图调用 mmx vision describe，返回文字描述。失败返回空串。"""
         url = (url or "").strip()
         if not url:
             return ""
-        t0 = time.time()
-
-        url_preview = self._smart_url_preview(url, 80)
-        entry = {
-            "time": time.strftime("%H:%M:%S"),
-            "url": url_preview,
-            "source": source,
-            "status": "pending",
-            "duration_ms": 0,
-            "cached": False,
-            "error": None,
-        }
-        try:
-            result = await self._describe_one_impl(
-                url, cacheable_hint=None, vision_prompt=vision_prompt
-            )
-            entry["status"] = "ok" if result else "empty"
-            entry["duration_ms"] = int((time.time() - t0) * 1000)
-            self._call_log.insert(0, entry)
-            if len(self._call_log) > self._MAX_CALL_LOG:
-                self._call_log.pop()
-            self._persist_call_log(entry)
-            return result
-        except Exception as e:
-            entry["status"] = "error"
-            entry["error"] = str(e)[:120]
-            entry["duration_ms"] = int((time.time() - t0) * 1000)
-            self._call_log.insert(0, entry)
-            if len(self._call_log) > self._MAX_CALL_LOG:
-                self._call_log.pop()
-            self._persist_call_log(entry)
-            return ""
-
-    async def _describe_one_impl(
-        self, url: str, cacheable_hint: bool | None = None, vision_prompt: str = ""
-    ) -> str:
-        """: 原 _describe_one 逻辑, 被包装器调用。vision_prompt 为空时使用 config 默认值。"""
-        cacheable = (
-            self.config.get("cache_descriptions", True)
-            and _is_cacheable_url(url, self.config)
-            if cacheable_hint is None
-            else cacheable_hint
-        )
-
-        # : 快路径 — URL md5 当 id 查 (缓存命中时不需 prompt)
-        if cacheable:
-            quick_key = CaptionCache.make_id_from_url(url)
-            # 1) 内存缓存
-            if quick_key in self._description_cache:
-                if self._should_log("cache_trace"):
-                    logger.info(
-                        "[vision_text_bridge] 命中内存缓存 (快路径, 跳过下载): key=%s, url=%s",
-                        quick_key[:16],
-                        self._smart_url_preview(url),
-                    )
-                return self._description_cache[quick_key]
-            # 2) SQLite 缓存
-            if self._caption_cache is not None:
-                entry = self._caption_cache.get(quick_key)
-                if entry is not None:
-                    self._description_cache[quick_key] = entry.description
-                    if self._should_log("cache_trace"):
-                        logger.info(
-                            "[vision_text_bridge] 命中 SQLite 缓存 (快路径): key=%s, hits=%d",
-                            quick_key[:16],
-                            entry.hit_count,
-                        )
-                    return entry.description
-
-        # : 慢路径 — md5(image_bytes) 防内容重复
-        cache_key, image_bytes = (
-            await self._compute_image_cache_key(url) if cacheable else (None, b"")
-        )
-        if cacheable and cache_key:
-            cache = getattr(self, "_last_image_bytes", None)
-            if cache is None:
-                cache = self._last_image_bytes = {}
-            cache[url] = image_bytes
-
-        # 内容 hash 命中检查 (缓存命中时不需 prompt)
-        if cacheable and cache_key and cache_key != quick_key:
-            if cache_key in self._description_cache:
-                self._last_image_bytes.pop(url, None)
-                return self._description_cache[cache_key]
-            if self._caption_cache is not None:
-                entry = self._caption_cache.get(cache_key)
-                if entry is not None:
-                    self._description_cache[cache_key] = entry.description
-                    return entry.description
-
-        # 3) 调 mmx
-        try:
-            return await self._describe_via_mmx(
-                url, cache_key, cacheable, vision_prompt=vision_prompt
-            )
-        except Exception:
-            if cacheable:
-                self._last_image_bytes.pop(url, None)
-            raise
-
-    async def _describe_via_mmx(
-        self, url: str, cache_key: str | None, cacheable: bool, vision_prompt: str = ""
-    ) -> str:
-        """实际调 mmx 子进程拿描述。失败返 "" + 记 log。
-
-        vision_prompt 优先级: 调用方传入 > config.vision_prompt > 内置默认值。
-        data: URL 过大时先解码为临时文件，通过 --image 路径传参，规避 ARG_MAX 限制。
-        """
+        self._ensure_vision_semaphore()
         timeout = max(5, _cfg_int(self.config, "command_timeout", 60))
         vision_prompt = (
             vision_prompt
             or self.config.get("vision_prompt", "")
-            or "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
-            "严禁猜测游戏/番剧/品牌/角色名，看不出就说'无法确定'。"
+            or DEFAULT_VISION_PROMPT
         )
-        if self._should_log("hook_trace"):
-            logger.info(
-                "[vision_text_bridge] _describe_via_mmx 使用提示词(前80字): %s",
-                self._preview(vision_prompt, 80),
-            )
 
         effective_url = url
         tmp_path = None
@@ -1375,40 +322,91 @@ class VisionTextBridgePlugin(Star):
             if tmp_path:
                 effective_url = tmp_path
 
-        command = self._build_vision_command(effective_url, vision_prompt)
-        assert self._vision_semaphore is not None
+        command = build_vision_command(effective_url, vision_prompt)
         async with self._vision_semaphore:
-            t0 = time.monotonic()
             result, err = await self._exec_mmx_safely(command, timeout, url)
             if err is not None:
-                self._last_image_bytes.pop(url, None)
                 self._cleanup_tempfile(tmp_path)
                 return ""
-            elapsed = time.monotonic() - t0
             if not (result.ok and result.stdout.strip()):
                 self._log_mmx_failure(result, url)
-                self._last_image_bytes.pop(url, None)
                 self._cleanup_tempfile(tmp_path)
                 return ""
-            description = self._truncate(self._strip_mmx_content(result.stdout))
-            self._log_mmx_success(url, description, elapsed)
-            if cacheable and cache_key:
-                self._description_cache[cache_key] = description
-                preloaded = self._last_image_bytes.pop(url, b"")
-                await self._persist(cache_key, url, description, image_bytes=preloaded)
+            description = truncate(
+                strip_mmx_content(result.stdout, self.config), self.config
+            )
             self._cleanup_tempfile(tmp_path)
+            logger.info(
+                "[vision_text_bridge] mmx 完成: %s, 长度=%d",
+                self._smart_url_preview(url),
+                len(description),
+            )
             return description
+
+    async def describe_images(self, urls, vision_prompt: str = "") -> list[str]:
+        """并发理解多张图，返回与 urls 对应的描述列表。"""
+        if not urls:
+            return []
+        results = await asyncio.gather(
+            *[self.describe_one(u, vision_prompt=vision_prompt) for u in urls],
+            return_exceptions=True,
+        )
+        return [r if isinstance(r, str) else "" for r in results]
+
+    async def _exec_mmx_safely(self, command, timeout, url):
+        """调 mmx 子进程, 把各种异常收拢为 (result, err) 二元返。"""
+        try:
+            result = await run_mmx(
+                self.mmx_path,
+                command,
+                timeout,
+                log_subprocess=self._should_log("mmx_subprocess"),
+            )
+            return result, None
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[vision_text_bridge] mmx 超时(%ss): %s",
+                timeout,
+                self._smart_url_preview(url),
+            )
+            return None, "timeout"
+        except Exception as e:
+            self._diagnose_mmx_error(str(e), url)
+            logger.warning(
+                "[vision_text_bridge] mmx 异常: %s, err=%s",
+                self._smart_url_preview(url),
+                e,
+            )
+            return None, str(e)
+
+    def _log_mmx_failure(self, result: MmxResult, url: str) -> None:
+        err_text = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit={result.returncode}"
+        )
+        self._diagnose_mmx_error(err_text, url)
+        logger.warning(
+            "[vision_text_bridge] mmx 失败: %s, exit=%d, err=%s",
+            self._smart_url_preview(url),
+            result.returncode,
+            redact_text(err_text[:300]),
+        )
+
+    def _diagnose_mmx_error(self, err_text: str, url: str) -> None:
+        diagnose_mmx_error(
+            err_text, url, lambda u: self._smart_url_preview(u), self._diagnosed
+        )
+
+    # ------------------------------------------------------------- 工具函数
 
     @staticmethod
     def _decode_data_url_to_tempfile(url: str) -> str | None:
-        """将 data: URL 解码为临时文件，返回路径。失败返 None。
-
-        GIF 会被转为 PNG (mmx vision describe 不支持 GIF)。
-        """
+        """将 data: URL 解码为临时文件，返回路径。GIF 转 PNG (mmx 不支持 GIF)。"""
         comma = url.find(",")
         if comma <= 0:
             return None
-        b64 = url[comma + 1 :]
+        b64 = url[comma + 1:]
         ext = "png"
         prefix = url[:comma].lower()
         if "jpeg" in prefix or "jpg" in prefix:
@@ -1433,11 +431,6 @@ class VisionTextBridgePlugin(Star):
                 img.save(buf, format="PNG")
                 raw = buf.getvalue()
                 ext = "png"
-                logger.debug(
-                    "[vision_text_bridge] GIF 转 PNG: %dB → %dB",
-                    len(b64),
-                    len(raw),
-                )
             with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
                 f.write(raw)
                 tmp_path = f.name
@@ -1459,423 +452,20 @@ class VisionTextBridgePlugin(Star):
             except OSError:
                 pass
 
-    async def _exec_mmx_safely(self, command, timeout, url):
-        """调 mmx 子进程, 把各种异常收拢为 (result, err) 二元返 (要么有 result, 要么 err 是 str)。"""
-        try:
-            result = await self._run_mmx(*command, timeout=timeout)
-            return result, None
-        except asyncio.TimeoutError:
-            logger.warning(
-                "[vision_text_bridge] mmx 超时(%ss): %s",
-                timeout,
-                self._smart_url_preview(url),
-            )
-            return None, "timeout"
-        except Exception as e:
-            self._diagnose_mmx_error(str(e), url)
-            logger.warning(
-                "[vision_text_bridge] mmx 异常: %s, err=%s",
-                self._smart_url_preview(url),
-                e,
-            )
-            return None, str(e)
-
-    def _log_mmx_failure(self, result, url: str) -> None:
-        err_text = (
-            result.stderr.strip()
-            or result.stdout.strip()
-            or f"exit={result.returncode}"
-        )
-        self._diagnose_mmx_error(err_text, url)
-        logger.warning(
-            "[vision_text_bridge] mmx 失败: %s, exit=%d, err=%s",
-            self._smart_url_preview(url),
-            result.returncode,
-            self._redact_text(err_text[:300]),
-        )
-        if self._should_log("mmx_subprocess"):
-            # 优化: redact + slice 只在 verbose 开启时执行 (避开 2000B 字符串构造)
-            logger.info(
-                "[vision_text_bridge] mmx 完整输出:\n--- stdout ---\n%s\n--- stderr ---\n%s",
-                self._redact_text(result.stdout[:2000]),
-                self._redact_text(result.stderr[:2000]),
-            )
-
-    def _log_mmx_success(self, url: str, description: str, elapsed: float) -> None:
-        logger.info(
-            "[vision_text_bridge] mmx 完成: %s, 耗时=%.2fs, 长度=%d",
-            self._smart_url_preview(url),
-            elapsed,
-            len(description),
-        )
-        logger.info(
-            "[vision_text_bridge] 描述预览: %s", self._preview(description, 120)
-        )
-
-    async def _persist(
-        self,
-        image_id: str,
-        url: str,
-        description: str,
-        image_bytes: bytes = b"",
-    ) -> None:
-        """写 SQLite 缓存，含 base64/mime/dim 元信息。"""
-        if self._caption_cache is None:
-            return
-        b64, mime, w, h, size = await self._fetch_image_meta(url, image_bytes)
-        # chat_archive 安装时统一由它管理图片缓存
-        if chat_archive_integration.is_chat_archive_installed():
-            b64 = ""
-        try:
-            self._caption_cache.put(
-                image_id=image_id,
-                url=url,
-                description=description,
-                image_b64=b64,
-                mime_type=mime,
-                file_size=size,
-                width=w,
-                height=h,
-            )
-            # **重要：始终 log 持久化结果** （不依赖 verbose 配置） 。
-            # 用户反馈 "webui 看不到缓存" 场景：都是这里没日志。
-            logger.info(
-                "[vision_text_bridge] 写 SQLite 缓存成功: id=%s, url=%s, "
-                "desc_len=%d, b64=%dB, mime=%s, size=%d",
-                image_id[:16],
-                self._smart_url_preview(url, 60),
-                len(description),
-                len(b64),
-                mime,
-                size,
-            )
-        except Exception as e:
-            logger.warning("[vision_text_bridge] 写 SQLite 缓存失败: %s", e)
-
-    async def _fetch_image_meta(
-        self,
-        url: str,
-        preloaded: bytes = b"",
-    ) -> tuple[str, str, int, int, int]:
-        """读图片字节并算 base64/mime/dim/size。失败只影响缩略图。"""
-        if preloaded:
-            return self._build_meta_from_bytes(preloaded)
-        try:
-            data = await self._read_image_bytes(url)
-        except Exception as e:
-            logger.warning(
-                "[vision_text_bridge] 读图字节失败（仅缩略图受影响，description 仍会写）: %s",
-                self._smart_url_preview(url),
-                exc_info=False,
-            )
-            if self._should_log("id_computation"):
-                logger.debug("[vision_text_bridge] 读字节异常详情: %s", e)
-            return "", "", 0, 0, 0
-        if not data:
-            return "", "", 0, 0, 0
-        return self._build_meta_from_bytes(data)
-
-    def _build_meta_from_bytes(self, data: bytes) -> tuple[str, str, int, int, int]:
-        """从图片字节算 (b64, mime, w, h, size)。同步、不读 I/O。"""
-        size = len(data)
-        mime, w, h = _sniff_image_meta(data)
-        # : 大图跳过 b64 存储
-        max_b64_kb = _cfg_int(self.config, "max_b64_size_kb", 2048)
-        if max_b64_kb > 0 and size <= max_b64_kb * 1024:
-            b64 = base64.b64encode(data).decode("ascii")
-        else:
-            b64 = ""
-            if self._should_log("cache_trace"):
-                logger.info(
-                    "[vision_text_bridge] 跳过 b64 存储: size=%dB > %dKB",
-                    size,
-                    max_b64_kb,
-                )
-        return b64, mime, w, h, size
-
-    def _attach(self, req, descriptions, start_index, field, context_target=None, is_private=False):
-        """把描述注入请求。
-
-        群聊：写入 req.extra_user_content_parts（面向用户消息）。
-        私聊：收集到 req._vision_descriptions（供 _inject_guidance 注入 system_prompt）。
-        """
-        if not descriptions:
-            return
-        ph = (
-            self.config.get("image_placeholder_template", "")
-            or "[Image {index} 描述] {description}"
-        )
-        fail = (
-            self.config.get("failure_message", "")
-            or "[Image {index} 描述] 理解失败：{error}"
-        )
-        # 收集描述文本
-        captions = []
-        for off, (_, _url, desc) in enumerate(descriptions):
-            gi = start_index + off
-            if desc:
-                text = ph.format(index=gi, description=desc)
-            else:
-                text = fail.format(index=gi, error="mmx 调用失败或超时")
-            captions.append(text)
-
-        if is_private:
-            if not hasattr(req, "_vision_descriptions"):
-                req._vision_descriptions = []
-            req._vision_descriptions.extend(captions)
-        else:
-            if req.extra_user_content_parts is None:
-                req.extra_user_content_parts = []
-            for text in captions:
-                req.extra_user_content_parts.append(
-                    _to_text_part({"type": "text", "text": text})
-                )
-
-        # 同步清掉被处理过的 image_url（仅对应字段）
-        if field == "image_urls":
-            req.image_urls = []
-        elif field == "extra_user_content_parts" and req.extra_user_content_parts:
-            req.extra_user_content_parts[:] = [
-                p for p in req.extra_user_content_parts if not _is_image_url_part(p)
-            ]
-        elif field == "contexts" and isinstance(context_target, dict):
-            content = context_target.get("content")
-            if isinstance(content, list):
-                content[:] = [
-                    x
-                    for x in content
-                    if not (isinstance(x, dict) and x.get("type") == "image_url")
-                ]
-        if self._should_log("hook_trace"):
-            logger.info(
-                "[vision_text_bridge] field=%s 处理: 成功=%d, 失败=%d, private=%s",
-                field,
-                len(captions),
-                0,
-                is_private,
-            )
-
-    def _inject_guidance(self, req, is_private=False):
-        """: 向 system_prompt 注入图说引导提示。
-
-        私聊：始终注入完整描述文本（persona agent 不传递 extra_user_content_parts）。
-        群聊：按 inject_caption_text_to_system_prompt 配置决定是否注入完整描述。
-        """
-        if not self.config.get("inject_system_prompt_guidance", True):
-            return
-        if is_private:
-            captions = list(getattr(req, "_vision_descriptions", None) or [])
-        else:
-            captions = []
-            for p in req.extra_user_content_parts or []:
-                text = (
-                    p.get("text", "")
-                    if isinstance(p, dict)
-                    else getattr(p, "text", "") or ""
-                )
-                if text and re.search(r"\[Image\s+\d+\s+描述\]", text):
-                    captions.append(text)
-        if not captions:
-            return
-        n = len(captions)
-        tags = (
-            "[Image 1 描述]"
-            if n == 1
-            else ", ".join(f"[Image {i + 1} 描述]" for i in range(n))
-        )
-        if is_private or self.config.get("inject_caption_text_to_system_prompt", False):
-            guidance = (
-                f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述如下：\n\n"
-                + "\n\n".join(captions)
-                + f"\n\n以上描述标记为 {tags}。请严格基于这些描述回答，"
-                "不要猜测未出现的游戏/番剧/品牌/角色名，不要补充背景知识，"
-                "不要改写/扩充，不要装作'看到'描述外的信息。"
-                "如描述不足请明确说'无法从图中看出'。"
-            )
-        else:
-            guidance = (
-                f"\n\n[视觉模型描述] 用户消息中包含 {n} 张图片，描述标记为 {tags}。"
-                "请严格基于这些描述回答用户，不要：\n"
-                "  - 猜测未在描述中明确出现的游戏/番剧/品牌/角色名；\n"
-                "  - 凭印象补充描述之外的背景知识；\n"
-                "  - 改写/扩充已描述的内容；\n"
-                "  - 装作'看到'描述中未出现的信息。\n"
-                "如果描述不足以回答用户问题，请明确说'无法从图中看出'。"
-            )
-        req.system_prompt = (req.system_prompt or "") + guidance
-        if self._should_log("hook_trace"):
-            logger.info(
-                "[vision_text_bridge] system_prompt 注入提示，图片数=%d, 增量=%d, private=%s",
-                n,
-                len(guidance),
-                is_private,
-            )
-
-    # =========================================================================
-    # mmx CLI 封装 (: 逻辑全抽到 mmx_runner, main.py 只留薄包装)
-    # =========================================================================
-
-    def _build_vision_command(self, image, prompt):
-        return _build_vision_command(image, prompt)
-
-    async def _run_mmx(self, *args, timeout) -> MmxResult:
-        return await _run_mmx_fn(
-            self.mmx_path,
-            args,
-            timeout,
-            log_subprocess=self._should_log("mmx_subprocess"),
-        )
-
-    async def _login_mmx(self, api_key: str) -> None:
-        if not self.mmx_path:
-            return
-        masked = (
-            f"{api_key[:4]}***REDACTED***(len={len(api_key)})"
-            if self.config.get("redact_sensitive", True)
-            else api_key
-        )
-        logger.info("[vision_text_bridge] 预登录 MiniMax CLI: %s", masked)
-        try:
-            # 走 self._run_mmx 让 patch.object 仍能拦截 (老测试依赖这个 path)
-            r = await self._run_mmx("auth", "login", "--api-key", api_key, timeout=30)
-            if r.ok:
-                logger.info(
-                    "[vision_text_bridge] 预登录成功: %s",
-                    (r.stdout or "").strip() or "(无输出)",
-                )
-            else:
-                logger.warning(
-                    "[vision_text_bridge] 预登录失败: rc=%d, stderr=%s",
-                    r.returncode,
-                    (r.stderr or "").strip()[:200],
-                )
-        except Exception as e:
-            logger.warning("[vision_text_bridge] 预登录异常: %s", e)
-
-    async def _install_mmx_cli(self) -> bool:
-        """: 装 mmx-cli, 返 bool. 装成功 True, 失败 False (不抛)."""
-        return await _install_mmx_cli_fn(self.npm_path)
-
-    def _diagnose_mmx_error(self, err_text: str, url: str) -> None:
-        _diagnose_mmx_error_fn(
-            err_text, url, self._preview, VisionTextBridgePlugin._DIAGNOSED
-        )
-
-    def _warn_once(self, key: str, message: str) -> None:
-        if key in VisionTextBridgePlugin._DIAGNOSED:
-            return
-        VisionTextBridgePlugin._DIAGNOSED.add(key)
-        logger.warning(message)
-
-    # =========================================================================
-    # 工具
-    # =========================================================================
-    def _truncate(self, text: str) -> str:
-        return _truncate_text(text, self.config)
-
-    def _strip_mmx_content(self, stdout: str) -> str:
-        return _strip_mmx_content_fn(stdout, self.config)
-
-    def _preview(self, text: str, limit: int = 80) -> str:
-        return _preview_text(text, limit, self.config)
+    def _should_log(self, *flags: str) -> bool:
+        if self.config.get("verbose_logging", False):
+            return True
+        return any(bool(self.config.get(f"verbose_{f}", False)) for f in flags)
 
     def _smart_url_preview(self, url: str, limit: int = 80) -> str:
-        """URL 预览 — data URL 智能截断，普通 URL 退到 _preview。
-
-        data:image/jpeg;base64,/9j/4AAQSkZJRg... → data:image/jpeg;base64,/9j/4AAQ...{N}B
-        """
+        """URL 预览 — data URL 智能截断，普通 URL 退到 preview。"""
         if not url or not isinstance(url, str):
             return ""
         if url.startswith("data:") and "," in url:
             comma = url.find(",")
-            prefix = url[:comma]  # data:image/jpeg;base64
-            b64 = url[comma + 1 :]
+            prefix = url[:comma]
+            b64 = url[comma + 1:]
             if len(b64) > 10:
                 return f"{prefix},{b64[:8]}...{{{len(b64)}}}B"
             return f"{prefix},{b64[:8]}"
-        return self._preview(url, limit)
-
-    # : 过滤工具
-    def _filter_tools_in_event(self, event, req) -> None:
-        """: 提前清除 event extra 和 req.func_tool 中禁用的工具。"""
-        mode = _cfg_str(self.config, "tool_filter_mode", "off").lower()
-        if mode == "off":
-            return
-        names = self._tool_filter_names
-        if not names:
-            return
-        extra_key = _cfg_str(
-            self.config, "tool_filter_extra_key", "_group_chat_plus_func_tool"
-        ).strip()
-        # 1) 清 event.get_extra(extra_key) 里的待合并 tool set
-        if extra_key:
-            try:
-                plugin_tool_set = event.get_extra(extra_key, None)
-            except Exception:
-                plugin_tool_set = None
-            if plugin_tool_set is not None:
-                n = _filter_disabled_tools(plugin_tool_set, mode, names)
-                if n and self._should_log("hook_trace"):
-                    logger.info(
-                        "[vision_text_bridge] 从 %s 移除了 %d 个工具（mode=%s）",
-                        extra_key,
-                        n,
-                        mode,
-                    )
-        # 2) 同步清 req.func_tool 里已注册的工具（防御性：其它插件可能直接 push）
-        try:
-            ft = getattr(req, "func_tool", None)
-        except Exception:
-            ft = None
-        if ft is not None:
-            n = _filter_disabled_tools(ft, mode, names)
-            if n and self._should_log("hook_trace"):
-                logger.info(
-                    "[vision_text_bridge] 从 req.func_tool 移除了 %d 个工具（mode=%s）",
-                    n,
-                    mode,
-                )
-
-    def _redact(self, args):
-        return _redact_args_fn(args, self.config)
-
-    @staticmethod
-    def _redact_text(text: str) -> str:
-        """脱敏，调用 mmx_runner.redact_text。"""
-        return _redact_text(text)
-
-    async def _compute_image_cache_key(self, url) -> tuple[str, bytes]:
-        """算 image_id + 返读到的 bytes（供 _persist 复用）。"""
-        try:
-            data = await self._read_image_bytes(url)
-        except Exception as e:
-            if self._should_log("id_computation"):
-                logger.debug(
-                    "[vision_text_bridge] 读图字节失败，image_id 退到 md5(url): %s, err=%s",
-                    self._smart_url_preview(url),
-                    e,
-                )
-            return CaptionCache.make_id_from_url(url), b""
-        if not data:
-            return CaptionCache.make_id_from_url(url), b""
-        if self._should_log("id_computation"):
-            logger.info(
-                "[vision_text_bridge] image_id=md5(%dB)=%s",
-                len(data),
-                CaptionCache.make_id_from_bytes(data)[:16] + "…",
-            )
-        return CaptionCache.make_id_from_bytes(data), data
-
-    async def _read_image_bytes(self, url):
-        """薄包装 — 传递共享 HTTP 客户端避免每次下载重建连接。"""
-        return await _read_image_bytes(url, self._http_client)
-
-
-# ===========================================================================
-# : 工具已抽到 image_utils/tool_filter, 此处为向后兼容 shim
-# ===========================================================================
-import fnmatch as _fnmatch  # noqa: E402
-
-
-def _glob_match(name: str, pattern: str) -> bool:
-    return _fnmatch.fnmatchcase(name, pattern)
+        return preview(url, limit, self.config)

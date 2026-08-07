@@ -26,11 +26,6 @@ _port: int = 2023
 _MAX_BODY_BYTES = 50 * 1024 * 1024
 
 
-async def _wrap_sync_result(value):
-    """Wrap a sync return in a coroutine for asyncio.gather compatibility."""
-    return value
-
-
 def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
     """构造 HTTP/1.1 响应."""
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -53,7 +48,7 @@ def _build_response(body: dict, status: int = 200) -> tuple[bytes, str]:
 async def _handle_request(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, plugin
 ) -> None:
-    """处理一个 HTTP request — 解析 + 调 plugin._describe_one."""
+    """处理一个 HTTP request — 解析 + 调 plugin.describe_images."""
     peer = writer.get_extra_info("peername")
     peer_str = f"{peer[0]}:{peer[1]}" if peer else "?"
     t_start = time.perf_counter()
@@ -254,25 +249,15 @@ def _extract_parts(content) -> list[tuple[str, str]]:
 async def _describe_all_images(
     plugin, image_urls: list[str], caller_prompt: str
 ) -> list[str]:
-    """并发调 plugin._describe_one 处理所有图片。返回非空描述列表。"""
+    """并发调 plugin.describe_images 处理所有图片。返回非空描述列表。"""
     try:
-        coros = [
-            plugin._describe_one(
-                u, "main_server /v1/chat/completions", vision_prompt=caller_prompt
-            )
-            for u in image_urls
-        ]
-        wrapped = [c if asyncio.iscoroutine(c) else _wrap_sync_result(c) for c in coros]
-        results = await asyncio.gather(*wrapped, return_exceptions=True)
+        results = await plugin.describe_images(image_urls, caller_prompt)
     except Exception as e:
         logger.exception("chat_completions 调 mmx 失败: %s", e)
         return []
 
     captions: list[str] = []
     for idx, cap in enumerate(results, 1):
-        if isinstance(cap, Exception):
-            logger.warning("[vision_text_bridge] mmx 调 #%d 异常: %s", idx, cap)
-            continue
         u = image_urls[idx - 1]
         url_preview = _preview_url(u)
         if cap:

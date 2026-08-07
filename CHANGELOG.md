@@ -1,5 +1,41 @@
 # 更新日志
 
+## v2.0.0 (2026-08-07)
+
+### 精简重构
+
+本版本移除 LLM 拦截、缓存与 WebUI，插件回归纯图像理解服务。
+
+#### 保留
+
+- MiniMax CLI（`mmx vision describe`）图像理解
+- OpenAI 兼容接口 `/v1/chat/completions` + `GET /health`
+- 通过 webui HTTP API 注册为 AstrBot provider（模拟 AI 模型，接收请求后返回理解内容）
+- mmx 自动安装 / 自动登录 / 错误诊断
+
+#### 删除
+
+| 删除内容 | 说明 |
+|---|---|
+| `pages/`（WebUI） | 缓存管理面板前端 |
+| `web_api.py` | 缓存管理 API 与 framework webui 路由 |
+| `caption_cache.py` | SQLite + 内存 LRU 图像描述缓存 |
+| `image_utils.py` | 拦截用图片提取 helpers |
+| `tool_filter.py` | function tools 过滤 |
+| `chat_archive_integration.py` | 跨插件缓存协同 |
+| `vision_bridge_provider.py` | 自定义 Provider 兜底类（未使用） |
+| 配置 | 缓存 / 权限 / 工具过滤 / LLM 提示 / 输入处理等冗余项 |
+
+#### 文件结构
+
+| 文件 | 功能 |
+|---|---|
+| `main.py` | 插件入口：mmx 就绪 + 接口启动 + provider 注册 + 图像理解 |
+| `main_server.py` | 独立 OpenAI 兼容 server（模拟 AI 模型返回理解内容） |
+| `mmx_runner.py` | MiniMax CLI subprocess 包装 |
+| `provider_registration.py` | 通过 webui HTTP API 注册 provider |
+| `constants.py` | 常量（端口、provider id、URL 前缀） |
+
 ## v1.1.0 (2026-07-10)
 
 ### 新功能

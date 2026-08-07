@@ -1,39 +1,20 @@
 {
-  "基础": {
-    "description": "基础",
-    "type": "object",
-    "hint": "插件总开关与优先级。",
-    "items": {
-      "enabled": {
-        "description": "启用插件",
-        "type": "bool",
-        "hint": "关闭后不拦截 LLM 请求。",
-        "default": true
-      },
-      "priority": {
-        "description": "钩子优先级",
-        "type": "int",
-        "hint": "越大越靠前，默认 100，重启生效。",
-        "default": 100
-      }
-    }
-  },
   "MiniMax CLI": {
     "description": "MiniMax CLI",
     "type": "object",
     "hint": "mmx vision describe 认证与超时。",
     "items": {
-      "mmx_path": {
-        "description": "mmx 路径",
-        "type": "string",
-        "hint": "留空从 PATH 自动查找。安装: npm install -g mmx-cli。",
-        "default": ""
-      },
       "minimax_api_key": {
         "description": "MiniMax API Key",
         "type": "string",
         "hint": "MiniMax 开放平台获取 sk- 开头的 Key。",
         "obvious_hint": true,
+        "default": ""
+      },
+      "mmx_path": {
+        "description": "mmx 路径",
+        "type": "string",
+        "hint": "留空自动从 PATH 查找。安装: npm install -g mmx-cli。",
         "default": ""
       },
       "auto_login": {
@@ -67,23 +48,11 @@
         "hint": "要求 mmx 客观描述，严禁猜测游戏/角色名。",
         "default": "请客观描述图中可见的元素，列出主体人物/物品、场景背景、出现的文字（原文）、色调、风格。\n严禁猜测未明确显示的游戏/番剧/品牌/角色名称——如果不能从图中明确看出，请说'无法确定'。\n描述中只能包含你看到的事实，不要补充背景知识或推断。"
       },
-      "image_placeholder_template": {
-        "description": "图片占位符模板",
-        "type": "string",
-        "hint": "支持 {index} 和 {description} 变量。",
-        "default": "[Image {index} 描述] {description}"
-      },
       "max_description_length": {
         "description": "描述最大字符数",
         "type": "int",
         "hint": "超长截断省 token。0 = 不限制。",
         "default": 800
-      },
-      "failure_message": {
-        "description": "失败占位文本",
-        "type": "string",
-        "hint": "支持 {index}、{error} 变量。",
-        "default": "[Image {index} 描述] 理解失败: {error}"
       },
       "strip_mmx_markdown": {
         "description": "清理 markdown 噪音",
@@ -96,7 +65,7 @@
   "并发": {
     "description": "并发",
     "type": "object",
-    "hint": "单条消息内并行图片数。",
+    "hint": "单次请求内并行图片数。",
     "items": {
       "max_concurrent_vision": {
         "description": "最大并发数",
@@ -106,177 +75,29 @@
       }
     }
   },
-  "缓存": {
-    "description": "缓存",
+  "OpenAI 兼容接口": {
+    "description": "OpenAI 兼容接口",
     "type": "object",
-    "hint": "内存热缓存 + SQLite 持久化。",
-    "items": {
-      "cache_descriptions": {
-        "description": "启用缓存",
-        "type": "bool",
-        "hint": "相同图不重复调 mmx，以图片内容 md5 为 key。",
-        "default": true
-      },
-      "cache_file_paths": {
-        "description": "缓存 file:// 本地文件",
-        "type": "bool",
-        "hint": "关掉后只缓存 http(s) URL。",
-        "default": true
-      },
-      "max_b64_size_kb": {
-        "description": "base64 存储上限（KB）",
-        "type": "int",
-        "hint": "超限不存缩略图（描述仍存）。0 = 不限制。",
-        "default": 2048
-      },
-      "memory_cache_ttl_seconds": {
-        "description": "内存缓存 TTL（秒）",
-        "type": "int",
-        "hint": "0 = 不过期。建议 300。",
-        "default": 300
-      },
-      "memory_cache_max_size": {
-        "description": "内存缓存最大条数",
-        "type": "int",
-        "hint": "LRU 淘汰。0 = 不限制（不推荐）。",
-        "default": 500
-      },
-      "sqlite_cache_ttl_days": {
-        "description": "SQLite 缓存 TTL（天）",
-        "type": "int",
-        "hint": "0 = 不过期。建议 7。",
-        "default": 7
-      },
-      "sqlite_clean_interval_hours": {
-        "description": "清理间隔（小时）",
-        "type": "int",
-        "hint": "0 = 仅启动时清理一次。",
-        "default": 1
-      }
-    }
-  },
-  "输入处理": {
-    "description": "输入处理",
-    "type": "object",
-    "hint": "图片来源扫描与链末兜底。",
-    "items": {
-      "include_history": {
-        "description": "处理历史图片",
-        "type": "bool",
-        "hint": "扫描 req.contexts 历史记录中的图。",
-        "default": false
-      },
-      "include_extra_parts": {
-        "description": "处理 extra_parts 图片",
-        "type": "bool",
-        "hint": "多数场景图在 image_urls，可关掉省性能。",
-        "default": true
-      },
-      "strip_all_image_urls_in_fallback": {
-        "description": "链末删除全部 image_url",
-        "type": "bool",
-        "hint": "默认仅删 data:base64 残留。",
-        "default": false
-      }
-    }
-  },
-  "LLM 提示": {
-    "description": "LLM 提示",
-    "type": "object",
-    "hint": "引导 LLM 严格基于图片描述回答。",
-    "items": {
-      "inject_system_prompt_guidance": {
-        "description": "注入引用提示",
-        "type": "bool",
-        "hint": "追加一段指示让 LLM 基于 [Image N 描述] 回答。",
-        "default": true
-      },
-      "inject_caption_text_to_system_prompt": {
-        "description": "图说冗余注入 system_prompt",
-        "type": "bool",
-        "hint": "极端情况下防其他插件覆盖 user message。默认关省 token。",
-        "default": false
-      }
-    }
-  },
-  "权限控制": {
-    "description": "权限控制",
-    "type": "object",
-    "hint": "群/用户白名单与私聊限制。",
-    "items": {
-      "enable_group_whitelist": {
-        "description": "启用群白名单",
-        "type": "bool",
-        "hint": "仅白名单内的群生效。",
-        "default": false
-      },
-      "group_whitelist": {
-        "description": "群白名单",
-        "type": "list",
-        "hint": "QQ 群号列表。",
-        "default": []
-      },
-      "enable_user_whitelist": {
-        "description": "启用用户白名单",
-        "type": "bool",
-        "hint": "仅白名单内的用户生效。",
-        "default": false
-      },
-      "user_whitelist": {
-        "description": "用户白名单",
-        "type": "list",
-        "hint": "QQ 号列表。",
-        "default": []
-      },
-      "private_chat_only": {
-        "description": "仅私聊",
-        "type": "bool",
-        "hint": "群聊消息跳过。",
-        "default": false
-      }
-    }
-  },
-  "跨插件兼容": {
-    "description": "跨插件兼容",
-    "type": "object",
-    "hint": "chat_plus / chat_archive / AngelHeart 协同。",
-    "items": {
-      "tool_filter_mode": {
-        "description": "工具过滤模式",
-        "type": "string",
-        "hint": "off / whitelist / blacklist。",
-        "default": "off"
-      },
-      "tool_filter_names": {
-        "description": "过滤工具名单",
-        "type": "string",
-        "hint": "逗号分隔，支持通配符 *。",
-        "default": ""
-      },
-      "tool_filter_extra_key": {
-        "description": "待注入工具集 key",
-        "type": "string",
-        "hint": "chat_plus 内部 key，默认 _group_chat_plus_func_tool。",
-        "default": "_group_chat_plus_func_tool"
-      },
-      "keep_provider_modality_as_is": {
-        "description": "保持 provider modality",
-        "type": "bool",
-        "hint": "默认补 image 标签防 fallback。开启后不做修改。",
-        "default": false
-      }
-    }
-  },
-  "OpenAI 兼容 provider": {
-    "description": "OpenAI 兼容 provider",
-    "type": "object",
-    "hint": "把本插件注册为 OpenAI 兼容提供商，供其他插件调用。",
+    "hint": "暴露 /v1/chat/completions 并注册为 AstrBot provider。",
     "items": {
       "enabled": {
-        "description": "启用端点",
+        "description": "启用接口",
         "type": "bool",
-        "hint": "暴露 /v1/chat/completions。",
+        "hint": "暴露 /v1/chat/completions 端点。",
         "default": true
+      },
+      "port": {
+        "description": "监听端口",
+        "type": "int",
+        "hint": "独立 server 监听 127.0.0.1:<port>。",
+        "default": 2023
+      },
+      "openapi_key": {
+        "description": "OpenAPI 访问密钥",
+        "type": "string",
+        "default": "",
+        "obvious_hint": true,
+        "hint": "在 Dashboard「设置→OpenAPI」创建。X-API-Key 方式认证，优先级高于 webui_password。"
       },
       "webui_username": {
         "description": "Dashboard 用户名",
@@ -289,13 +110,6 @@
         "type": "string",
         "default": "",
         "hint": "用于 webui API 登录注册 provider。"
-      },
-      "openapi_key": {
-        "description": "OpenAPI 访问密钥",
-        "type": "string",
-        "default": "",
-        "obvious_hint": true,
-        "hint": "在 Dashboard「设置→OpenAPI」创建。X-API-Key 方式认证，优先级高于 webui_password。"
       },
       "auto_register": {
         "description": "自动注册",
@@ -312,14 +126,8 @@
       "model_name": {
         "description": "模型名称",
         "type": "string",
-        "hint": "显示名，任意字符串。",
+        "hint": "注册显示名，任意字符串。",
         "default": "vision-bridge"
-      },
-      "caption_format": {
-        "description": "返回格式",
-        "type": "string",
-        "hint": "mmx（推荐）/ json。",
-        "default": "mmx"
       }
     }
   },
@@ -334,28 +142,10 @@
         "hint": "开启后所有细粒度开关生效。",
         "default": false
       },
-      "verbose_hook_trace": {
-        "description": "钩子追踪",
-        "type": "bool",
-        "hint": "钩子入口/出口、图片数量。",
-        "default": false
-      },
       "verbose_mmx_subprocess": {
         "description": "mmx 子进程",
         "type": "bool",
         "hint": "完整命令行与 stdout/stderr。",
-        "default": false
-      },
-      "verbose_cache_trace": {
-        "description": "缓存追踪",
-        "type": "bool",
-        "hint": "命中/失效/写入日志。",
-        "default": false
-      },
-      "verbose_id_computation": {
-        "description": "image_id 计算",
-        "type": "bool",
-        "hint": "md5 计算过程与退路原因。",
         "default": false
       }
     }

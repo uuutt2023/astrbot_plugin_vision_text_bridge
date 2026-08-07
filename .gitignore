@@ -17,7 +17,6 @@ __pycache__/
 
 # 私密配置（如果用户复制了）
 _config_user.yaml
-data/caption_cache.sqlite3
 
 
 # 临时编译产物
