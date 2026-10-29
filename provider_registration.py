@@ -122,7 +122,10 @@ async def auto_register_provider(
         config = _build_provider_payload(plugin)
         base_url = f"http://127.0.0.1:{dash_port}"
 
-        async with _httpx.AsyncClient(timeout=15.0) as client:
+        # connect 超时压短 (3s): Dashboard 没监听时立刻 ConnectionRefused,
+        # 不再干等 15s read timeout — 一次失败最多 ~6s 而不是 ~30s
+        timeout = _httpx.Timeout(connect=3.0, read=15.0, write=15.0, pool=5.0)
+        async with _httpx.AsyncClient(timeout=timeout) as client:
             headers = {"X-API-Key": openapi_key}
 
             if await _post_create_provider(
@@ -380,7 +383,9 @@ async def remove_provider(plugin) -> bool:
         dash_port = _read_dashboard_port(plugin)
         base_url = f"http://127.0.0.1:{dash_port}"
         headers = {"X-API-Key": openapi_key}
-        async with _httpx.AsyncClient(timeout=10.0) as client:
+        async with _httpx.AsyncClient(
+            timeout=_httpx.Timeout(connect=3.0, read=10.0, write=10.0, pool=5.0)
+        ) as client:
             r = await client.delete(
                 f"{base_url}/api/v1/providers/by-id",
                 params={"provider_id": PROVIDER_ID},

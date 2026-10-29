@@ -112,17 +112,27 @@
         "hint": "AstrBot Dashboard webui 监听端口，注册 provider 用。",
         "default": 6185
       },
-      "register_max_attempts": {
-        "description": "注册重试次数",
-        "type": "int",
-        "hint": "启动时 Dashboard 可能未就绪，每隔 5 秒重试一次。0 = 只试一次。",
-        "default": 30
-      },
       "auto_register": {
         "description": "自动注册",
         "type": "bool",
         "hint": "启动时注册到 provider_manager。",
         "default": true
+      },
+      "register_max_attempts": {
+        "description": "自动注册最大尝试次数",
+        "type": "int",
+        "hint": "默认 1 (只注册一次)。旧版本默认 30 会在 AstrBot 启动时空转约 15 分钟。\n只有在 Dashboard 启动特别慢时才需要调大 (建议配合 register_wait_dashboard_seconds)。",
+        "default": 1,
+        "min": 1,
+        "max": 30
+      },
+      "register_wait_dashboard_seconds": {
+        "description": "等待 Dashboard 就绪秒数",
+        "type": "int",
+        "hint": "注册前用 TCP 探测等 Dashboard 端口就绪, 默认 30 秒。\n端口未监听时探测立即返回, 不会拖慢启动。设 0 = 不等待, 直接注册一次。",
+        "default": 30,
+        "min": 0,
+        "max": 300
       },
       "api_key": {
         "description": "端点 API Key",

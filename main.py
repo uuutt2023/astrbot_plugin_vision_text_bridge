@@ -21,6 +21,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # 插件目录加 sys.path (AstrBot 加载器不自动加)
@@ -36,6 +37,7 @@ except Exception:  # logger 可能不存在 — 兜底
 import logging  # noqa: E402
 
 logger = _astr_logger if _astr_logger is not None else logging.getLogger(__name__)
+from astrbot.api.event import AstrMessageEvent, filter  # noqa: E402
 from astrbot.api.star import Context, Star, register  # noqa: E402
 
 from mmx_runner import (  # noqa: E402
@@ -62,7 +64,10 @@ try:
 except ImportError:
     provider_registration = None
 
-from constants import DEFAULT_OPENAI_COMPAT_PORT  # noqa: E402
+from constants import (  # noqa: E402
+    DEFAULT_DASHBOARD_PORT,
+    DEFAULT_OPENAI_COMPAT_PORT,
+)
 
 DEFAULT_VISION_PROMPT = (
     "请客观描述图中可见的元素（主体/场景/文字原文/色调/风格），"
@@ -158,11 +163,14 @@ class VisionTextBridgePlugin(Star):
 
     async def initialize(self) -> None:
         if not await self._ensure_mmx_cli():
-            logger.warning(
-                "[vision_text_bridge] mmx CLI 不可用，图像理解接口将不可用"
-            )
+            logger.warning("[vision_text_bridge] mmx CLI 不可用，图像理解接口将不可用")
             return
-        await self._login_mmx_if_configured()
+        # mmx 登录放后台 — 最多可能卡 30s (进程挂起), 不该拖慢 AstrBot 启动。
+        # 图像理解请求都在用户发消息时才发生, 那时登录早已完成。
+        try:
+            asyncio.create_task(self._login_mmx_if_configured())
+        except Exception as e:
+            logger.debug("[vision_text_bridge] 创建 mmx 登录后台任务失败: %s", e)
         await self._start_openai_compat_server()
         await self._auto_register_provider()
 
@@ -280,11 +288,72 @@ class VisionTextBridgePlugin(Star):
         except Exception as e:
             logger.exception("[vision_text_bridge] 创建后台注册任务失败: %s", e)
 
+    async def _wait_dashboard_ready(self, timeout: float) -> bool:
+        """等 Dashboard TCP 端口就绪。
+
+        用 TCP connect 探测而不是 HTTP 请求:
+          - 端口没监听 → 立刻 ConnectionRefused (毫秒级返回), 不阻塞 event loop
+          - 端口在监听 → 立即 True
+
+        所以这个探测本身几乎不耗时, 只是在等 Dashboard 真正起来。
+
+        Returns:
+            True = 端口可连; False = 超时未就绪
+        """
+        port = _cfg_int(self.config, "dashboard_port", DEFAULT_DASHBOARD_PORT)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", port), timeout=1.0
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return True
+            except Exception:
+                if time.monotonic() >= deadline:
+                    return False
+                await asyncio.sleep(0.5)
+
     async def _bg_register_provider(self) -> None:
-        max_attempts = max(1, _cfg_int(self.config, "register_max_attempts", 30))
-        interval = 5
+        """后台注册 provider — **只注册一次** (用户 10/29 要求)。
+
+        旧行为: 最多 30 轮 × 每轮 ~30s (5s sleep + 2×15s httpx 超时)
+                = 最长 ~15 分钟空转, 拖延 AstrBot 启动。
+
+        新行为:
+          1. openapi_key 没配 → 直接跳过 (连端口都不探, 零开销)
+          2. TCP 探测等 Dashboard 就绪 (连接被拒立即返回, 不阻塞)
+          3. 就绪后 **注册一次**, 失败不重试
+          4. 失败时给出 actionable 提示: 用 /vtreg 手动重试
+
+        register_max_attempts 保留为配置项 (默认 1), 用户可自己调大。
+        """
+        if not (self.config.get("openapi_key") or "").strip():
+            logger.info(
+                "[vision_text_bridge] openapi_key 未配置, 跳过 provider 注册 "
+                "(在 webui「设置 → OpenAPI」创建 Key 后填入, 再用 /vtreg 注册)"
+            )
+            return
+
+        max_attempts = max(1, _cfg_int(self.config, "register_max_attempts", 1))
+        wait_secs = max(0, _cfg_int(self.config, "register_wait_dashboard_seconds", 30))
+
         for attempt in range(1, max_attempts + 1):
-            await asyncio.sleep(interval)
+            if attempt == 1:
+                # 只在第一轮等 Dashboard 就绪
+                if not await self._wait_dashboard_ready(wait_secs):
+                    logger.warning(
+                        "[vision_text_bridge] Dashboard (127.0.0.1:%d) 未就绪 "
+                        "(等 %ds), 跳过 provider 注册 — "
+                        "确认 Dashboard 已启动, 然后用 /vtreg 手动注册",
+                        _cfg_int(self.config, "dashboard_port", DEFAULT_DASHBOARD_PORT),
+                        wait_secs,
+                    )
+                    return
             try:
                 ok = await provider_registration.auto_register_provider(
                     self, quiet=attempt > 1
@@ -299,19 +368,45 @@ class VisionTextBridgePlugin(Star):
                 return
             if attempt < max_attempts:
                 logger.warning(
-                    "[vision_text_bridge] provider 注册失败 (第 %d/%d 次, %ds 后重试) — "
-                    "若 Dashboard 尚未就绪属正常",
+                    "[vision_text_bridge] provider 注册失败 (第 %d/%d 次) — 继续重试",
                     attempt,
                     max_attempts,
-                    interval,
                 )
         logger.warning(
-            "[vision_text_bridge] provider 注册失败 — 已达最大重试次数 (%d)，"
-            "请检查 openapi_key / dashboard_port 配置",
-            max_attempts,
+            "[vision_text_bridge] provider 注册失败 — 用 /vtreg 手动重试, "
+            "并检查 openapi_key / dashboard_port 配置"
         )
 
     # ---------------------------------------------------------- 图像理解核心
+
+    # ------------------------------------------------------------------ 手动命令
+
+    @filter.command("vtreg")
+    async def cmd_register_provider(self, event: AstrMessageEvent):
+        """手动触发 OpenAI 兼容 provider 注册 (自动注册失败时的兜底)。"""
+        if provider_registration is None:
+            yield event.plain_result("provider_registration 模块缺失, 无法注册")
+            return
+        if not (self.config.get("openapi_key") or "").strip():
+            yield event.plain_result(
+                "openapi_key 未配置 — "
+                "请在 webui「设置 → OpenAPI」创建 Key, 填入插件配置后重试"
+            )
+            return
+        yield event.plain_result("正在注册 OpenAI 兼容 provider ...")
+        try:
+            ok = await provider_registration.auto_register_provider(self)
+        except Exception as e:
+            logger.exception("[vision_text_bridge] 手动注册异常: %s", e)
+            yield event.plain_result(f"注册异常: {type(e).__name__}: {e}")
+            return
+        if ok:
+            yield event.plain_result("provider 注册成功")
+        else:
+            yield event.plain_result(
+                "provider 注册失败 — 请看日志里的 HTTP 响应体 "
+                "(常见原因: OpenAPI Key 作用域不含 provider / Dashboard 未启动)"
+            )
 
     def _ensure_vision_semaphore(self) -> None:
         if self._vision_semaphore is None:

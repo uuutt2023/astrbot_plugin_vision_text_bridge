@@ -1,5 +1,51 @@
 # 更新日志
 
+## v2.0.2 (2026-10-29)
+
+### 修复 AstrBot 启动拖延
+
+用户反馈：每次重启 AstrBot，插件要跑 **30 轮 × 30s** 的注册检测，拖延启动时间。
+
+#### 根因
+
+`_bg_register_provider` 旧逻辑是「失败重试 30 轮」：
+
+```
+max_attempts = 30 (register_max_attempts 默认值)
+interval     = 5s
+每轮: sleep(5s) + POST(webui, timeout=15s) + PUT(webui, timeout=15s)
+```
+
+Dashboard 尚未就绪时，每轮两个 HTTP 请求都要等满 15s connect timeout
+→ 每轮约 35s ≈ 用户说的「30s」
+→ 30 轮 ≈ **15 分钟**后台空转。
+
+#### 修复
+
+| 改动 | 说明 |
+|---|---|
+| `register_max_attempts` 默认 30 → **1** | 只注册一次，不重试 |
+| 新增 `register_wait_dashboard_seconds`（默认 30） | 注册前用 **TCP connect 探测**等 Dashboard 端口就绪 |
+| `_wait_dashboard_ready()` | 端口没监听 → `ConnectionRefused` 毫秒级返回，**不阻塞 event loop**；在监听 → 立即继续 |
+| `openapi_key` 未配置 → 直接跳过 | 连端口都不探，零开销 |
+| 新增 `/vtreg` 命令 | 自动注册失败时手动重注册的兜底 |
+| httpx 超时拆分 | `connect=3s / read=15s`，Dashboard 没监听时秒失败，不再干等 15s |
+| mmx 自动登录移入后台任务 | `mmx auth login` 最多可能挂 30s，不该拖慢启动 |
+
+#### 行为对比
+
+| 场景 | 旧 | 新 |
+|---|---|---|
+| openapi_key 未配 | 空转 15 分钟 | **0.001s** 跳过 |
+| Dashboard 未就绪 | 空转 15 分钟 | 等 ≤30s 就绪窗口后跳过 |
+| Dashboard 已就绪 | 5s 后注册成功 | **立即**注册一次 |
+
+### 兼容性
+
+- 目标框架：AstrBot v4.29.3（已核对 `ProviderConfigRequest` / `require_provider_scope` 认证方式无变化）
+- `register_max_attempts` 保留为配置项，用户可自行调大（默认 1）
+- 未配置 `openapi_key` 的用户行为不变（只是不再空转）
+
 ## v2.0.1 (2026-08-07)
 
 ### 注册认证精简

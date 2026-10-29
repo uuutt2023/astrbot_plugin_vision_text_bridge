@@ -192,7 +192,8 @@ filetree
 | `enabled` | `true` | 暴露 `/v1/chat/completions` 端点 |
 | `port` | `2023` | 独立 server 监听端口 |
 | `dashboard_port` | `6185` | AstrBot Dashboard webui 端口（注册 provider 用） |
-| `register_max_attempts` | `30` | 注册失败后每隔 5 秒重试的次数（启动时 Dashboard 可能未就绪） |
+| `register_max_attempts` | `1` | 自动注册最大尝试次数。默认只注册一次，不重试（避免拖慢启动） |
+| `register_wait_dashboard_seconds` | `30` | 注册前用 TCP 探测等 Dashboard 端口就绪的秒数上限。端口没监听时探测毫秒级返回，不阻塞 |
 | `auto_register` | `true` | 启动时注册到 provider_manager |
 | `api_key` | `placeholder` | 端点 API Key（本端点不校验，填占位值即可） |
 | `model_name` | `vision-bridge` | 注册时的模型显示名 |
@@ -272,6 +273,21 @@ lsof -i :2023
 | 422 | AstrBot 版本太旧 | 升级到最新版 |
 | 400 "already exists" | 实际已注册成功 | 不用管 |
 
+### 启动时 provider 没注册上
+
+自动注册**只跑一次**（`register_max_attempts` 默认 1），失败不再重试，避免拖慢 AstrBot 启动。
+
+**手动重注册**：在聊天里发
+
+```
+/vtreg
+```
+
+或等 Dashboard 启动完成后重启 AstrBot。
+
+常见原因：启动瞬间 Dashboard 还没起来（插件只等 `register_wait_dashboard_seconds`，默认 30s）。
+把该值调大（如 60）可以让插件多等一会儿。
+
 ### 启动日志关键字速查
 
 | 日志内容 | 含义 |
@@ -280,9 +296,18 @@ lsof -i :2023
 | `预登录成功` | MiniMax 认证通过 |
 | `独立 OpenAI 兼容 server 启动` | 接口已在 127.0.0.1:2023 监听 |
 | `OpenAI 兼容 provider 注册成功` | provider 已注册 |
-| `provider 注册失败` | 检查 openapi_key |
+| `provider 注册失败` | 检查 openapi_key，或发 `/vtreg` 手动重试 |
+| `openapi_key 未配置, 跳过 provider 注册` | 没填 OpenAPI Key，注册被跳过 |
+| `Dashboard (127.0.0.1:6185) 未就绪` | 等待窗口内 Dashboard 没起来，可发 `/vtreg` |
 
 ## 更新日志
+
+### 2026-10-29
+
+- **2.0.2**：自动注册从「30 轮 × 30s」改为**只注册一次**
+  - 新增 `register_wait_dashboard_seconds`（默认 30s），用 TCP 探测等 Dashboard 就绪
+  - 新增 `/vtreg` 命令，手动重注册
+  - httpx connect 超时压到 3s；mmx 自动登录移入后台任务
 
 ### 2026-08-07
 
