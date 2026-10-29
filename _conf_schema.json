@@ -84,8 +84,8 @@
       "max_concurrent_vision": {
         "description": "最大并发数",
         "type": "int",
-        "hint": "建议 1-4，避免 API 限流。",
-        "default": 3
+        "hint": "同时调用 mmx 的最大图片数。默认 5。\n调大 → 批量图片墙钟时间更短 (12 张图: c=3 约 4 轮, c=6 约 2 轮, c=12 约 1 轮);\n调小 → 更不容易撞 MiniMax 速率限制。\n同一请求里重复的图片会自动去重, 只调一次。",
+        "default": 5
       }
     }
   },

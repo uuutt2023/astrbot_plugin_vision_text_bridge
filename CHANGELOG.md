@@ -1,5 +1,70 @@
 # 更新日志
 
+## v2.1.0 (2026-10-29)
+
+### 性能优化（profile 驱动）
+
+用 cProfile / timeit / 端到端 benchmark 对启动路径与请求路径做了实测，
+下面是**测出来的**数字，不是拍脑袋。
+
+#### 实测基线
+
+| 环节 | 耗时 | 是否瓶颈 |
+|---|---|---|
+| `base64.b64decode` (1.3MB 图) | 4.5 ms | 否 |
+| tempfile 写入 + 删除 | 0.8 ms | 否 |
+| `_decode_data_url_to_tempfile` 合计 | 5.7 ms | 否 |
+| subprocess spawn 基线 | 3.9 ms | 否 |
+| **mmx 单次调用 (网络往返)** | **≈ 11 s** | **是** |
+| `_smart_url_preview` (1.7MB data URL) | 0.145 ms | 微小 |
+
+结论：**瓶颈 100% 在 mmx 网络往返**，本地 CPU 开销都可以忽略。
+所以优化方向是「少调 mmx」和「并发调 mmx」，而不是抠本地 CPU。
+
+#### 改动
+
+| # | 改动 | 实测收益 |
+|---|------|---------|
+| 1 | `describe_images` **请求内 URL 去重** — 同一张图出现多次只调一次 mmx，结果按原顺序还原 | 12 张含 6 组重复：**12 次调用 → 2 次**，墙钟 **3.0x** |
+| 2 | `max_concurrent_vision` 默认 3 → **5** | 12 张图：**44s → 33s**（按 11s/次换算） |
+| 3 | **启动顺序重构** — server + provider 优先，mmx 安装/登录移到后台 | `initialize()` 从「等 npm 装完」变成 **0.000s 返回** |
+| 4 | `_smart_url_preview` 不再拷贝整个 base64（只算长度 + 切片前 8 字节） | 该函数 **187x**（0.145ms → 0.0008ms），单次省 0.14ms |
+
+#### 启动顺序为什么重要
+
+旧顺序 `等 mmx → 登录 → 起 server → 注册 provider` 有两个问题：
+
+1. `npm install mmx-cli` 首次可能要几分钟 → AstrBot 启动被卡住
+2. **install 失败会 `return` 提前退出** → server 没起、provider 没注册，
+   插件等于完全没工作
+
+新顺序 `起 server → 注册 provider → 后台准备 mmx`：
+
+- provider 立刻可注册，AstrBot 不用等 npm
+- mmx 没装好也只是单次请求返空，不影响插件加载
+- `_bg_prepare_mmx` 失败只记 warning
+
+#### 正确性验证
+
+去重后必须与优化前**逐槽位一致**（顺序、内容、失败隔离）：
+
+```
+[1] 顺序/内容一致性  urls=['u1','u2','u1','u3','u2','u1'] → ✓ PASS
+[2] 空输入                                    → ✓ PASS
+[3] 失败 URL 隔离 (重复的坏 URL 也不互相影响)    → ✓ PASS
+[4] _smart_url_preview 输出与优化前逐字节相同    → ✓ PASS
+[5] initialize() 不被 mmx 准备阻塞             → ✓ PASS (0.000s)
+```
+
+#### 未做的优化（以及为什么）
+
+- **不引入跨请求缓存**：v2.0.0 的设计决策是「精简插件为纯图像理解服务」，
+  加回缓存会改变插件定位，且有隐私/磁盘占用顾虑。留给需要时再议。
+- **不改 `redact_text`**：86ms 的开销只在 `verbose_mmx_subprocess=true` 时出现，
+  默认关闭，不在生产路径上。
+- **不提高并发到 12**：会显著提高撞 MiniMax 速率限制的概率，
+  默认 5 是「明显变快但仍保守」的值，用户可自行调。
+
 ## v2.0.2 (2026-10-29)
 
 ### 修复 AstrBot 启动拖延

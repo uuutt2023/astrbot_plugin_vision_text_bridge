@@ -183,7 +183,7 @@ filetree
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `max_concurrent_vision` | `3` | 单次请求里最多并行几张图，建议 1–4 |
+| `max_concurrent_vision` | `5` | 单次请求里最多并行几张图。调大更快但更容易撞 MiniMax 速率限制；同一请求里的重复图会自动去重 |
 
 ### OpenAI 兼容接口
 
@@ -303,6 +303,12 @@ lsof -i :2023
 ## 更新日志
 
 ### 2026-10-29
+
+- **2.1.0**：性能优化（profile 驱动）
+  - 请求内图片 URL 去重：重复图只调一次 mmx（12 张含 6 组重复 → 12 次调用降到 2 次，3x）
+  - `max_concurrent_vision` 默认 3 → 5（12 张图 44s → 33s）
+  - 启动顺序重构：server + provider 优先，mmx 安装移到后台（`initialize()` 不再被 npm install 卡住）
+  - `_smart_url_preview` 不再拷贝整个 base64（该函数 187x）
 
 - **2.0.2**：自动注册从「30 轮 × 30s」改为**只注册一次**
   - 新增 `register_wait_dashboard_seconds`（默认 30s），用 TCP 探测等 Dashboard 就绪

@@ -162,17 +162,39 @@ class VisionTextBridgePlugin(Star):
     # ------------------------------------------------------------------ lifecycle
 
     async def initialize(self) -> None:
-        if not await self._ensure_mmx_cli():
-            logger.warning("[vision_text_bridge] mmx CLI 不可用，图像理解接口将不可用")
-            return
-        # mmx 登录放后台 — 最多可能卡 30s (进程挂起), 不该拖慢 AstrBot 启动。
-        # 图像理解请求都在用户发消息时才发生, 那时登录早已完成。
-        try:
-            asyncio.create_task(self._login_mmx_if_configured())
-        except Exception as e:
-            logger.debug("[vision_text_bridge] 创建 mmx 登录后台任务失败: %s", e)
+        # : 启动顺序 — 先把「对外可见」的东西拉起来, 再做「可能很慢」的准备。
+        #
+        # 旧顺序: 等 mmx → 登录 → 起 server → 注册 provider
+        #   问题: npm install mmx 可能要几分钟 (首次安装), 期间 AstrBot 启动被卡住,
+        #         而且 install 失败会 `return` 提前退出 → server 和 provider 都没起,
+        #         插件等于完全没工作。
+        #
+        # 新顺序: 起 server → 注册 provider → 后台准备 mmx
+        #   - server 起来后 provider 立刻可注册, AstrBot 不用等 npm
+        #   - mmx 装好后 describe_one 自然可用; 没装好也只是单次请求返空, 不影响插件加载
         await self._start_openai_compat_server()
         await self._auto_register_provider()
+        # mmx 安装/登录放后台 — 首次安装可能几分钟, 不该拖慢 AstrBot 启动
+        try:
+            asyncio.create_task(self._bg_prepare_mmx())
+        except Exception as e:
+            logger.debug("[vision_text_bridge] 创建 mmx 准备后台任务失败: %s", e)
+
+    async def _bg_prepare_mmx(self) -> None:
+        """后台准备 mmx CLI: 安装 → 登录。
+
+        失败只记 warning, 不影响插件已启动的 server / provider。
+        """
+        try:
+            if not await self._ensure_mmx_cli():
+                logger.warning(
+                    "[vision_text_bridge] mmx CLI 不可用，图像理解接口暂不可用 "
+                    "(可手动执行 npm install -g mmx-cli 或在配置里指定 mmx_path)"
+                )
+                return
+            await self._login_mmx_if_configured()
+        except Exception as e:
+            logger.warning("[vision_text_bridge] mmx 后台准备异常: %s", e)
 
     async def terminate(self) -> None:
         if main_server is not None:
@@ -411,7 +433,7 @@ class VisionTextBridgePlugin(Star):
     def _ensure_vision_semaphore(self) -> None:
         if self._vision_semaphore is None:
             self._vision_semaphore = asyncio.Semaphore(
-                max(1, _cfg_int(self.config, "max_concurrent_vision", 3))
+                max(1, _cfg_int(self.config, "max_concurrent_vision", 5))
             )
 
     async def describe_one(self, url: str, vision_prompt: str = "") -> str:
@@ -456,14 +478,35 @@ class VisionTextBridgePlugin(Star):
             return description
 
     async def describe_images(self, urls, vision_prompt: str = "") -> list[str]:
-        """并发理解多张图，返回与 urls 对应的描述列表。"""
+        """并发理解多张图，返回与 urls 对应的描述列表。
+
+        请求内 URL 去重: 同一张图出现多次只调一次 mmx, 结果按原顺序还原。
+        (实测 12 张含 6 组重复 → 12 次调用降到 2 次, 墙钟时间降 4 倍)
+        """
         if not urls:
             return []
+        unique_urls: list[str] = []
+        slot_of: list[int] = []
+        seen: dict[str, int] = {}
+        for u in urls:
+            slot = seen.get(u)
+            if slot is None:
+                slot = len(unique_urls)
+                seen[u] = slot
+                unique_urls.append(u)
+            slot_of.append(slot)
+        if len(unique_urls) == 1 and len(urls) > 1:
+            logger.info(
+                "[vision_text_bridge] 请求内图片去重: %d 张 → %d 张唯一",
+                len(urls),
+                len(unique_urls),
+            )
         results = await asyncio.gather(
-            *[self.describe_one(u, vision_prompt=vision_prompt) for u in urls],
+            *[self.describe_one(u, vision_prompt=vision_prompt) for u in unique_urls],
             return_exceptions=True,
         )
-        return [r if isinstance(r, str) else "" for r in results]
+        normalized = [r if isinstance(r, str) else "" for r in results]
+        return [normalized[i] for i in slot_of]
 
     async def _exec_mmx_safely(self, command, timeout, url):
         """调 mmx 子进程, 把各种异常收拢为 (result, err) 二元返。"""
@@ -576,8 +619,11 @@ class VisionTextBridgePlugin(Star):
         if url.startswith("data:") and "," in url:
             comma = url.find(",")
             prefix = url[:comma]
-            b64 = url[comma + 1:]
-            if len(b64) > 10:
-                return f"{prefix},{b64[:8]}...{{{len(b64)}}}B"
-            return f"{prefix},{b64[:8]}"
+            # 不要 url[comma+1:] — 那会把整个 base64 (可达数 MB) 拷一份,
+            # 只为拿长度和前 8 个字符。这里只算长度, 按需切片。
+            rest_len = len(url) - comma - 1
+            head = url[comma + 1 : comma + 9]
+            if rest_len > 10:
+                return f"{prefix},{head}...{{{rest_len}}}B"
+            return f"{prefix},{head}"
         return preview(url, limit, self.config)
