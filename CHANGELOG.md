@@ -1,5 +1,73 @@
 # 更新日志
 
+## v2.1.1 (2026-11-10)
+
+### 修复混合安装导致的 API 契约不匹配
+
+用户 11/10 反馈：
+
+```
+AttributeError: 'VisionTextBridgePlugin' object has no attribute 'describe_images'
+  File "main_server.py", line 254, in _describe_all_images
+[OpenAI] Request failed with retryable error; retrying (2/5): Error code: 500 - mmx 描述返回空
+... 重试到 5/5
+```
+
+#### 根因
+
+仓库有两条分支，**图像理解 API 契约不同**：
+
+| 分支 | `main.py` 暴露 | `main_server.py` 调用 |
+|---|---|---|
+| `main` | `describe_images(urls, prompt)` / `describe_one(url, prompt)` | `plugin.describe_images(urls, prompt)` |
+| `full-version` | `_describe_one(url, source, vision_prompt=...)` | `plugin._describe_one(url, source, vision_prompt=...)` |
+
+插件目录里一旦**混装了不同分支/不同版本的文件**
+（`git pull` 半途失败、dashboard 装了旧 zip、只替换了部分文件），
+`main_server.py` 调 `describe_images` 而 plugin 实例只有 `_describe_one`
+→ `AttributeError` → 返 500 → **framework 对 5xx 重试 5 次**
+→ 每次都白等一轮，5 次重试共浪费约 40 秒，最后还是失败。
+
+#### 修复
+
+| # | 改动 | 说明 |
+|---|------|------|
+| 1 | `main_server.py` 加 **API 契约兼容层** | 运行时探测 `describe_images` / `_describe_images` / `describe_one` / `_describe_one`，逐个降级 |
+| 2 | 降级调用用 **`inspect.signature` 判签名** | 不靠 `TypeError` 猜——函数内部抛 `TypeError` 会被误判成签名不匹配，导致重复调用 |
+| 3 | 契约完全不匹配 → 返 **400**（不是 500） | AstrBot `request_retry` 对 5xx 必重试 5 次，对 4xx 不重试 → **省掉 5× 无意义重试** |
+| 4 | 错误体带结构化 `error.type = api_contract_mismatch` + 修复命令 | 一眼看出是什么问题、怎么修 |
+| 5 | 新增 **`GET /diag`** 端点 | 返回 API 契约状态 / plugin 类名 / mmx_path / 修复提示 |
+| 6 | 新增 **`/vtcheck`** 命令 | 诊断报告：git 分支 + commit、API 契约、`__pycache__` 陈旧检测、mmx 状态 |
+| 7 | `initialize()` 启动自检 | 契约不一致立刻 ERROR 日志，不再等用户发图才炸 |
+| 8 | `__pycache__` 检测改 **per-file 比对** | 之前是全局 `min()`，会误报；现在 pyc 比自己的源文件旧才算陈旧 |
+
+#### 验证
+
+```
+=== API 契约兼容层 ===
+[1] describe_images 版本        → HTTP 200  ✓
+[2] 只有 _describe_one (混装)   → HTTP 200  ✓ 降级成功，不再 AttributeError
+[3] 契约完全不符                → HTTP 400  ✓ 不触发 framework 5 次重试
+[4] _diagnose_contract()        → ✓ 分级正确 (error / 降级警告)
+[5] GET /diag                   → ✓
+
+=== 端到端 HTTP (真起 server, urllib 打) ===
+main 分支 (describe_images)      → HTTP 200  ✓
+full-version (_describe_one)    → HTTP 200  ✓
+完全不符                        → HTTP 400  ✓
+```
+
+#### 用户侧修复
+
+```bash
+cd /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge
+rm -rf __pycache__
+git fetch origin
+git reset --hard origin/main   # 或 origin/full-version, 二选一, 别混
+```
+
+装完发 `/vtcheck` 看诊断报告。
+
 ## v2.1.0 (2026-10-29)
 
 ### 性能优化（profile 驱动）

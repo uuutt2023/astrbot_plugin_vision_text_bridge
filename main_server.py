@@ -154,6 +154,30 @@ async def _handle_request(
             writer.write(response_bytes)
             await writer.drain()
             logger.debug("[vision_text_bridge] ⇠ GET /health 200")
+        elif method.upper() == "GET" and path == "/diag":
+            batch_name, one_name = _resolve_describe_api(plugin)
+            payload = {
+                "status": "ok" if (batch_name or one_name) else "degraded",
+                "server": "vision_text_bridge_solo",
+                "api_contract": {
+                    "batch": batch_name,
+                    "single": one_name,
+                    "ok": bool(batch_name or one_name),
+                },
+                "plugin_class": type(plugin).__name__,
+                "mmx_path": getattr(plugin, "mmx_path", "") or "",
+                "port": _port,
+                "hint": (
+                    ""
+                    if (batch_name or one_name)
+                    else "main_server 与 main.py 版本不匹配 — "
+                    "rm -rf __pycache__ && git reset --hard origin/main"
+                ),
+            }
+            response_bytes = _build_response(payload, 200)
+            writer.write(response_bytes)
+            await writer.drain()
+            logger.debug("[vision_text_bridge] ⇠ GET /diag 200")
         else:
             response_bytes = _build_response(
                 {"status": "error", "message": f"未找到路由: {method} {path}"}, 400
@@ -169,6 +193,104 @@ async def _handle_request(
             await writer.wait_closed()
         except Exception:
             pass
+
+
+# ------------------------------------------------------------------ API 契约
+
+# : 图像理解 API 的方法名候选 — 按优先级探测。
+# : main 分支用 describe_images / describe_one；
+# : full-version 分支 (及 v1.x) 用 _describe_one(url, source, vision_prompt=...)。
+# : 插件目录里如果混装了不同分支的文件 (git pull 半途失败 / dashboard 装了旧 zip),
+# : 就可能两边对不上 — 这里做运行时探测, 不猜。
+_DESCRIBE_BATCH_CANDIDATES = ("describe_images", "_describe_images")
+_DESCRIBE_ONE_CANDIDATES = ("describe_one", "_describe_one")
+
+
+def _resolve_describe_api(plugin) -> tuple[str | None, str | None]:
+    """探测 plugin 实例上的图像理解 API。
+
+    Returns:
+        (batch_method_name, one_method_name) — 任一为 None 表示不存在。
+    """
+    batch = next(
+        (n for n in _DESCRIBE_BATCH_CANDIDATES if callable(getattr(plugin, n, None))),
+        None,
+    )
+    one = next(
+        (n for n in _DESCRIBE_ONE_CANDIDATES if callable(getattr(plugin, n, None))),
+        None,
+    )
+    return batch, one
+
+
+def _accepts_vision_prompt_kwarg(fn) -> bool:
+    """fn 是否接受 ``vision_prompt=`` 关键字参数。"""
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for name, param in sig.parameters.items():
+        if name == "vision_prompt" and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def _accepts_source_arg(fn) -> bool:
+    """fn 是否接受第二个位置参数 (full-version 的 ``source``)。"""
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        p
+        for p in sig.parameters.values()
+        if p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    has_varargs = any(
+        p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()
+    )
+    return len(positional) >= 2 or has_varargs
+
+
+
+def _api_contract_error(plugin) -> dict:
+    """构造 API 契约不匹配的错误响应 (400, 不可重试)。
+
+    用 400 而不是 500: AstrBot 的 request_retry 对 5xx 会重试 5 次
+    (每次都白等一次 mmx 超时), 对确定性错误重试毫无意义。
+    """
+    have = [
+        n
+        for n in _DESCRIBE_BATCH_CANDIDATES + _DESCRIBE_ONE_CANDIDATES
+        if callable(getattr(plugin, n, None))
+    ]
+    return {
+        "status": "error",
+        "message": (
+            "插件 API 契约不匹配: main_server 需要 describe_images 或 _describe_one, "
+            f"但当前 plugin 实例只暴露 {have or '(无)'}。"
+            "通常是插件目录里混装了不同分支/不同版本的文件。"
+            "修复: cd /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge && "
+            "rm -rf __pycache__ && git fetch origin && git checkout main && git reset --hard origin/main"
+        ),
+        "error": {
+            "type": "api_contract_mismatch",
+            "expected_any_of": list(_DESCRIBE_BATCH_CANDIDATES + _DESCRIBE_ONE_CANDIDATES),
+            "found": have,
+            "hint": "清 __pycache__ + git reset --hard origin/main",
+        },
+    }
 
 
 async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
@@ -196,7 +318,12 @@ async def _handle_chat_completions(body: dict, plugin) -> tuple[dict, int]:
         repr(caller_prompt[:120]),
     )
 
-    captions = await _describe_all_images(plugin, image_urls, caller_prompt)
+    captions, contract_error = await _describe_all_images(
+        plugin, image_urls, caller_prompt
+    )
+    if contract_error is not None:
+        # 400 = 不可重试 — 避免 framework 对确定性错误重试 5 次
+        return contract_error, 400
     if not captions:
         return {"status": "error", "message": "mmx 描述返回空"}, 500
 
@@ -248,18 +375,64 @@ def _extract_parts(content) -> list[tuple[str, str]]:
 
 async def _describe_all_images(
     plugin, image_urls: list[str], caller_prompt: str
-) -> list[str]:
-    """并发调 plugin.describe_images 处理所有图片。返回非空描述列表。"""
+) -> tuple[list[str], dict | None]:
+    """并发调 plugin 的图像理解 API 处理所有图片。
+
+    Returns:
+        (非空描述列表, 契约错误响应或 None)
+        契约错误时列表为空, 第二个元素是 400 响应体 (不触发 framework 重试)。
+    """
+    batch_name, one_name = _resolve_describe_api(plugin)
+    if batch_name is None and one_name is None:
+        logger.error(
+            "[vision_text_bridge] API 契约不匹配: plugin 实例没有 describe_images / "
+            "_describe_one — 插件目录里可能混装了不同分支的文件"
+        )
+        return [], _api_contract_error(plugin)
+
     try:
-        results = await plugin.describe_images(image_urls, caller_prompt)
+        if batch_name is not None:
+            results = await getattr(plugin, batch_name)(image_urls, caller_prompt)
+        else:
+            # 退化路径: 只有单图 API (full-version 风格), 自己并发
+            one = getattr(plugin, one_name)
+            # 用签名判断调用形式, 不靠 TypeError 猜 — 函数内部抛 TypeError
+            # 会被误当成签名不匹配, 导致重复调用。
+            kwargs_ok = _accepts_vision_prompt_kwarg(one)
+            takes_source = _accepts_source_arg(one)
+            coros = []
+            for u in image_urls:
+                if kwargs_ok:
+                    coro = (
+                        one(
+                            u,
+                            "main_server /v1/chat/completions",
+                            vision_prompt=caller_prompt,
+                        )
+                        if takes_source
+                        else one(u, vision_prompt=caller_prompt)
+                    )
+                else:
+                    coro = (
+                        one(u, "main_server /v1/chat/completions")
+                        if takes_source
+                        else one(u, caller_prompt)
+                    )
+                coros.append(coro)
+            results = await asyncio.gather(*coros, return_exceptions=True)
     except Exception as e:
         logger.exception("chat_completions 调 mmx 失败: %s", e)
-        return []
+        return [], None
 
     captions: list[str] = []
     for idx, cap in enumerate(results, 1):
-        u = image_urls[idx - 1]
+        u = image_urls[idx - 1] if idx - 1 < len(image_urls) else "?"
         url_preview = _preview_url(u)
+        if isinstance(cap, Exception):
+            logger.warning(
+                "[vision_text_bridge] mmx 调 #%d 异常: %s", idx, cap
+            )
+            continue
         if cap:
             captions.append(cap)
             logger.debug(
@@ -274,7 +447,7 @@ async def _describe_all_images(
                 idx,
                 url_preview,
             )
-    return captions
+    return captions, None
 
 
 def _preview_url(url: str) -> str:

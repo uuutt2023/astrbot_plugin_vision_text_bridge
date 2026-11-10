@@ -235,6 +235,28 @@ GET /health
 
 返回 `{"status": "ok"}`。
 
+### 诊断
+
+```
+GET /diag
+```
+
+返回 API 契约状态、plugin 类名、mmx_path、端口。用来快速确认
+`main_server.py` 与 `main.py` 是不是同一套代码：
+
+```json
+{
+  "status": "ok",
+  "api_contract": {"batch": "describe_images", "single": "describe_one", "ok": true},
+  "plugin_class": "VisionTextBridgePlugin",
+  "mmx_path": "/AstrBot/data/plugins/.../.mmx/node_modules/.bin/mmx",
+  "port": 2023
+}
+```
+
+`status` 为 `degraded` 说明插件目录里混装了不同分支的文件，
+按[常见问题](#报-no-attribute-describe_images--一直-500-重试)处理。
+
 ### 端口
 
 | 端口 | 用途 |
@@ -273,6 +295,28 @@ lsof -i :2023
 | 422 | AstrBot 版本太旧 | 升级到最新版 |
 | 400 "already exists" | 实际已注册成功 | 不用管 |
 
+### 报 "no attribute 'describe_images'" / 一直 500 重试
+
+插件目录里混装了不同分支的文件。仓库有两条分支，图像理解 API 契约不同：
+
+| 分支 | 用途 |
+|---|---|
+| `main` | 精简版：只有 OpenAI 兼容接口（默认） |
+| `full-version` | 完整版：额外带 WebUI + 缓存 + LLM 拦截 |
+
+**两条分支不要混装。** 重装到干净状态：
+
+```bash
+cd /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge
+rm -rf __pycache__
+git fetch origin
+git reset --hard origin/main        # 或 origin/full-version，二选一
+```
+
+装完发 `/vtcheck` 看诊断报告（git 分支 + commit、API 契约、__pycache__ 状态）。
+
+也可以直接 `curl http://127.0.0.1:2023/diag` 看 API 契约状态。
+
 ### 启动时 provider 没注册上
 
 自动注册**只跑一次**（`register_max_attempts` 默认 1），失败不再重试，避免拖慢 AstrBot 启动。
@@ -301,6 +345,13 @@ lsof -i :2023
 | `Dashboard (127.0.0.1:6185) 未就绪` | 等待窗口内 Dashboard 没起来，可发 `/vtreg` |
 
 ## 更新日志
+
+### 2026-11-10
+
+- **2.1.1**：修复混合安装导致的 API 契约不匹配
+  - `main_server.py` 加 API 契约兼容层（`describe_images` / `_describe_one` 逐级降级）
+  - 契约错误改返 **400**（framework 不再对 5xx 重试 5 次，省约 40 秒）
+  - 新增 `GET /diag` 端点 + `/vtcheck` 命令 + 启动自检
 
 ### 2026-10-29
 

@@ -174,6 +174,17 @@ class VisionTextBridgePlugin(Star):
         #   - mmx 装好后 describe_one 自然可用; 没装好也只是单次请求返空, 不影响插件加载
         await self._start_openai_compat_server()
         await self._auto_register_provider()
+        # 契约自检 — main.py 与 main_server.py 版本不一致时立刻报出来,
+        # 而不是等到有人发图才炸 (那时候只会看到 500 + 一串无意义的重试)
+        problems = self._diagnose_contract()
+        if problems:
+            logger.error(
+                "[vision_text_bridge] 启动自检发现问题:\n  - %s\n"
+                "  用 /vtcheck 看完整诊断报告",
+                "\n  - ".join(problems),
+            )
+        else:
+            logger.info("[vision_text_bridge] 启动自检通过 (API 契约一致)")
         # mmx 安装/登录放后台 — 首次安装可能几分钟, 不该拖慢 AstrBot 启动
         try:
             asyncio.create_task(self._bg_prepare_mmx())
@@ -401,7 +412,111 @@ class VisionTextBridgePlugin(Star):
 
     # ---------------------------------------------------------- 图像理解核心
 
+    # ------------------------------------------------------------------ 诊断
+
+    def _diagnose_contract(self) -> list[str]:
+        """检查 main.py ↔ main_server.py 的 API 契约是否一致。
+
+        返回问题描述列表 (空 = 一切正常)。
+        """
+        problems: list[str] = []
+        batch = callable(getattr(self, "describe_images", None))
+        one = callable(getattr(self, "describe_one", None))
+        private_one = callable(getattr(self, "_describe_one", None))
+        if not batch and not one and not private_one:
+            problems.append(
+                "plugin 实例没有 describe_images / describe_one / _describe_one — "
+                "main_server.py 与 main.py 版本不匹配"
+            )
+        elif not batch:
+            # 只有单图 API → 说明 main.py 是旧版/full-version, main_server.py 是新版
+            # 兼容层能降级跑, 但属于混装状态, 值得报出来
+            problems.append(
+                "降级模式: plugin 只有单图 API "
+                f"({'describe_one' if one else '_describe_one'}), "
+                "没有 describe_images — 插件目录里混装了不同分支/版本的文件"
+            )
+        if main_server is not None:
+            srv_batch, srv_one = main_server._resolve_describe_api(self)
+            if srv_batch is None and srv_one is None:
+                problems.append(
+                    "main_server 找不到可用的图像理解方法 — "
+                    "server 与 plugin 不是同一套代码"
+                )
+        # __pycache__ 陈旧检测 — per-file 比对 (pyc 应比自己的源文件新)
+        import os as _os
+
+        pyc_dir = _PLUGIN_DIR / "__pycache__"
+        try:
+            for pyc in sorted(pyc_dir.glob("*.pyc")):
+                stem = pyc.name.split(".")[0]
+                src = _PLUGIN_DIR / f"{stem}.py"
+                if not src.is_file():
+                    continue
+                if pyc.stat().st_mtime < src.stat().st_mtime - 1:
+                    problems.append(
+                        f"__pycache__ 陈旧: {pyc.name} 比 {src.name} 旧 "
+                        f"(rm -rf {pyc_dir} 可清)"
+                    )
+        except Exception:
+            pass
+        return problems
+
+    def _diag_report(self) -> str:
+        """生成诊断报告文本。"""
+        import subprocess as _sp
+
+        lines = ["[vision_text_bridge] 诊断报告", "=" * 46]
+        # git 状态
+        try:
+            commit = _sp.run(
+                ["git", "-C", str(_PLUGIN_DIR), "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            branch = _sp.run(
+                ["git", "-C", str(_PLUGIN_DIR), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            lines.append(f"git 分支: {branch.stdout.strip() or '(未知)'}")
+            lines.append(f"git commit: {commit.stdout.strip() or '(未知)'}")
+        except Exception:
+            lines.append("git: (不可用)")
+        # API 契约
+        batch = callable(getattr(self, "describe_images", None))
+        one = callable(getattr(self, "describe_one", None))
+        lines.append(f"plugin.describe_images: {'有' if batch else '无'}")
+        lines.append(f"plugin.describe_one:    {'有' if one else '无'}")
+        if main_server is not None:
+            sb, so = main_server._resolve_describe_api(self)
+            lines.append(f"server 认出的方法:      {sb or so or '(无)'}")
+        lines.append(f"mmx_path: {self.mmx_path or '(未找到)'}")
+        lines.append(f"openai compat port: {self._openai_compat_port or '(未启动)'}")
+        # 问题
+        problems = self._diagnose_contract()
+        lines.append("-" * 46)
+        if problems:
+            lines.append("发现问题:")
+            lines.extend(f"  - {p}" for p in problems)
+            lines.append("修复命令:")
+            lines.append(
+                "  cd /AstrBot/data/plugins/astrbot_plugin_vision_text_bridge && "
+                "rm -rf __pycache__ && git fetch origin && "
+                "git reset --hard origin/main"
+            )
+        else:
+            lines.append("未发现异常")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------ 手动命令
+
+    @filter.command("vtcheck")
+    async def cmd_check(self, event: AstrMessageEvent):
+        """诊断插件状态: git 版本 / API 契约 / __pycache__ / mmx。"""
+        yield event.plain_result(self._diag_report())
 
     @filter.command("vtreg")
     async def cmd_register_provider(self, event: AstrMessageEvent):
